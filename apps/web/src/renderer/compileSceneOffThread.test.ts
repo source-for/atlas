@@ -221,6 +221,7 @@ it('ignores wrong request IDs and generations before accepting a selected respon
   expect(worker.terminate).not.toHaveBeenCalled();
   expect(worker.postMessage).toHaveBeenCalledTimes(1);
   const scene = worker.reply(); expect(await pending).toBe(scene); session.dispose();
+});
 const packet = { snapshot: input.snapshot, view: { rootEntityId: 'root' } } as ArchitectureNeighborhoodPacket;
 function replyInitialization(worker: WorkerStub, status: 'ready' | 'invalid' | 'failed' = 'ready') {
   const request = worker.postMessage.mock.lastCall![0] as NeighborhoodInitializeRequest;

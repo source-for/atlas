@@ -42,9 +42,9 @@ it('initialization retains the full graph while compiling a temporary bootstrap 
   const initial = worker.postMessage.mock.lastCall![0] as SceneWorkerResponse;
   expect('status' in initial && initial.status).toBe('ready');
   expect(compile.mock.lastCall![0].snapshot).not.toBe(snapshot);
-  const input = { focusEntityId: view.rootEntityId, view, boot: 'neighborhood', modeOptions: {}, childCounts: packet.childCounts, unpublishedChildren: [] } as Omit<ScanSceneInput, 'snapshot'>;
+  const input = { focusEntityId: view.rootEntityId, boot: 'neighborhood', modeOptions: {} } as SceneCompileRequest['input'];
   worker.onmessage!({ data: { id: 2, generation: 2, input, previousId: 1 } });
-  expect(compile.mock.lastCall![0].snapshot).toBe(snapshot);
+  expect(compile.mock.lastCall![0]).toMatchObject({ snapshot, view, childCounts: packet.childCounts, unpublishedChildren: packet.unpublishedChildren ?? [] });
   expect(compile.mock.lastCall![0].previous).toBe('scene' in initial ? initial.scene : undefined);
   const invalid = { ...packet, schemaVersion: 999 } as unknown as typeof packet;
   worker.onmessage!({ data: { operation: 'initializeNeighborhood', id: 3, generation: 4, packet: invalid, modeOptions: {} } });

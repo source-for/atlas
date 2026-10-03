@@ -5,9 +5,9 @@ import demoSnapshot from '../../../../fixtures/architecture/demo-snapshot.json';
 import demoView from '../../../../fixtures/architecture/demo-view.json';
 import demoStory from '../../../../fixtures/architecture/demo-story.json';
 import { initializeNeighborhoodBootstrap } from './neighborhoodBootstrap';
-import { compileScanScene, type ScanSceneInput } from './scanScene';
+import { compileScanScene } from './scanScene';
 import { compileScanNeighborhoodFixture, loadScanNeighborhoodFixture, ScanFixtureError, type ScanNeighborhoodHost } from './scanFixture';
-import type { SceneWorkerRequest, SceneWorkerResponse } from './sceneCompileProtocol';
+import type { SceneWorkerRequest, SceneWorkerResponse, SceneCompileRequest } from './sceneCompileProtocol';
 
 function largePacket(): ArchitectureNeighborhoodPacket {
   const snapshot = structuredClone(demoSnapshot) as unknown as ArchitectureSnapshot;
@@ -27,7 +27,7 @@ class ProcessingWorker {
   onmessage?: (event: { data: SceneWorkerResponse }) => void;
   onerror?: () => void;
   onmessageerror?: () => void;
-  graph?: ScanSceneInput['snapshot'];
+  graph?: SceneCompileRequest['graph'];
   terminated = false;
   terminate = vi.fn(() => { this.terminated = true; this.graph = undefined; });
   postMessage = vi.fn((request: SceneWorkerRequest) => {
@@ -36,11 +36,11 @@ class ProcessingWorker {
       if (this.terminated || ProcessingWorker.mode === 'silent') return;
       if ('operation' in copied) {
         const result = ProcessingWorker.mode === 'failed' ? { status: 'failed' as const } : initializeNeighborhoodBootstrap(copied.packet, copied.modeOptions);
-        if (result.status === 'ready') this.graph = copied.packet.snapshot;
+        if (result.status === 'ready') this.graph = { snapshot: copied.packet.snapshot, view: copied.packet.view, childCounts: copied.packet.childCounts, unpublishedChildren: copied.packet.unpublishedChildren ?? [] };
         this.onmessage?.({ data: structuredClone({ operation: 'initializeNeighborhood', id: copied.id, generation: copied.generation, ...result }) });
       } else {
-        this.graph = copied.graph?.snapshot ?? this.graph;
-        const scene = compileScanScene({ ...copied.input, snapshot: this.graph! });
+        this.graph = copied.graph ?? this.graph;
+        const scene = compileScanScene({ ...copied.input, ...this.graph! });
         this.onmessage?.({ data: structuredClone({ id: copied.id, generation: copied.generation, ok: true, scene, durationMs: 1 }) });
       }
     });
@@ -91,7 +91,7 @@ it('constructs the fixture only after validation and enriches with the original 
   const request = worker.postMessage.mock.calls[1]![0];
   expect('operation' in request).toBe(false);
   expect('graph' in request ? request.graph : undefined).toBeUndefined();
-  expect(worker.graph?.entities.length).toBe(packet.snapshot.entities.length);
+  expect(worker.graph?.snapshot.entities.length).toBe(packet.snapshot.entities.length);
   expect(enriched).toEqual(compileScanScene({ snapshot: packet.snapshot, view: packet.view, focusEntityId: packet.view.rootEntityId, boot: 'neighborhood', modeOptions: { targetAspect: 1.6 }, childCounts: packet.childCounts, unpublishedChildren: packet.unpublishedChildren ?? [] }));
   fixture.disposeSceneWorker(); expect(worker.terminate).toHaveBeenCalledOnce();
 });
