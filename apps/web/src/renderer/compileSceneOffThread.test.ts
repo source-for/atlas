@@ -2,7 +2,9 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { compileSceneOffThread, createSceneCompileSession } from './compileSceneOffThread';
 import type { ScanSceneInput } from './scanScene';
 import type { AtlasScene } from './types';
-import type { SceneCompileRequest } from './sceneCompileProtocol';
+import type { ArchitectureNeighborhoodPacket } from '@okie/architecture';
+import { subscribeLoadTiming } from '../performance/loadTimings';
+import type { SceneCompileRequest, NeighborhoodInitializeRequest } from './sceneCompileProtocol';
 const input = { focusEntityId: 'root', snapshot: {} } as ScanSceneInput;
 class WorkerStub {
   static latest: WorkerStub;
@@ -101,4 +103,82 @@ it('rejects disposed sessions without triggering synchronous fallback', async ()
   await rejected;
   await expect(session.compile(input, { generation: 0 })).rejects.toMatchObject({ name: 'AbortError' });
   expect(WorkerStub.latest.terminate).toHaveBeenCalledOnce();
+});
+
+const packet = { snapshot: input.snapshot, view: { rootEntityId: 'root' } } as ArchitectureNeighborhoodPacket;
+function replyInitialization(worker: WorkerStub, status: 'ready' | 'invalid' | 'failed' = 'ready') {
+  const request = worker.postMessage.mock.lastCall![0] as NeighborhoodInitializeRequest;
+  const scene = { rootEntityId: 'root' } as AtlasScene;
+  worker.onmessage?.({ data: { operation: 'initializeNeighborhood', id: request.id, generation: request.generation, status,
+    ...(status === 'ready' ? { scene, validateDurationMs: 7, sliceDurationMs: 2, compileDurationMs: 3 }
+      : status === 'invalid' ? { issues: [{ path: 'snapshot.entities[0]', message: 'invalid' }], validateDurationMs: 7 } : {}),
+  } });
+  return scene;
+}
+it('uploads the bootstrap packet once, retains full graph for enrichment and records scalar phases', async () => {
+  vi.stubGlobal('Worker', WorkerStub);
+  const samples: unknown[][] = [];
+  const stop = subscribeLoadTiming((...sample) => samples.push(sample));
+  const session = createSceneCompileSession();
+  const initial = session.initializeNeighborhood(packet, {}, { generation: 2 });
+  const worker = WorkerStub.latest;
+  expect(worker.postMessage.mock.lastCall![0].packet).toBe(packet);
+  const scene = replyInitialization(worker);
+  expect(await initial).toEqual({ status: 'ready', scene });
+  const enriched = session.compile({ ...input, previous: scene }, { generation: 2, priority: 'speculative' });
+  const request = worker.postMessage.mock.lastCall![0] as SceneCompileRequest;
+  expect(request.graph).toBeUndefined();
+  expect(request.input.previous).toBeUndefined();
+  expect(request.previousId).toBe(1);
+  worker.reply(); await enriched;
+  expect(worker.postMessage.mock.calls.filter(([request]) => request.packet || request.graph)).toHaveLength(1);
+  expect(samples.map(sample => sample[0])).toEqual(expect.arrayContaining([
+    'atlas-worker-post-message', 'atlas-worker-bootstrap-round-trip', 'atlas-worker-validate', 'atlas-worker-slice', 'atlas-worker-compile',
+  ]));
+  expect(samples.every(sample => sample.length === 3 && typeof sample[1] === 'number' && typeof sample[2] === 'number')).toBe(true);
+  stop(); session.dispose();
+});
+it('preserves invalid issue data rather than returning the fallback signal', async () => {
+  vi.stubGlobal('Worker', WorkerStub);
+  const session = createSceneCompileSession();
+  const result = session.initializeNeighborhood(packet, {}, { generation: 2 });
+  replyInitialization(WorkerStub.latest, 'invalid');
+  expect(await result).toEqual({ status: 'invalid', issues: [{ path: 'snapshot.entities[0]', message: 'invalid' }] });
+  expect(WorkerStub.latest.terminate).toHaveBeenCalledOnce(); session.dispose();
+});
+it('initialization fallback is limited to unsupported/error/timeout failures', async () => {
+  vi.stubGlobal('Worker', undefined);
+  let session = createSceneCompileSession();
+  expect(await session.initializeNeighborhood(packet, {}, { generation: 2 })).toBeUndefined(); session.dispose();
+  vi.stubGlobal('Worker', WorkerStub);
+  for (const fail of ['status', 'error', 'timeout']) {
+    if (fail === 'timeout') vi.useFakeTimers();
+    session = createSceneCompileSession();
+    const result = session.initializeNeighborhood(packet, {}, { generation: 2 });
+    if (fail === 'status') replyInitialization(WorkerStub.latest, 'failed');
+    else if (fail === 'error') WorkerStub.latest.onerror?.();
+    else { await vi.advanceTimersByTimeAsync(20_000); vi.useRealTimers(); }
+    expect(await result).toBeUndefined();
+    expect(WorkerStub.latest.terminate).toHaveBeenCalledOnce(); session.dispose();
+  }
+});
+it('aborts, supersedes and disposes initializer jobs without fallback or accepting late replies', async () => {
+  vi.stubGlobal('Worker', WorkerStub);
+  for (const action of ['abort', 'supersede', 'dispose']) {
+    const session = createSceneCompileSession();
+    const controller = new AbortController();
+    const first = session.initializeNeighborhood(packet, {}, { generation: 2, signal: controller.signal });
+    const rejection = expect(first).rejects.toMatchObject({ name: 'AbortError' });
+    const old = WorkerStub.latest;
+    if (action === 'abort') controller.abort();
+    else if (action === 'dispose') session.dispose();
+    else {
+      const next = session.initializeNeighborhood(packet, {}, { generation: 4 });
+      old.onmessage?.({ data: { operation: 'initializeNeighborhood', id: 1, generation: 2, status: 'invalid', issues: [] } });
+      replyInitialization(WorkerStub.latest); expect((await next)?.status).toBe('ready');
+      await expect(session.initializeNeighborhood(packet, {}, { generation: 2 })).rejects.toMatchObject({ name: 'AbortError' });
+    }
+    replyInitialization(old); await rejection;
+    expect(old.terminate).toHaveBeenCalledOnce(); session.dispose();
+  }
 });

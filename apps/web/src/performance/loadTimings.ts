@@ -1,4 +1,4 @@
-export type LoadMetric = 'atlas-fetch' | 'atlas-body' | 'atlas-parse' | 'atlas-validate' | 'atlas-story' | 'atlas-slice' | 'atlas-compile' | 'atlas-worker-compile' | 'atlas-worker-round-trip' | 'atlas-first-frame';
+export type LoadMetric = 'atlas-fetch' | 'atlas-body' | 'atlas-parse' | 'atlas-validate' | 'atlas-story' | 'atlas-slice' | 'atlas-compile' | 'atlas-worker-compile' | 'atlas-worker-validate' | 'atlas-worker-slice' | 'atlas-worker-post-message' | 'atlas-worker-bootstrap-round-trip' | 'atlas-worker-round-trip' | 'atlas-first-frame';
 type Listener = (metric: LoadMetric, startMs: number, durationMs: number) => void;
 const listeners = new Set<Listener>();
 let firstFrameSubmitted = false;
@@ -27,8 +27,12 @@ export async function measureAtlasAsyncPhase<T>(metric: LoadMetric, work: () => 
   finally { for (const listener of listeners) listener(metric, start, performance.now() - start); }
 }
 
-export function recordAtlasWorkerCompile(durationMs: number): void {
+export function recordAtlasWorkerPhase(metric: 'atlas-worker-compile' | 'atlas-worker-validate' | 'atlas-worker-slice', durationMs: number): void {
   if (!listeners.size || !Number.isFinite(durationMs) || durationMs < 0) return;
   const receipt = performance.now();
-  for (const listener of listeners) listener('atlas-worker-compile', receipt, durationMs);
+  for (const listener of listeners) listener(metric, receipt, durationMs);
+}
+
+export function recordAtlasWorkerCompile(durationMs: number): void {
+  recordAtlasWorkerPhase('atlas-worker-compile', durationMs);
 }

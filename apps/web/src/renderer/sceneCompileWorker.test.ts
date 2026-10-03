@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import type { SceneCompileRequest, SceneCompileResponse } from './sceneCompileProtocol';
+import type { SceneCompileRequest, SceneCompileResponse, SceneWorkerRequest, SceneWorkerResponse } from './sceneCompileProtocol';
 import type { ScanSceneInput } from './scanScene';
 const compile = vi.hoisted(() => vi.fn((input: ScanSceneInput) => ({ rootEntityId: input.focusEntityId, previous: input.previous })));
 vi.mock('./scanScene', () => ({ compileScanScene: compile }));
@@ -24,4 +24,31 @@ it('owns one graph generation and bounds previous scene references to the last t
   expect(send({ id: 5, generation: 1, input }).ok).toBe(false);
   expect(send({ id: 6, generation: 1, graph: { snapshot }, previousId: 3, input }).ok).toBe(false);
   expect(send({ id: 7, generation: 1, input }).ok).toBe(true);
+});
+
+it('initialization retains the full graph while compiling a temporary bootstrap slice', async () => {
+  const { sliceArchitectureNeighborhood } = await import('@okie/architecture');
+  const { default: snapshotDoc } = await import('../../../../fixtures/architecture/demo-snapshot.json');
+  const { default: viewDoc } = await import('../../../../fixtures/architecture/demo-view.json');
+  const snapshot = structuredClone(snapshotDoc) as unknown as ScanSceneInput['snapshot'];
+  const view = structuredClone(viewDoc) as unknown as ScanSceneInput['view'];
+  const owner = snapshot.entities.find(entity => entity.kind === 'component')!;
+  snapshot.entities.push(...Array.from({ length: 150 }, (_, i) => ({ id: `code:worker-${i}`, name: `code${i}`, kind: 'code' as const, parentId: owner.id, sourceRefs: [] })));
+  const packet = { ...sliceArchitectureNeighborhood(snapshot, view, { focusEntityId: view.rootEntityId }), snapshot, view };
+  const worker = { onmessage: null as ((event: { data: SceneWorkerRequest }) => void) | null, postMessage: vi.fn() };
+  vi.stubGlobal('self', worker); await import('./sceneCompileWorker');
+  worker.onmessage!({ data: { operation: 'initializeNeighborhood', id: 1, generation: 2, packet, modeOptions: {} } });
+  const initial = worker.postMessage.mock.lastCall![0] as SceneWorkerResponse;
+  expect('status' in initial && initial.status).toBe('ready');
+  expect(compile.mock.lastCall![0].snapshot).not.toBe(snapshot);
+  const input = { focusEntityId: view.rootEntityId, view, boot: 'neighborhood', modeOptions: {}, childCounts: packet.childCounts, unpublishedChildren: [] } as Omit<ScanSceneInput, 'snapshot'>;
+  worker.onmessage!({ data: { id: 2, generation: 2, input, previousId: 1 } });
+  expect(compile.mock.lastCall![0].snapshot).toBe(snapshot);
+  expect(compile.mock.lastCall![0].previous).toBe('scene' in initial ? initial.scene : undefined);
+  const invalid = { ...packet, schemaVersion: 999 } as unknown as typeof packet;
+  worker.onmessage!({ data: { operation: 'initializeNeighborhood', id: 3, generation: 4, packet: invalid, modeOptions: {} } });
+  const response = worker.postMessage.mock.lastCall![0] as SceneWorkerResponse;
+  expect('status' in response && response.status).toBe('invalid');
+  worker.onmessage!({ data: { id: 4, generation: 2, input } });
+  expect((worker.postMessage.mock.lastCall![0] as SceneCompileResponse).ok).toBe(false);
 });

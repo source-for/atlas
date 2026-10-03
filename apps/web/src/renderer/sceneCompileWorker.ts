@@ -1,13 +1,34 @@
 import { compileScanScene, type ScanSceneInput } from './scanScene';
 import type { AtlasScene } from './types';
-import type { SceneCompileRequest, SceneCompileResponse } from './sceneCompileProtocol';
+import type { SceneWorkerRequest, SceneWorkerResponse } from './sceneCompileProtocol';
+import { initializeNeighborhoodBootstrap } from './neighborhoodBootstrap';
 
-const worker = self as unknown as { onmessage: ((event: MessageEvent<SceneCompileRequest>) => void) | null; postMessage(value: SceneCompileResponse): void };
+const worker = self as unknown as { onmessage: ((event: MessageEvent<SceneWorkerRequest>) => void) | null; postMessage(value: SceneWorkerResponse): void };
 let graph: Pick<ScanSceneInput, 'snapshot'> | undefined;
 let generation: number | undefined;
 const scenes = new Map<number, AtlasScene>();
+const retainScene = (id: number, scene: AtlasScene) => {
+  scenes.set(id, scene);
+  while (scenes.size > 2) scenes.delete(scenes.keys().next().value!);
+};
 worker.onmessage = event => {
   const request = event.data;
+  if ('operation' in request) {
+    // Failed/invalid initialization must not leave any older graph usable.
+    graph = undefined; generation = undefined; scenes.clear();
+    try {
+      const result = initializeNeighborhoodBootstrap(request.packet, request.modeOptions);
+      if (result.status === 'ready') {
+        graph = { snapshot: request.packet.snapshot };
+        generation = request.generation;
+        retainScene(request.id, result.scene);
+      }
+      worker.postMessage({ operation: 'initializeNeighborhood', id: request.id, generation: request.generation, ...result });
+    } catch {
+      worker.postMessage({ operation: 'initializeNeighborhood', id: request.id, generation: request.generation, status: 'failed' });
+    }
+    return;
+  }
   try {
     if (request.graph) {
       graph = request.graph;
@@ -19,8 +40,7 @@ worker.onmessage = event => {
     if (request.previousId !== undefined && !previous) throw new Error('Missing previous scene');
     const start = performance.now();
     const scene = compileScanScene({ ...request.input, ...graph, previous });
-    scenes.set(request.id, scene);
-    while (scenes.size > 2) scenes.delete(scenes.keys().next().value!);
+    retainScene(request.id, scene);
     worker.postMessage({ id: request.id, generation: request.generation, ok: true, scene, durationMs: performance.now() - start });
   } catch {
     // Scalar diagnostics only: source and error text never leave the worker.

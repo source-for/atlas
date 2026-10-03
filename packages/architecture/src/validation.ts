@@ -359,11 +359,15 @@ export function validateView(snapshot: ArchitectureSnapshot, view: ArchitectureV
   if (view.schemaVersion !== ARCHITECTURE_SCHEMA_VERSION) issues.push({ path: "schemaVersion", message: `expected ${ARCHITECTURE_SCHEMA_VERSION}` });
   if (view.snapshotId !== snapshot.id) issues.push({ path: "snapshotId", message: "does not match snapshot" });
   const entityIds = new Set(snapshot.entities.map((entity) => entity.id));
-  const relationIds = new Set(snapshot.relations.map((relation) => relation.id));
+  const relationById = new Map<string, ArchitectureSnapshot["relations"][number]>();
+  for (const relation of snapshot.relations) {
+    // Preserve find()'s first match even when an invalid snapshot repeats an ID.
+    if (!relationById.has(relation.id)) relationById.set(relation.id, relation);
+  }
   const visibleEntityIds = new Set(view.entityIds);
   const visibleRelationIds = new Set(view.relationIds);
   if (!entityIds.has(view.rootEntityId)) issues.push({ path: "rootEntityId", message: "is not in the snapshot" });
-  if (!view.entityIds.includes(view.rootEntityId)) issues.push({ path: "rootEntityId", message: "must be included in entityIds" });
+  if (!visibleEntityIds.has(view.rootEntityId)) issues.push({ path: "rootEntityId", message: "must be included in entityIds" });
   if (!view.entityIds.length) issues.push({ path: "entityIds", message: "must not be empty" });
   for (const id of duplicateValues(view.entityIds)) issues.push({ path: "entityIds", message: `duplicate entity id: ${id}` });
   for (const id of view.entityIds) {
@@ -376,9 +380,9 @@ export function validateView(snapshot: ArchitectureSnapshot, view: ArchitectureV
     validateRect(layout, `layout.nodes.${id}`, issues);
   }
   for (const id of view.relationIds) {
-    if (!relationIds.has(id)) issues.push({ path: "relationIds", message: `unknown relation: ${id}` });
-    const relation = snapshot.relations.find((candidate) => candidate.id === id);
-    if (relation && (!view.entityIds.includes(relation.from) || !view.entityIds.includes(relation.to))) {
+    if (!relationById.has(id)) issues.push({ path: "relationIds", message: `unknown relation: ${id}` });
+    const relation = relationById.get(id);
+    if (relation && (!visibleEntityIds.has(relation.from) || !visibleEntityIds.has(relation.to))) {
       issues.push({ path: "relationIds", message: `relation endpoints must both be in the view: ${id}` });
     }
   }
