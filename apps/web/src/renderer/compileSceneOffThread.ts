@@ -1,19 +1,27 @@
 import { workerSceneOrigin } from './lazyBandCompile';
-import { recordAtlasWorkerCompile } from '../performance/loadTimings';
-import { guardScanCompile, type ScanSceneInput } from './scanScene';
+import type { ArchitectureNeighborhoodPacket, ValidationIssue } from '@okie/architecture';
+import { measureAtlasAsyncPhase, measureAtlasPhase, recordAtlasWorkerCompile, recordAtlasWorkerPhase } from '../performance/loadTimings';
+import { guardScanCompile, type ScanSceneInput, type ScanModeOptions } from './scanScene';
 import type { AtlasScene } from './types';
-import type { SceneCompileRequest, SceneCompileResponse } from './sceneCompileProtocol';
+import type { SceneWorkerRequest, SceneWorkerResponse } from './sceneCompileProtocol';
 
 export type SceneCompileOptions = { generation: number; priority?: 'selected' | 'speculative'; signal?: AbortSignal };
+export type NeighborhoodInitialization = { status: 'ready'; scene: AtlasScene } | { status: 'invalid'; issues: ValidationIssue[] };
 export type SceneCompileSession = {
   compile(input: ScanSceneInput, options: SceneCompileOptions): Promise<AtlasScene | undefined>;
+  /** Only fresh, exclusively owned packets may be supplied: do not publish/mutate
+   * the main-thread packet while its worker clone is being validated. */
+  initializeNeighborhood(packet: ArchitectureNeighborhoodPacket, modeOptions: ScanModeOptions, options: SceneCompileOptions): Promise<NeighborhoodInitialization | undefined>;
   dispose(): void;
 };
+type JobInput = { kind: 'compile'; input: ScanSceneInput } | { kind: 'initialize'; packet: ArchitectureNeighborhoodPacket; modeOptions: ScanModeOptions };
+type JobResult = AtlasScene | NeighborhoodInitialization | undefined;
 type Job = {
-  id: number; input: ScanSceneInput; options: SceneCompileOptions;
-  resolve(scene: AtlasScene | undefined): void; reject(reason: unknown): void;
+  id: number; payload: JobInput; options: SceneCompileOptions;
+  resolve(result: JobResult): void; reject(reason: unknown): void;
   abort: () => void; timer?: ReturnType<typeof setTimeout>; abandoned?: boolean; settled?: boolean;
 };
+const snapshotFor = (payload: JobInput) => payload.kind === 'compile' ? payload.input.snapshot : payload.packet.snapshot;
 
 /** One graph generation, two retained scenes and at most one queued job per priority.
  * A caller must advance generation after mutating its snapshot. Active synchronous
@@ -33,20 +41,20 @@ export function createSceneCompileSession(): SceneCompileSession {
   let disposed = false;
   let nextId = 0;
   const scenes = new Map<AtlasScene, number>();
-  const retainScene = (job: Job, scene: AtlasScene) => {
-    scenes.set(scene, job.id);
-    while (scenes.size > 2) scenes.delete(scenes.keys().next().value!);
-  };
-  const settle = (job: Job, scene?: AtlasScene, aborted = false) => {
+  const settle = (job: Job, result?: JobResult, aborted = false) => {
     if (job.settled) return;
     job.settled = true;
     if (!job.abandoned) clearTimeout(job.timer);
     job.options.signal?.removeEventListener('abort', job.abort);
     if (aborted) job.reject(job.options.signal?.reason ?? new DOMException('Aborted', 'AbortError'));
-    else job.resolve(scene);
+    else job.resolve(result);
   };
   const reset = () => {
     worker?.terminate(); worker = undefined; workerGeneration = undefined; workerSnapshot = undefined; scenes.clear();
+  };
+  const retainScene = (job: Job, scene: AtlasScene) => {
+    scenes.set(scene, job.id);
+    while (scenes.size > 2) scenes.delete(scenes.keys().next().value!);
   };
   const pump = () => {
     if (disposed || active) return;
@@ -66,17 +74,34 @@ export function createSceneCompileSession(): SceneCompileSession {
     const currentWorker = worker;
     currentWorker.onmessage = event => {
       if (worker !== currentWorker || active !== job) return;
-      const result = event.data as SceneCompileResponse;
+      const result = event.data as SceneWorkerResponse;
       if (result.id !== job.id || result.generation !== job.options.generation) return;
       // The caller is gone, but worker retention still advances. Do not validate
       // an older guarded result against a snapshot that has since been merged.
       if (job.abandoned) {
-        if (result.ok && result.scene) retainScene(job, result.scene);
+        if (!('operation' in result) && result.ok && result.scene) retainScene(job, result.scene);
         clearTimeout(job.timer); active = undefined; pump(); return;
       }
-      let validScope = result.scene?.rootEntityId === job.input.focusEntityId;
+      if (job.payload.kind === 'initialize') {
+        if (!('operation' in result) || result.status === 'failed') { fail(); return; }
+        recordAtlasWorkerPhase('atlas-worker-validate', result.validateDurationMs);
+        if (result.status === 'invalid') {
+          active = undefined; reset(); settle(job, { status: 'invalid', issues: result.issues }); pump(); return;
+        }
+        if (result.scene.rootEntityId !== job.payload.packet.view.rootEntityId) { fail(); return; }
+        recordAtlasWorkerPhase('atlas-worker-slice', result.sliceDurationMs);
+        recordAtlasWorkerCompile(result.compileDurationMs);
+        // The worker retained the full validated snapshot, not its temporary L1 slice.
+        workerGeneration = job.options.generation;
+        workerSnapshot = job.payload.packet.snapshot;
+        scenes.clear(); retainScene(job, result.scene);
+        active = undefined; settle(job, { status: 'ready', scene: result.scene }); pump(); return;
+      }
+      if ('operation' in result) { fail(); return; }
+      const requested = job.payload.input;
+      let validScope = result.scene?.rootEntityId === requested.focusEntityId;
       if (!validScope && result.scene?.scanGuardRefusal) {
-        const expected = guardScanCompile(job.input.snapshot, job.input.focusEntityId, job.input.view.rootEntityId);
+        const expected = guardScanCompile(requested.snapshot, requested.focusEntityId, requested.view.rootEntityId);
         const actual = result.scene.scanGuardRefusal;
         validScope = Boolean(expected.refusal && result.scene.rootEntityId === expected.focusEntityId
           && actual.requestedFocusId === expected.refusal.requestedFocusId
@@ -93,22 +118,28 @@ export function createSceneCompileSession(): SceneCompileSession {
     currentWorker.onerror = fail;
     currentWorker.onmessageerror = fail;
     job.timer = setTimeout(fail, 20_000);
-    const { snapshot, view, childCounts, unpublishedChildren, ...input } = job.input;
-    const needsGraph = workerGeneration !== job.options.generation || workerSnapshot !== snapshot;
-    const previousId = needsGraph || !input.previous ? undefined : scenes.get(workerSceneOrigin(input.previous));
-    if (previousId !== undefined) delete input.previous;
-    const request: SceneCompileRequest = {
-      id: job.id, generation: job.options.generation, input, previousId,
-      ...(needsGraph ? { graph: { snapshot, view, childCounts, unpublishedChildren } } : {}),
-    };
+    let request: SceneWorkerRequest;
+    let needsGraph = false;
+    const snapshot = snapshotFor(job.payload);
+    if (job.payload.kind === 'initialize') {
+      request = { operation: 'initializeNeighborhood', id: job.id, generation: job.options.generation,
+        packet: job.payload.packet, modeOptions: job.payload.modeOptions };
+    } else {
+      const { snapshot: _snapshot, view, childCounts, unpublishedChildren, ...input } = job.payload.input;
+      needsGraph = workerGeneration !== job.options.generation || workerSnapshot !== snapshot;
+      const previousId = needsGraph || !input.previous ? undefined : scenes.get(workerSceneOrigin(input.previous));
+      if (previousId !== undefined) delete input.previous;
+      request = { id: job.id, generation: job.options.generation, input, previousId,
+        ...(needsGraph ? { graph: { snapshot, view, childCounts, unpublishedChildren } } : {}) };
+    }
     try {
-      currentWorker.postMessage(request);
+      measureAtlasPhase('atlas-worker-post-message', () => currentWorker.postMessage(request));
       if (needsGraph) { workerGeneration = job.options.generation; workerSnapshot = snapshot; scenes.clear(); }
     } catch { fail(); }
   };
   const cancel = (job: Job, aborted = true) => {
     if (active === job) {
-      if (!disposed && job.options.priority !== 'speculative') {
+      if (!disposed && job.payload.kind === 'compile' && job.options.priority !== 'speculative') {
         job.abandoned = true; settle(job, undefined, aborted); return;
       }
       clearTimeout(job.timer); active = undefined; reset();
@@ -117,34 +148,39 @@ export function createSceneCompileSession(): SceneCompileSession {
     if (speculative === job) speculative = undefined;
     settle(job, undefined, aborted);
   };
+  const enqueue = (payload: JobInput, options: SceneCompileOptions): Promise<JobResult> => {
+    if (options.signal?.aborted) return Promise.reject(options.signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    if (disposed) return Promise.reject(new DOMException('Disposed', 'AbortError'));
+    const snapshot = snapshotFor(payload);
+    if (latestGeneration !== undefined && options.generation < latestGeneration) return Promise.reject(new DOMException('Stale generation', 'AbortError'));
+    if (latestGeneration !== options.generation || latestSnapshot !== snapshot) {
+      latestGeneration = options.generation;
+      latestSnapshot = snapshot;
+      if (active) cancel(active);
+      if (selected) cancel(selected);
+      if (speculative) cancel(speculative);
+    }
+    return new Promise((resolve, reject) => {
+      const job: Job = { id: ++nextId, payload, options, resolve, reject, abort: () => { cancel(job, true); pump(); } };
+      options.signal?.addEventListener('abort', job.abort, { once: true });
+      if (options.priority === 'speculative') {
+        if (speculative) cancel(speculative);
+        speculative = job;
+      } else {
+        if (selected) cancel(selected);
+        if (active) cancel(active);
+        selected = job;
+      }
+      pump();
+    });
+  };
   return {
     compile(input, options) {
-      if (options.signal?.aborted) return Promise.reject(options.signal.reason ?? new DOMException('Aborted', 'AbortError'));
-      if (disposed) return Promise.reject(new DOMException('Disposed', 'AbortError'));
-      // Older generation requests cannot resurrect a graph after publication advances.
-      if (latestGeneration !== undefined && options.generation < latestGeneration) return Promise.reject(new DOMException('Stale generation', 'AbortError'));
-      if (latestGeneration !== options.generation || latestSnapshot !== input.snapshot) {
-        latestGeneration = options.generation;
-        latestSnapshot = input.snapshot;
-        if (active) cancel(active);
-        if (selected) cancel(selected);
-        if (speculative) cancel(speculative);
-      }
-      return new Promise((resolve, reject) => {
-        const job: Job = { id: ++nextId, input, options, resolve, reject, abort: () => { cancel(job, true); pump(); } };
-        options.signal?.addEventListener('abort', job.abort, { once: true });
-        if (options.priority === 'speculative') {
-          if (speculative) cancel(speculative);
-          speculative = job;
-        } else {
-          if (selected) cancel(selected);
-          // Selected work abandons a caller without re-cloning its graph;
-          // speculative work can be interrupted to make room immediately.
-          if (active) cancel(active);
-          selected = job;
-        }
-        pump();
-      });
+      return enqueue({ kind: 'compile', input }, options) as Promise<AtlasScene | undefined>;
+    },
+    initializeNeighborhood(packet, modeOptions, options) {
+      return measureAtlasAsyncPhase('atlas-worker-bootstrap-round-trip', () =>
+        enqueue({ kind: 'initialize', packet, modeOptions }, options)) as Promise<NeighborhoodInitialization | undefined>;
     },
     dispose() {
       disposed = true;
