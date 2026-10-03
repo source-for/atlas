@@ -338,6 +338,18 @@ describe('CLA-73 slim neighborhood boot', () => {
     const loaded = await fixture.ensureExcerpts('code:web-shell:app');
     expect(loaded?.[0]?.text).toContain('export function App()');
 
+    const sourceEntity = fixture.snapshot.entities.find(entity => entity.id === 'component:web-shell');
+    expect(sourceEntity).toBeDefined();
+    sourceEntity!.sourceExcerpts = undefined;
+    const generation = fixture.getSceneGeneration();
+    const attached = await fixture.ensureExcerpts('component:web-shell');
+    expect(attached?.[0]?.text).toContain('export function App()');
+    expect(fixture.getSceneGeneration()).toBe(generation + 1);
+    await fixture.ensureExcerpts('component:web-shell');
+    expect(fixture.getSceneGeneration()).toBe(generation + 1);
+    // This fixture shares packet entities with the separate deep-link case below.
+    sourceEntity!.sourceExcerpts = undefined;
+
     const requested: string[] = [];
     const deepHost = {
       ...host,

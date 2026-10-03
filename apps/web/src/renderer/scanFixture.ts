@@ -1,5 +1,8 @@
+import { createSceneCompileSession, type SceneCompileSession } from './compileSceneOffThread';
+import { measureAtlasPhase, measureAtlasAsyncPhase } from '../performance/loadTimings';
 import {
   assignNeighborhoodSnapshot,
+  sliceArchitectureNeighborhood,
   c4BandForKind,
   isNeighborhoodPacket,
   mergeChildCounts,
@@ -71,6 +74,11 @@ export type ScanFixture = {
   stories: AppStoryPlan[];
   /** Recompiles the scan snapshot for a new focus/root (drill-in, restore).
    *  Routed through the anti-hang guard, so no path can compile the whole graph. */
+  getSceneGeneration: () => number;
+  disposeSceneWorker: () => void;
+  prepareInitialScene: (signal?: AbortSignal) => Promise<void>;
+  enrichInitialScene: (signal?: AbortSignal) => Promise<AtlasScene | undefined>;
+  createSceneAsync: (focusEntityId: string, previous?: AtlasScene, residency?: ScanViewportResidency, signal?: AbortSignal) => Promise<AtlasScene>;
   createScene: (focusEntityId: string, previous?: AtlasScene, residency?: ScanViewportResidency) => AtlasScene;
   /** Scoped-compile options for a derived (flow/Mermaid) projection of a focus, so
    *  those direct-`buildC4ProjectionBundle` bypass paths stay scoped too. */
@@ -134,7 +142,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function scopedValidate(label: string, validate: () => ValidationIssue[]): ValidationIssue[] {
   try {
-    return validate().map(issue => ({ path: issue.path ? `${label}.${issue.path}` : label, message: issue.message }));
+    return measureAtlasPhase('atlas-validate', validate).map(issue => ({ path: issue.path ? `${label}.${issue.path}` : label, message: issue.message }));
   } catch (error) {
     return [{ path: label, message: error instanceof Error ? error.message : 'is structurally invalid' }];
   }
@@ -185,12 +193,51 @@ function buildLiveScanFixture(
     return fetchedDeeperThanRoot || !snapshotHasContextPeers();
   };
 
+  let initialScene: AtlasScene | undefined;
+  let snapshotGeneration = 0;
+  let sceneWorker: SceneCompileSession | undefined;
+  const workerSession = () => sceneWorker ??= createSceneCompileSession();
+  // Even generations identify full graphs; the preceding odd generation is
+  // reserved for a bootstrap slice. A snapshot merge advances both identities.
+  const fullWorkerGeneration = () => snapshotGeneration * 2 + 2;
+  const disposeSceneWorker = () => {
+    sceneWorker?.dispose();
+    sceneWorker = undefined;
+  };
+  const prepareInitialScene = async (signal?: AbortSignal) => {
+    const generation = snapshotGeneration;
+    const first = extras.boot === 'neighborhood' && snapshot.entities.length > 128
+      ? measureAtlasPhase('atlas-slice', () => sliceArchitectureNeighborhood(snapshot, view, { focusEntityId: view.rootEntityId, maxBand: 'container' }))
+      : undefined;
+    const input = { snapshot: first?.snapshot ?? snapshot, view: first?.view ?? view, focusEntityId: view.rootEntityId, boot: extras.boot, modeOptions: options, childCounts, unpublishedChildren: first?.unpublishedChildren ?? unpublishedChildren };
+    const prepared = await measureAtlasAsyncPhase('atlas-worker-round-trip', () => workerSession().compile(input, { generation: fullWorkerGeneration() - (first ? 1 : 0), signal }));
+    if (generation === snapshotGeneration) initialScene = prepared ?? measureAtlasPhase('atlas-compile', () => compileScanScene(input));
+  };
+  let enrichment: Promise<AtlasScene | undefined> | undefined;
+  const enrichInitialScene = (signal?: AbortSignal): Promise<AtlasScene | undefined> => {
+    if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    if (enrichment) return enrichment;
+    const work = (async () => {
+    if (extras.boot !== 'neighborhood' || snapshot.entities.length <= 128) return undefined;
+    const generation = snapshotGeneration;
+    const prepared = await measureAtlasAsyncPhase('atlas-worker-round-trip', () => workerSession().compile({ snapshot, view, focusEntityId: view.rootEntityId, boot: extras.boot, modeOptions: options, childCounts, unpublishedChildren }, { generation: fullWorkerGeneration(), priority: 'speculative', signal }));
+    if (generation !== snapshotGeneration) return undefined;
+    if (prepared) initialScene = prepared;
+    return prepared;
+    })();
+    enrichment = work;
+    const reset = () => { if (enrichment === work) enrichment = undefined; };
+    signal?.addEventListener('abort', reset, { once: true });
+    void work.finally(() => signal?.removeEventListener('abort', reset)).catch(() => undefined);
+    return work;
+  };
   const createScene = (
     focusEntityId: string,
     previous?: AtlasScene,
     residency?: ScanViewportResidency,
   ): AtlasScene => {
-    return compileScanScene({
+    if (initialScene && focusEntityId === view.rootEntityId && !previous && !residency) return initialScene;
+    return measureAtlasPhase('atlas-compile', () => compileScanScene({
       snapshot,
       view,
       focusEntityId,
@@ -200,7 +247,14 @@ function buildLiveScanFixture(
       unpublishedChildren,
       ...(previous ? { previous } : {}),
       ...(residency ? { residency } : {}),
-    });
+    }));
+  };
+
+  const createSceneAsync = async (focusEntityId: string, previous?: AtlasScene, residency?: ScanViewportResidency, signal?: AbortSignal): Promise<AtlasScene> => {
+    const generation = snapshotGeneration;
+    const prepared = await measureAtlasAsyncPhase('atlas-worker-round-trip', () => workerSession().compile({ snapshot, view, focusEntityId, boot: extras.boot, modeOptions: options, childCounts, unpublishedChildren, ...(previous ? { previous } : {}), ...(residency ? { residency } : {}) }, { generation: fullWorkerGeneration(), priority: 'selected', signal }));
+    if (signal?.aborted || generation !== snapshotGeneration) throw signal?.reason ?? new DOMException('Snapshot changed', 'AbortError');
+    return prepared ?? createScene(focusEntityId, previous, residency);
   };
 
   const ensureNeighborhood = async (focusEntityId: string): Promise<void> => {
@@ -227,8 +281,10 @@ function buildLiveScanFixture(
     }
     const work = (async () => {
       const packet = await host.loadNeighborhood(focus);
-      const packetIssues = validateNeighborhoodPacket(packet);
+      const packetIssues = measureAtlasPhase('atlas-validate', () => validateNeighborhoodPacket(packet));
       if (packetIssues.length) throw new ScanFixtureError(packetIssues);
+      snapshotGeneration++;
+      initialScene = undefined;
       assignNeighborhoodSnapshot(snapshot, packet.snapshot);
       for (const id of packet.view.entityIds) {
         if (!view.entityIds.includes(id)) view.entityIds.push(id);
@@ -273,7 +329,12 @@ function buildLiveScanFixture(
     if (existing?.sourceExcerpts?.length) return existing.sourceExcerpts;
     if (!host) return existing?.sourceExcerpts;
     const excerpts = await host.loadExcerpts(entityId);
-    if (excerpts?.length && existing) existing.sourceExcerpts = excerpts;
+    if (excerpts?.length && existing) {
+      existing.sourceExcerpts = excerpts;
+      // Worker graphs include evidence, not only drawable geometry.
+      snapshotGeneration++;
+      initialScene = undefined;
+    }
     return excerpts;
   };
 
@@ -283,6 +344,11 @@ function buildLiveScanFixture(
     story,
     stories: extras.stories?.length ? extras.stories : [story],
     createScene,
+    getSceneGeneration: () => snapshotGeneration,
+    disposeSceneWorker,
+    prepareInitialScene,
+    enrichInitialScene,
+    createSceneAsync,
     scopeCompileOptions: (focusEntityId: string) => scanScopeCompileOptions(snapshot, focusEntityId),
     ...(options.targetAspect !== undefined ? { targetAspect: options.targetAspect } : {}),
     navigation: {
@@ -317,7 +383,7 @@ function compilePublishedStories(
   for (const story of parsePublishedStoryCatalog(rawCatalog)) {
     if (seen.has(story.id)) continue;
     try {
-      const plan = compileAppStoryPlan(snapshot, view, story, options);
+      const plan = measureAtlasPhase('atlas-story', () => compileAppStoryPlan(snapshot, view, story, options));
       plans.push(plan);
       seen.add(plan.id);
     } catch {
@@ -352,7 +418,7 @@ export function compileScanFixture(raw: RawScanTrio, options: ScanModeOptions = 
 
   let story: AppStoryPlan;
   try {
-    story = compileAppStoryPlan(snapshot, view, raw.story as ArchitectureStory);
+    story = measureAtlasPhase('atlas-story', () => compileAppStoryPlan(snapshot, view, raw.story as ArchitectureStory));
   } catch (error) {
     throw new ScanFixtureError([{ path: 'story', message: error instanceof Error ? error.message : String(error) }]);
   }
@@ -371,12 +437,12 @@ export function compileScanNeighborhoodFixture(
   options: ScanModeOptions = {},
   rawStories?: unknown,
 ): ScanFixture {
-  const packetIssues = validateNeighborhoodPacket(packet);
+  const packetIssues = measureAtlasPhase('atlas-validate', () => validateNeighborhoodPacket(packet));
   if (packetIssues.length) throw new ScanFixtureError(packetIssues);
   if (!isRecord(rawStory)) throw new ScanFixtureError([{ path: 'story', message: 'must be a JSON object' }]);
   let story: AppStoryPlan;
   try {
-    story = compileAppStoryPlan(packet.snapshot, packet.view, rawStory as unknown as ArchitectureStory, { allowMissingFocus: true });
+    story = measureAtlasPhase('atlas-story', () => compileAppStoryPlan(packet.snapshot, packet.view, rawStory as unknown as ArchitectureStory, { allowMissingFocus: true }));
   } catch (error) {
     throw new ScanFixtureError([{ path: 'story', message: error instanceof Error ? error.message : String(error) }]);
   }
@@ -437,7 +503,7 @@ export function fetchScanTrioLoader(slug?: string, fetchImpl: typeof fetch = fet
       : `/scan/${name}.json`;
     let response: Response;
     try {
-      response = await fetchImpl(path);
+      response = await measureAtlasAsyncPhase('atlas-fetch', () => fetchImpl(path));
     } catch (error) {
       throw new ScanFixtureError([{
         path: name,
@@ -453,7 +519,8 @@ export function fetchScanTrioLoader(slug?: string, fetchImpl: typeof fetch = fet
       }]);
     }
     try {
-      return await response.json() as unknown;
+      const text = await measureAtlasAsyncPhase('atlas-body', () => response.text());
+    return measureAtlasPhase('atlas-parse', () => JSON.parse(text)) as unknown;
     } catch {
       throw new ScanFixtureError([{ path: name, message: `${path} is not valid JSON.` }]);
     }
@@ -515,13 +582,14 @@ async function loadOptionalStoryCatalog(slug?: string, fetchImpl: typeof fetch =
 async function fetchOptionalScanJson(path: string, fetchImpl: typeof fetch): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetchImpl(path);
+    response = await measureAtlasAsyncPhase('atlas-fetch', () => fetchImpl(path));
   } catch {
     return undefined;
   }
   if (response.status === 404 || !response.ok) return undefined;
   try {
-    return await response.json() as unknown;
+    const text = await measureAtlasAsyncPhase('atlas-body', () => response.text());
+    return measureAtlasPhase('atlas-parse', () => JSON.parse(text)) as unknown;
   } catch {
     return undefined;
   }
@@ -569,7 +637,7 @@ function scanObjectPath(slug: string | undefined, basename: string, query?: stri
 async function fetchScanJson(path: string, fetchImpl: typeof fetch, label: string): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetchImpl(path);
+    response = await measureAtlasAsyncPhase('atlas-fetch', () => fetchImpl(path));
   } catch (error) {
     throw new ScanFixtureError([{
       path: label,
@@ -585,7 +653,8 @@ async function fetchScanJson(path: string, fetchImpl: typeof fetch, label: strin
     }]);
   }
   try {
-    return await response.json() as unknown;
+    const text = await measureAtlasAsyncPhase('atlas-body', () => response.text());
+    return measureAtlasPhase('atlas-parse', () => JSON.parse(text)) as unknown;
   } catch {
     throw new ScanFixtureError([{ path: label, message: `${path} is not valid JSON.` }]);
   }
@@ -666,7 +735,9 @@ export async function loadScanFixture(
     loadOptionalStoryCatalog(slug),
     load && !slug ? Promise.resolve(undefined) : loadPublishedEnrichmentHonesty(slug),
   ]);
-  return withEnrichmentHonesty(compileScanFixture({ snapshot, view, story, stories: catalog }, options), honesty);
+  const fixture = withEnrichmentHonesty(compileScanFixture({ snapshot, view, story, stories: catalog }, options), honesty);
+  await fixture.prepareInitialScene();
+  return fixture;
 }
 
 export async function loadScanNeighborhoodFixture(
@@ -684,6 +755,7 @@ export async function loadScanNeighborhoodFixture(
     honestyFromHost(host),
   ]);
   const fixture = withEnrichmentHonesty(compileScanNeighborhoodFixture(packet, story, host, options, catalog), honesty);
+  await fixture.prepareInitialScene();
   const publication = host.publication?.();
   return publication ? { ...fixture, publication } : fixture;
 }

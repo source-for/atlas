@@ -18,7 +18,10 @@ describe('CLA-74: viewport neighborhood is camera-resident tiles', () => {
   it('does not inherit the previous band camera on Open inside / prefetch', () => {
     expect(app).not.toContain('cameraOverride ?? renderedCameraRef.current');
     expect(app).toContain('const windowCamera = scanKeepsResidentL3Landmarks(activeSnapshot, focusEntityId)');
-    expect(app).toContain('composeScene(focusId, scene, authoringHistoryRef.current.present)');
+    const prefetch = app.slice(app.indexOf('function prefetchCommittedBox('), app.indexOf('function revealOmittedEntity('));
+    expect(prefetch).toContain('await fixture.ensureNeighborhood(focusId)');
+    expect(prefetch).not.toContain('composeScene(');
+    expect(prefetch).not.toContain('createSceneAsync(');
   });
 
   it('does not rewrite slim-boot fetch or raise the 2000 hang-guard', () => {
