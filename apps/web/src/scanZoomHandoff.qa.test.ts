@@ -82,7 +82,7 @@ describe('CLA-104: continuous zoom L2→L3 hands off the focused container graph
     expect(refreshViewportNeighborhood).toContain('composeScanSceneAsync(compileFocus, sourceScene, request.signal, next)');
     expect(refreshViewportNeighborhood).toContain('viewportRequestedTileRef.current !== tileKey');
     expect(refreshViewportNeighborhood).not.toContain('updateCamera(');
-    expect(refreshViewportNeighborhood).toContain('if (!scanFixture || foregroundSceneRequestRef.current.pending() || levelScenePreparationPending(levelCompileAbortRef.current) || zoomHandoffInflightRef.current) return;');
+    expect(refreshViewportNeighborhood).toContain('if (!scanFixture || foregroundSceneRequestRef.current.pending() || levelScenePreparationPending(levelCompileAbortRef.current) || reverseScenePendingRef.current || zoomHandoffInflightRef.current) return;');
     expect(maybeScanZoomHandoff).toContain('if (!scanFixture || foregroundSceneRequestRef.current.pending() || levelScenePreparationPending(levelCompileAbortRef.current)) return false;');
     expect(applyScanZoomHandoff).not.toContain('composeScene(');
     expect(settleCamera).toContain('maybeScanZoomHandoff(');

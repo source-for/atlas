@@ -93,7 +93,7 @@ export type ScanFixture = {
   disposeSceneWorker: () => void;
   prepareInitialScene: (signal?: AbortSignal, options?: { worker: false }) => Promise<void>;
   enrichInitialScene: (signal?: AbortSignal) => Promise<AtlasScene | undefined>;
-  createSceneAsync: (focusEntityId: string, previous?: AtlasScene, residency?: ScanViewportResidency, signal?: AbortSignal) => Promise<AtlasScene>;
+  createSceneAsync: (focusEntityId: string, previous?: AtlasScene, residency?: ScanViewportResidency, signal?: AbortSignal, policy?: { fallback: 'forbid' }) => Promise<AtlasScene>;
   createScene: (focusEntityId: string, previous?: AtlasScene, residency?: ScanViewportResidency) => AtlasScene;
   /** Scoped-compile options for a derived (flow/Mermaid) projection of a focus, so
    *  those direct-`buildC4ProjectionBundle` bypass paths stay scoped too. */
@@ -276,9 +276,16 @@ function buildLiveScanFixture(
     }));
   };
 
-  const createSceneAsync = async (focusEntityId: string, previous?: AtlasScene, residency?: ScanViewportResidency, signal?: AbortSignal): Promise<AtlasScene> => {
+  const createSceneAsync = async (focusEntityId: string, previous?: AtlasScene, residency?: ScanViewportResidency, signal?: AbortSignal, policy?: { fallback: 'forbid' }): Promise<AtlasScene> => {
     return compileCurrentGeneration(() => snapshotGeneration, async () => {
       const prepared = await measureAtlasAsyncPhase('atlas-worker-round-trip', () => workerSession().compile({ snapshot, view, focusEntityId, boot: extras.boot, modeOptions: options, childCounts, unpublishedChildren, ...(previous ? { previous } : {}), ...(residency ? { residency } : {}) }, { generation: fullWorkerGeneration(), priority: 'selected', signal }));
+      // Direct manipulation retains the live map when worker preparation is
+      // unavailable, rather than blocking input in a synchronous fallback.
+      if (!prepared && policy?.fallback === 'forbid') {
+        const error = new Error('Scene worker preparation unavailable');
+        error.name = 'SceneWorkerUnavailableError';
+        throw error;
+      }
       if (!prepared && snapshot.entities.length > SCAN_BAND_DEPTH_MIN_ENTITIES) {
         if (workerSession().unavailable()) throw new ScanWorkerUnavailableError();
         throw new Error('Background scene preparation is unavailable. Keep the current view and try again.');
