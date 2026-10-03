@@ -3,9 +3,11 @@ import { sliceArchitectureNeighborhood, type ArchitectureSnapshot, type Architec
 /** Full graphs use even identities; the preceding odd identity is their shallow bootstrap. */
 export const fullSceneWorkerGeneration = (snapshotGeneration: number): number => snapshotGeneration * 2 + 2;
 
+export const INITIAL_NEIGHBORHOOD_SLICE_MIN_ENTITIES = 128;
+
 /** Shared first-view policy for worker bootstrap and synchronous fallback. */
 export function initialNeighborhoodSlice(snapshot: ArchitectureSnapshot, view: ArchitectureView) {
-  return snapshot.entities.length > 128
+  return snapshot.entities.length > INITIAL_NEIGHBORHOOD_SLICE_MIN_ENTITIES
     ? sliceArchitectureNeighborhood(snapshot, view, { focusEntityId: view.rootEntityId, maxBand: 'container' })
     : undefined;
 }

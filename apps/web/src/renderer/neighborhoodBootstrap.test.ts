@@ -6,7 +6,7 @@ import demoView from '../../../../fixtures/architecture/demo-view.json';
 import demoStory from '../../../../fixtures/architecture/demo-story.json';
 import { initializeNeighborhoodBootstrap } from './neighborhoodBootstrap';
 import { compileScanScene } from './scanScene';
-import { compileScanNeighborhoodFixture, loadScanNeighborhoodFixture, ScanFixtureError, type ScanNeighborhoodHost } from './scanFixture';
+import { compileScanNeighborhoodFixture, loadScanNeighborhoodFixture, loadScanNeighborhoodFixtureFromSearch, ScanFixtureError, type ScanNeighborhoodHost } from './scanFixture';
 import type { SceneWorkerRequest, SceneWorkerResponse, SceneCompileRequest } from './sceneCompileProtocol';
 
 function largePacket(): ArchitectureNeighborhoodPacket {
@@ -189,4 +189,39 @@ it('a hung bootstrap spends one timeout budget before the real fixture compiles 
   expect(metrics).not.toContain('atlas-worker-round-trip');
   stop();
   fixture.disposeSceneWorker();
+});
+
+it('records slicing only when a fallback bootstrap actually slices a large graph', async () => {
+  const metrics: LoadMetric[] = []; const unsubscribe = subscribeLoadTiming(metric => metrics.push(metric));
+  const small = sliceArchitectureNeighborhood(structuredClone(demoSnapshot) as unknown as ArchitectureSnapshot, structuredClone(demoView) as unknown as ArchitectureView, { focusEntityId: demoView.rootEntityId });
+  const smallFixture = compileScanNeighborhoodFixture(small, demoStory, hostFor(small));
+  const largeFixture = compileScanNeighborhoodFixture(largePacket(), demoStory, hostFor(largePacket()));
+  try {
+    await smallFixture.prepareInitialScene(undefined, { worker: false });
+    expect(metrics.filter(metric => metric === 'atlas-slice')).toHaveLength(0);
+    await largeFixture.prepareInitialScene(undefined, { worker: false });
+    expect(metrics.filter(metric => metric === 'atlas-slice')).toHaveLength(1);
+  } finally { unsubscribe(); smallFixture.disposeSceneWorker(); largeFixture.disposeSceneWorker(); }
+});
+
+it('disposes immediately when a deep-link fetch is cancelled and never reads its late packet', async () => {
+  vi.stubGlobal('Worker', ProcessingWorker);
+  const packet = largePacket(); const controller = new AbortController();
+  let complete!: (packet: ArchitectureNeighborhoodPacket) => void;
+  let started!: () => void; const startedFetch = new Promise<void>(resolve => { started = resolve; });
+  const deepFetch = new Promise<ArchitectureNeighborhoodPacket>(resolve => { complete = resolve; });
+  const host = { ...hostFor(packet), loadNeighborhood: async (focus?: string) => {
+    if (!focus) return packet;
+    started(); return deepFetch;
+  } };
+  const published = vi.fn();
+  const pending = loadScanNeighborhoodFixtureFromSearch(host, '?sel=code%3Alate-after-abort', {}, controller.signal).then(published);
+  const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  await startedFetch; controller.abort(); await rejected;
+  expect(ProcessingWorker.instances[0]!.terminate).toHaveBeenCalledOnce();
+  const readSnapshot = vi.fn(() => packet.snapshot);
+  const latePacket = { ...packet }; Object.defineProperty(latePacket, 'snapshot', { get: readSnapshot });
+  complete(latePacket);
+  await Promise.resolve(); await Promise.resolve();
+  expect(readSnapshot).not.toHaveBeenCalled(); expect(published).not.toHaveBeenCalled();
 });
