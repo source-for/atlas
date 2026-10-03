@@ -207,6 +207,7 @@ function buildLiveScanFixture(
   let sceneWorkerLifetime = 0;
   const disposeSceneWorker = () => {
     sceneWorkerLifetime++;
+    inflight.clear();
     sceneWorker?.dispose();
     sceneWorker = undefined;
   };
@@ -336,7 +337,7 @@ function buildLiveScanFixture(
     try {
       await work;
     } finally {
-      inflight.delete(focus);
+      if (inflight.get(focus) === work) inflight.delete(focus);
     }
   };
 
