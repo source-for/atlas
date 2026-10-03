@@ -1,10 +1,10 @@
 import { compileScanScene } from './scanScene';
 import type { AtlasScene } from './types';
-import type { SceneWorkerRequest, SceneWorkerResponse } from './sceneCompileProtocol';
+import type { SceneWorkerRequest, SceneWorkerResponse, SceneCompileRequest } from './sceneCompileProtocol';
 import { initializeNeighborhoodBootstrap } from './neighborhoodBootstrap';
 
-const worker = self as unknown as { onmessage: ((event: MessageEvent<SceneWorkerRequest>) => void) | null; postMessage(value: SceneCompileResponse): void };
-let graph: SceneWorkerRequest['graph'];
+const worker = self as unknown as { onmessage: ((event: MessageEvent<SceneWorkerRequest>) => void) | null; postMessage(value: SceneWorkerResponse): void };
+let graph: SceneCompileRequest['graph'];
 let generation: number | undefined;
 const scenes = new Map<number, AtlasScene>();
 const retainScene = (id: number, scene: AtlasScene) => {
@@ -43,7 +43,9 @@ worker.onmessage = event => {
     retainScene(request.id, scene);
     worker.postMessage({ id: request.id, generation: request.generation, ok: true, scene, durationMs: performance.now() - start });
   } catch {
-    // Scalar diagnostics only: source and error text never leave the worker.
+    // Compile failures return only a flag, never exception text. Bootstrap
+    // validation above intentionally returns structured issues (including entity IDs)
+    // to preserve the public validator error; timing exports remain scalar-only.
     worker.postMessage({ id: request.id, generation: request.generation, ok: false });
   }
 };

@@ -1,3 +1,4 @@
+import { subscribeLoadTiming, type LoadMetric } from '../performance/loadTimings';
 import { afterEach, expect, it, vi } from 'vitest';
 import { sliceArchitectureNeighborhood, validateNeighborhoodPacket, type ArchitectureNeighborhoodPacket, type ArchitectureSnapshot, type ArchitectureView } from '@okie/architecture';
 import demoSnapshot from '../../../../fixtures/architecture/demo-snapshot.json';
@@ -122,7 +123,8 @@ it('valid unsupported and failed initializers preserve the synchronous first-sce
   vi.stubGlobal('Worker', ProcessingWorker); ProcessingWorker.mode = 'failed';
   const failed = await loadScanNeighborhoodFixture(hostFor(packet), undefined);
   expect(failed.createScene(failed.navigation.rootEntityId)).toEqual(expected.scene);
-  expect(ProcessingWorker.instances).toHaveLength(2);
+  expect(ProcessingWorker.instances).toHaveLength(1);
+  expect(ProcessingWorker.instances[0]!.postMessage).toHaveBeenCalledTimes(1);
   expect(ProcessingWorker.instances[0]!.terminate).toHaveBeenCalledOnce();
   failed.disposeSceneWorker();
 });
@@ -164,4 +166,27 @@ it('aborts promptly while story fetch remains pending after worker validation ha
   releaseStory!(demoStory);
   await Promise.resolve();
   expect(ProcessingWorker.instances).toHaveLength(1);
+});
+
+it('a hung bootstrap spends one timeout budget before the real fixture compiles synchronously', async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal('Worker', ProcessingWorker); ProcessingWorker.mode = 'silent';
+  const packet = largePacket();
+  const expected = initializeNeighborhoodBootstrap(packet, {});
+  if (expected.status !== 'ready') throw new Error('Expected ready');
+  const metrics: LoadMetric[] = [];
+  const stop = subscribeLoadTiming(metric => metrics.push(metric));
+  const pending = loadScanNeighborhoodFixture(hostFor(packet), undefined);
+  await vi.advanceTimersByTimeAsync(20_000);
+  const fixture = await pending;
+  expect(ProcessingWorker.instances).toHaveLength(1);
+  expect(ProcessingWorker.instances[0]!.postMessage).toHaveBeenCalledTimes(1);
+  expect(ProcessingWorker.instances[0]!.terminate).toHaveBeenCalledOnce();
+  expect(fixture.createScene(fixture.navigation.rootEntityId)).toEqual(expected.scene);
+  expect(vi.getTimerCount()).toBe(0);
+  expect(metrics).toContain('atlas-worker-bootstrap-round-trip');
+  expect(metrics).toContain('atlas-worker-bootstrap-fallback');
+  expect(metrics).not.toContain('atlas-worker-round-trip');
+  stop();
+  fixture.disposeSceneWorker();
 });

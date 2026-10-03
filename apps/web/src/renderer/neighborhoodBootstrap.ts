@@ -1,4 +1,5 @@
-import { sliceArchitectureNeighborhood, validateNeighborhoodPacket, type ArchitectureNeighborhoodPacket, type ValidationIssue } from '@okie/architecture';
+import { initialNeighborhoodSlice } from './neighborhoodInitialScene';
+import { validateNeighborhoodPacket, type ArchitectureNeighborhoodPacket, type ValidationIssue } from '@okie/architecture';
 import { compileScanScene, type ScanModeOptions } from './scanScene';
 import type { AtlasScene } from './types';
 
@@ -16,9 +17,7 @@ export function initializeNeighborhoodBootstrap(packet: ArchitectureNeighborhood
   const validateDurationMs = performance.now() - start;
   if (issues.length) return { status: 'invalid', issues, validateDurationMs };
   start = performance.now();
-  const first = packet.snapshot.entities.length > 128
-    ? sliceArchitectureNeighborhood(packet.snapshot, packet.view, { focusEntityId: packet.view.rootEntityId, maxBand: 'container' })
-    : undefined;
+  const first = initialNeighborhoodSlice(packet.snapshot, packet.view);
   const sliceDurationMs = performance.now() - start;
   start = performance.now();
   const scene = compileScanScene({

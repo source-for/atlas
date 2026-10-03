@@ -179,6 +179,8 @@ export function createSceneCompileSession(): SceneCompileSession {
       return enqueue({ kind: 'compile', input }, options) as Promise<AtlasScene | undefined>;
     },
     initializeNeighborhood(packet, modeOptions, options) {
+      // Attempt duration includes failure, timeout and cancellation. The fixture
+      // separately records atlas-worker-bootstrap-fallback when it uses sync work.
       return measureAtlasAsyncPhase('atlas-worker-bootstrap-round-trip', () =>
         enqueue({ kind: 'initialize', packet, modeOptions }, options)) as Promise<NeighborhoodInitialization | undefined>;
     },

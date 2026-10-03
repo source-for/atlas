@@ -1,4 +1,4 @@
-export type LoadMetric = 'atlas-fetch' | 'atlas-body' | 'atlas-parse' | 'atlas-validate' | 'atlas-story' | 'atlas-slice' | 'atlas-compile' | 'atlas-worker-compile' | 'atlas-worker-validate' | 'atlas-worker-slice' | 'atlas-worker-post-message' | 'atlas-worker-bootstrap-round-trip' | 'atlas-worker-round-trip' | 'atlas-first-frame';
+export type LoadMetric = 'atlas-fetch' | 'atlas-body' | 'atlas-parse' | 'atlas-validate' | 'atlas-story' | 'atlas-slice' | 'atlas-compile' | 'atlas-worker-compile' | 'atlas-worker-validate' | 'atlas-worker-slice' | 'atlas-worker-post-message' | 'atlas-worker-bootstrap-fallback' | 'atlas-worker-bootstrap-round-trip' | 'atlas-worker-round-trip' | 'atlas-first-frame';
 type Listener = (metric: LoadMetric, startMs: number, durationMs: number) => void;
 const listeners = new Set<Listener>();
 let firstFrameSubmitted = false;
