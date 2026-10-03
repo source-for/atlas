@@ -1,5 +1,6 @@
 import initWasm, { createAtlasRenderer } from '../../../../crates/atlas-wasm/pkg/atlas_wasm.js';
 import { toProtocolScene } from './protocolScene';
+import { measureAtlasAsyncPhase, measureAtlasPhase } from '../performance/loadTimings';
 import type { AtlasRenderer, AtlasScene, Camera, PickResult, RenderState, RendererDiagnostics, RendererLodState, VisibleSceneState } from './types';
 
 type NativeRenderer = Awaited<ReturnType<typeof createAtlasRenderer>>;
@@ -16,7 +17,7 @@ type ExtendedNativeRenderer = NativeRenderer & {
 let initialization: Promise<unknown> | undefined;
 
 function initializeWasm() {
-  initialization ??= initWasm();
+  initialization ??= measureAtlasAsyncPhase('renderer-wasm-init', initWasm);
   return initialization;
 }
 
@@ -43,7 +44,7 @@ export class WasmRendererAdapter implements AtlasRenderer {
 
   static async create(canvas: HTMLCanvasElement, backendAttempt: string, reportedRequestedBackend = backendAttempt) {
     await initializeWasm();
-    const native = await createAtlasRenderer(canvas, backendAttempt);
+    const native = await measureAtlasAsyncPhase('renderer-gpu-init', () => createAtlasRenderer(canvas, backendAttempt), 'renderer-gpu-init-failed');
     return new WasmRendererAdapter(native as ExtendedNativeRenderer, reportedRequestedBackend);
   }
 
@@ -51,9 +52,12 @@ export class WasmRendererAdapter implements AtlasRenderer {
 
   setScene(scene: AtlasScene) {
     if (scene === this.scene) return;
-    const protocolScene = toProtocolScene(scene) as { sceneId?: unknown };
-    if (this.scene && scene.protocolPatch) this.native.applyPatch(scene.protocolPatch);
-    else this.native.setScene(protocolScene);
+    const protocolScene = measureAtlasPhase('renderer-protocol', () => toProtocolScene(scene)) as { sceneId?: unknown };
+    if (this.scene && scene.protocolPatch) {
+      measureAtlasPhase('renderer-native-patch', () => this.native.applyPatch(scene.protocolPatch));
+    } else {
+      measureAtlasPhase('renderer-native-scene', () => this.native.setScene(protocolScene));
+    }
     this.protocolSceneId = typeof protocolScene.sceneId === 'string' ? protocolScene.sceneId : `scene:${scene.id}`;
     this.scene = scene;
     this.camera = undefined;

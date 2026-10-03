@@ -4,8 +4,9 @@ import { installPerformanceDiagnostics } from './install';
 
 class ElementStub extends EventTarget {
   textContent = '';
+  open = false;
   style = { cssText: '', marginLeft: '' };
-  dataset = {};
+  dataset: Record<string, string> = {};
   children: ElementStub[] = [];
   remove = vi.fn();
   setAttribute = vi.fn();
@@ -51,10 +52,20 @@ function installation(search = '?perf=1') {
   return { diagnostics, panels, frames, timers, disconnect, add, remove, transition, keyboard };
 }
 
+function liveSummary(panel: ElementStub): ElementStub {
+  const details = panel.children.find(child => child.children[0]?.textContent === 'Show live timings')!;
+  details.open = true;
+  details.dispatchEvent(new Event('toggle'));
+  return details.children.find(child => child.dataset.performanceSummary === 'true')!;
+}
+
 it('renders actual multiline diagnostics and preserves active recording across BFCache restore', () => {
   const qa = installation();
-  expect(qa.panels[0]!.children[2]!.textContent).toContain('\n');
-  expect(qa.panels[0]!.children[2]!.textContent).not.toContain('\\n');
+  const live = qa.panels[0]!.children.find(child => child.children[0]?.textContent === 'Show live timings')!;
+  expect(live.open).toBe(false);
+  expect(live.children.find(child => child.dataset.performanceSummary === 'true')!.textContent).toBe('');
+  expect(liveSummary(qa.panels[0]!).textContent).toContain('\n');
+  expect(liveSummary(qa.panels[0]!).textContent).not.toContain('\\n');
   qa.diagnostics.mark('bootstrap-start');
   qa.transition('pagehide', true);
   expect(qa.frames.size).toBe(0);
@@ -66,10 +77,10 @@ it('renders actual multiline diagnostics and preserves active recording across B
   expect(qa.frames.size).toBe(1);
   expect(qa.timers.size).toBe(1);
   expect(qa.panels).toHaveLength(2);
-  expect(qa.panels[1]!.children[2]!.textContent).toContain('bootstrap-start: 42 ms');
+  expect(liveSummary(qa.panels[1]!).textContent).toContain('bootstrap-start: 42 ms');
   // The observer stub replays its earlier task on buffered observation. Resume must not duplicate it.
-  expect(qa.panels[0]!.children[2]!.textContent).toContain('long-task: 60 ms duration (1 retained)');
-  expect(qa.panels[1]!.children[2]!.textContent).toContain('long-task: 60 ms duration (1 retained)');
+  expect(liveSummary(qa.panels[0]!).textContent).toContain('long-task: 60 ms duration (1 retained)');
+  expect(liveSummary(qa.panels[1]!).textContent).toContain('long-task: 60 ms duration (1 retained)');
   qa.diagnostics.dispose();
   qa.diagnostics.dispose();
   expect(qa.disconnect).toHaveBeenCalledTimes(2);
@@ -82,7 +93,7 @@ it('renders actual multiline diagnostics and preserves active recording across B
 
 it('does not resume a manually stopped recorder but keeps keyboard activation after BFCache', () => {
   const qa = installation();
-  qa.panels[0]!.children[4]!.dispatchEvent(new Event('click'));
+  qa.panels[0]!.children.find(child => child.textContent === 'Stop recording')!.dispatchEvent(new Event('click'));
   qa.transition('pagehide', true);
   qa.transition('pageshow', true);
   expect(qa.panels).toHaveLength(1);
@@ -118,11 +129,11 @@ it('records worker phase durations only while diagnostics are active', () => {
   qa.transition('pagehide', true);
   recordSearchTiming('searchIndex', 88);
   qa.transition('pageshow', true);
-  expect(qa.panels[1]!.children[2]!.textContent).toContain('search-index: 4 ms duration (1 retained)');
-  expect(qa.panels[1]!.children[2]!.textContent).toContain('search-query: 0 ms duration (1 retained)');
+  expect(liveSummary(qa.panels[1]!).textContent).toContain('search-index: 4 ms duration (1 retained)');
+  expect(liveSummary(qa.panels[1]!).textContent).toContain('search-query: 0 ms duration (1 retained)');
   qa.keyboard();
   recordSearchTiming('searchIndex', 77);
   qa.keyboard();
-  expect(qa.panels[2]!.children[2]!.textContent).not.toContain('search-index:');
+  expect(liveSummary(qa.panels[2]!).textContent).not.toContain('search-index:');
   qa.diagnostics.dispose();
 });
