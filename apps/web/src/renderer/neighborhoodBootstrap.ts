@@ -11,7 +11,7 @@ export type NeighborhoodBootstrapResult =
  * The temporary shallow packet never replaces the worker's retained full graph.
  * Structural validator/compiler exceptions use the caller's original fallback.
  */
-export function initializeNeighborhoodBootstrap(packet: ArchitectureNeighborhoodPacket, options: ScanModeOptions): NeighborhoodBootstrapResult {
+export function initializeNeighborhoodBootstrap(packet: ArchitectureNeighborhoodPacket, options: ScanModeOptions, onCompile?: (phase: 'start' | 'end') => void): NeighborhoodBootstrapResult {
   let start = performance.now();
   const issues = validateNeighborhoodPacket(packet);
   const validateDurationMs = performance.now() - start;
@@ -20,6 +20,7 @@ export function initializeNeighborhoodBootstrap(packet: ArchitectureNeighborhood
   const first = initialNeighborhoodSlice(packet.snapshot, packet.view);
   const sliceDurationMs = performance.now() - start;
   start = performance.now();
+  onCompile?.('start');
   const scene = compileScanScene({
     snapshot: first?.snapshot ?? packet.snapshot,
     view: first?.view ?? packet.view,
@@ -29,5 +30,6 @@ export function initializeNeighborhoodBootstrap(packet: ArchitectureNeighborhood
     childCounts: packet.childCounts,
     unpublishedChildren: first?.unpublishedChildren ?? packet.unpublishedChildren ?? [],
   });
+  onCompile?.('end');
   return { status: 'ready', scene, validateDurationMs, sliceDurationMs, compileDurationMs: performance.now() - start };
 }

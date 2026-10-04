@@ -1,3 +1,4 @@
+import { sceneWorkerClock, sceneWorkerTimingEnabled, recordSceneWorkerJob, safeWorkerClocks, type SceneWorkerJobTiming } from '../performance/sceneWorkerTimings';
 import { workerSceneOrigin } from './lazyBandCompile';
 import type { ArchitectureNeighborhoodPacket, ValidationIssue } from '@okie/architecture';
 import { measureAtlasAsyncPhase, measureAtlasPhase, recordAtlasWorkerCompile, recordAtlasWorkerPhase, recordSceneWorkerDiagnostic, type SceneWorkerDiagnosticMetric } from '../performance/loadTimings';
@@ -19,6 +20,7 @@ export type SceneCompileSession = {
 type JobInput = { kind: 'compile'; input: ScanSceneInput } | { kind: 'initialize'; packet: ArchitectureNeighborhoodPacket; modeOptions: ScanModeOptions };
 type JobResult = AtlasScene | NeighborhoodInitialization | undefined;
 type Job = {
+  timing?: SceneWorkerJobTiming;
   queuedAt: number; id: number; payload: JobInput; options: SceneCompileOptions;
   resolve(result: JobResult): void; reject(reason: unknown): void;
   abort: () => void; timer?: ReturnType<typeof setTimeout>; abandoned?: boolean; settled?: boolean;
@@ -44,9 +46,17 @@ export function createSceneWorkerHealth() {
   };
 }
 const browserSceneWorkerHealth = createSceneWorkerHealth();
+let nextTimingSessionId = 0;
+let nextCorrelationId = 0;
+let nextWorkerId = 0;
 export function createSceneCompileSession(health = browserSceneWorkerHealth): SceneCompileSession {
   let worker: Worker | undefined;
   let workerGeneration: number | undefined;
+  const timingSessionId = ++nextTimingSessionId;
+  const diagnosticJobs = new Map<number, SceneWorkerJobTiming>();
+  let workerId: number | undefined;
+  let workerCreatedAt: number | undefined;
+  const publish = (job: Job) => { if (job.timing) recordSceneWorkerJob(job.timing); };
   let workerSnapshot: ScanSceneInput['snapshot'] | undefined;
   let latestSnapshot: ScanSceneInput['snapshot'] | undefined;
   let latestGeneration: number | undefined;
@@ -59,13 +69,19 @@ export function createSceneCompileSession(health = browserSceneWorkerHealth): Sc
   const settle = (job: Job, result?: JobResult, aborted = false) => {
     if (job.settled) return;
     job.settled = true;
+    if (job.timing) {
+      job.timing.clocks.mainTerminal = sceneWorkerClock();
+      if (aborted) { job.timing.outcome = 'cancelled'; job.timing.clocks.mainCancelled = job.timing.clocks.mainTerminal; }
+      else if (job.timing.outcome === 'pending') job.timing.outcome = result ? ('status' in result && result.status === 'invalid' ? 'invalid' : 'success') : 'error';
+      publish(job);
+    }
     if (!job.abandoned) clearTimeout(job.timer);
     job.options.signal?.removeEventListener('abort', job.abort);
     if (aborted) job.reject(job.options.signal?.reason ?? new DOMException('Aborted', 'AbortError'));
     else job.resolve(result);
   };
   const reset = () => {
-    worker?.terminate(); worker = undefined; workerGeneration = undefined; workerSnapshot = undefined; scenes.clear();
+    worker?.terminate(); worker = undefined; workerId = undefined; workerCreatedAt = undefined; workerGeneration = undefined; workerSnapshot = undefined; scenes.clear();
   };
   const retainScene = (job: Job, scene: AtlasScene) => {
     scenes.set(scene, job.id);
@@ -78,6 +94,7 @@ export function createSceneCompileSession(health = browserSceneWorkerHealth): Sc
     if (selected === job) selected = undefined; else speculative = undefined;
     if (health.unavailable()) { settle(job); pump(); return; }
     active = job;
+    if (job.timing) { job.timing.clocks.mainDequeued = sceneWorkerClock(); publish(job); }
     recordSceneWorkerDiagnostic('atlas-worker-queue', job.queuedAt);
     const startedAt = performance.now();
     let lastPhase: SceneWorkerProgress['phase'] | 'queued' = 'queued';
@@ -93,17 +110,37 @@ export function createSceneCompileSession(health = browserSceneWorkerHealth): Sc
         // Fixed reason/phase and scalar elapsed time survive performance-ring eviction.
         console.warn('Atlas worker preparation failed', { reason, phase: lastPhase, elapsedMs: Math.round(performance.now() - startedAt) });
       }
+      if (job.timing) {
+        job.timing.clocks[reason === 'atlas-worker-timeout' ? 'mainTimeout' : 'mainFailure'] = sceneWorkerClock();
+        if (!job.abandoned) job.timing.outcome = reason === 'atlas-worker-timeout' ? 'timeout' : 'error';
+        publish(job);
+      }
       clearTimeout(job.timer); active = undefined; reset(); settle(job); pump();
     };
+    if (job.timing) job.timing.workerFresh = !worker;
     if (!worker) {
       if (typeof Worker === 'undefined') { fail('atlas-worker-unavailable'); return; }
+      workerCreatedAt = job.timing ? sceneWorkerClock() : undefined; workerId = ++nextWorkerId;
       try { worker = new Worker(new URL('./sceneCompileWorker.ts', import.meta.url), { type: 'module' }); }
       catch { fail('atlas-worker-unavailable'); return; }
     }
     const currentWorker = worker;
+    const currentWorkerId = workerId;
+    if (job.timing) { job.timing.workerId = currentWorkerId; job.timing.clocks.mainWorkerCreated = workerCreatedAt; publish(job); }
     currentWorker.onmessage = event => {
+      const resultTiming = event.data as SceneWorkerResponse;
+      const trace = diagnosticJobs.get(resultTiming.id);
+      const validTrace = trace?.generation === resultTiming.generation && trace.workerId === currentWorkerId ? trace : undefined;
+      const receiptAt = validTrace ? sceneWorkerClock() : 0;
+      if (validTrace && resultTiming.clocks) Object.assign(validTrace.clocks, safeWorkerClocks(resultTiming.clocks, 'worker'));
+      if (validTrace && 'operation' in resultTiming && resultTiming.operation === 'progress' && typeof resultTiming.workerPhaseAt === 'number') {
+        validTrace.phases[resultTiming.phase] = {worker:resultTiming.workerPhaseAt, mainReceive:receiptAt, mainHandleEnd:receiptAt};
+      } else if (validTrace && !('operation' in resultTiming && resultTiming.operation === 'timing')) validTrace.clocks.mainReceive = receiptAt;
+      const resultHandled = () => { if (validTrace) validTrace.clocks.mainResultHandled = sceneWorkerClock(); };
+      try {
+      if ('operation' in resultTiming && resultTiming.operation === 'timing') return;
       if (worker !== currentWorker || active !== job) return;
-      const result = event.data as SceneWorkerResponse;
+      const result = resultTiming;
       if (result.id !== job.id || result.generation !== job.options.generation) return;
       if ('operation' in result && result.operation === 'progress') {
         lastPhase = result.phase;
@@ -114,15 +151,15 @@ export function createSceneCompileSession(health = browserSceneWorkerHealth): Sc
       // an older guarded result against a snapshot that has since been merged.
       if (job.abandoned) {
         if (!('operation' in result) && result.ok && result.scene) { health.succeeded(); retainScene(job, result.scene); }
-        clearTimeout(job.timer); active = undefined; pump(); return;
+        clearTimeout(job.timer); active = undefined; resultHandled(); pump(); return;
       }
       if (job.payload.kind === 'initialize') {
-        if (!('operation' in result) || result.status === 'failed') { fail(); return; }
+        if (!('operation' in result) || result.status === 'failed') { resultHandled(); fail(); return; }
         recordAtlasWorkerPhase('atlas-worker-validate', result.validateDurationMs);
         if (result.status === 'invalid') {
-          active = undefined; reset(); settle(job, { status: 'invalid', issues: result.issues }); pump(); return;
+          active = undefined; reset(); settle(job, { status: 'invalid', issues: result.issues }); resultHandled(); pump(); return;
         }
-        if (result.scene.rootEntityId !== job.payload.packet.view.rootEntityId) { fail(); return; }
+        if (result.scene.rootEntityId !== job.payload.packet.view.rootEntityId) { resultHandled(); fail(); return; }
         recordAtlasWorkerPhase('atlas-worker-slice', result.sliceDurationMs);
         recordAtlasWorkerCompile(result.compileDurationMs);
         // The worker retained the full validated snapshot, not its temporary L1 slice.
@@ -130,9 +167,9 @@ export function createSceneCompileSession(health = browserSceneWorkerHealth): Sc
         workerSnapshot = job.payload.packet.snapshot;
         health.succeeded();
         scenes.clear(); retainScene(job, result.scene);
-        active = undefined; settle(job, { status: 'ready', scene: result.scene }); pump(); return;
+        active = undefined; settle(job, { status: 'ready', scene: result.scene }); resultHandled(); pump(); return;
       }
-      if ('operation' in result) { fail(); return; }
+      if ('operation' in result) { resultHandled(); fail(); return; }
       const requested = job.payload.input;
       let validScope = result.scene?.rootEntityId === requested.focusEntityId;
       if (!validScope && result.scene?.scanGuardRefusal) {
@@ -144,15 +181,25 @@ export function createSceneCompileSession(health = browserSceneWorkerHealth): Sc
           && actual.entityCount === expected.refusal.entityCount
           && actual.relationCount === expected.refusal.relationCount);
       }
-      if (!result.ok || !result.scene || !validScope) { fail(); return; }
+      if (!result.ok || !result.scene || !validScope) { resultHandled(); fail(); return; }
       if (typeof result.durationMs === 'number') recordAtlasWorkerCompile(result.durationMs);
       health.succeeded();
       retainScene(job, result.scene);
       clearTimeout(job.timer);
-      active = undefined; settle(job, result.scene); pump();
+      active = undefined; settle(job, result.scene); resultHandled(); pump();
+      } finally {
+        if (validTrace) {
+          const handledAt = sceneWorkerClock();
+          if ('operation' in resultTiming && resultTiming.operation === 'progress') {
+            const phase = validTrace.phases[resultTiming.phase]; if (phase) phase.mainHandleEnd = handledAt;
+          } else if (!('operation' in resultTiming && resultTiming.operation === 'timing')) validTrace.clocks.mainHandleEnd = handledAt;
+          recordSceneWorkerJob(validTrace);
+        }
+      }
     };
     currentWorker.onerror = () => fail('atlas-worker-runtime-error');
     currentWorker.onmessageerror = () => fail('atlas-worker-message-error');
+    if (job.timing) { job.timing.clocks.mainDeadline = sceneWorkerClock() + 20_000; publish(job); }
     job.timer = setTimeout(() => fail('atlas-worker-timeout'), 20_000);
     let request: SceneWorkerRequest;
     let needsGraph = false;
@@ -168,15 +215,18 @@ export function createSceneCompileSession(health = browserSceneWorkerHealth): Sc
       request = { id: job.id, generation: job.options.generation, input, previousId,
         ...(needsGraph ? { graph: { snapshot, view, childCounts, unpublishedChildren } } : {}) };
     }
+    if (job.timing) { request.diagnostics = true; job.timing.graphSent = job.payload.kind === 'initialize' || needsGraph; }
     try {
+      if (job.timing) job.timing.clocks.mainSendBefore = sceneWorkerClock();
       measureAtlasPhase('atlas-worker-post-message', () => currentWorker.postMessage(request));
+      if (job.timing) { job.timing.clocks.mainSendAfter = sceneWorkerClock(); publish(job); }
       if (needsGraph) { workerGeneration = job.options.generation; workerSnapshot = snapshot; scenes.clear(); }
-    } catch { fail('atlas-worker-post-message-error'); }
+    } catch { if (job.timing) { job.timing.clocks.mainSendAfter = sceneWorkerClock(); publish(job); } fail('atlas-worker-post-message-error'); }
   };
   const cancel = (job: Job, aborted = true) => {
     if (active === job) {
       if (!disposed && job.payload.kind === 'compile' && job.options.priority !== 'speculative') {
-        job.abandoned = true; settle(job, undefined, aborted); return;
+        job.abandoned = true; if (job.timing) job.timing.abandoned = true; settle(job, undefined, aborted); return;
       }
       clearTimeout(job.timer); active = undefined; reset();
     }
@@ -199,6 +249,13 @@ export function createSceneCompileSession(health = browserSceneWorkerHealth): Sc
     }
     return new Promise((resolve, reject) => {
       const job: Job = { queuedAt: performance.now(), id: ++nextId, payload, options, resolve, reject, abort: () => { cancel(job, true); pump(); } };
+      if (sceneWorkerTimingEnabled()) {
+        job.timing = {correlationId:++nextCorrelationId, sessionId:timingSessionId, jobId:job.id, generation:options.generation,
+          operation:payload.kind === 'initialize' ? 'initialize' : 'compile', priority:options.priority ?? 'selected', outcome:'pending',
+          abandoned:false, graphSent:false, workerFresh:false, clocks:{mainQueued:sceneWorkerClock(), mainTimeOrigin:performance.timeOrigin}, phases:{}};
+        if (diagnosticJobs.size === 64) diagnosticJobs.delete(diagnosticJobs.keys().next().value!);
+        diagnosticJobs.set(job.id, job.timing); publish(job);
+      }
       options.signal?.addEventListener('abort', job.abort, { once: true });
       if (options.priority === 'speculative') {
         if (speculative) cancel(speculative);

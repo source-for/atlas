@@ -1,3 +1,4 @@
+import { subscribeSceneWorkerTiming } from './sceneWorkerTimings';
 import { subscribeLoadTiming } from './loadTimings';
 import { subscribeRenderTiming } from './renderTimings';
 import { subscribeSearchTiming } from './workerTimings';
@@ -27,11 +28,13 @@ export function installPerformanceDiagnostics(win: Window & typeof globalThis = 
   let panel: HTMLElement | undefined;
   let refresh: number | undefined;
   let disposed = false;
+  let unsubscribeWorker: (() => void) | undefined;
   let unsubscribeLoad: (() => void) | undefined;
   let unsubscribeRender: (() => void) | undefined;
   let unsubscribeTiming: (() => void) | undefined;
   let resumeRecorder: ReturnType<typeof startPerformanceSession>['recorder'] | undefined;
   const stop = () => {
+    unsubscribeWorker?.(); unsubscribeWorker = undefined;
     unsubscribeLoad?.();
     unsubscribeLoad = undefined;
     unsubscribeRender?.();
@@ -49,6 +52,7 @@ export function installPerformanceDiagnostics(win: Window & typeof globalThis = 
     if (active || disposed) return;
     // A retained BFCache recorder already contains buffered entries from the previous observer.
     active = startPerformanceSession(browserHost(win, doc), recorder, recorder === undefined);
+    unsubscribeWorker = subscribeSceneWorkerTiming(job => active?.recorder.recordWorkerJob(job));
     unsubscribeTiming = subscribeSearchTiming((metric, durationMs) => active?.recorder.record(metric, win.performance.now(), durationMs));
     unsubscribeLoad = subscribeLoadTiming((metric, startMs, durationMs) => active?.recorder.record(metric, startMs, durationMs));
     unsubscribeRender = subscribeRenderTiming((metric, startMs, durationMs) => active?.recorder.record(metric, startMs, durationMs));

@@ -2,13 +2,30 @@
 
 Use the local performance panel to find startup and interaction stalls before choosing an optimization. The panel records browser timings plus atlas-search, loading and render phases. Progressive first views and persistent scene workers are now implemented in the current performance slice; remaining main-thread work and repeated agent reads are tracked under CLA-357. No speed improvement is claimed without a controlled comparison.
 
+## Scene-worker attribution (CLA-385)
+
+With recording enabled before bootstrap, `workerJobs` retains the latest 64 jobs independently of the ordinary sample ring. Each worker result carries received, graph-installed, compiler start/end and result-post clocks; progress carries the worker clock at that phase. A diagnostics-only scalar acknowledgement adds the return from the result `postMessage` call. Main clocks include enqueue/dequeue, worker creation, request send before/after, result-handler entry, result handled before pumping the next job, complete handler end, cancellation, intended deadline and actual timeout. Missing stages are absent. Queued cancellations and abandoned work remain identifiable. No new console logging, worker deadline, retry policy or preemption behavior is introduced.
+
+Both contexts use `performance.timeOrigin + performance.now()`; origins are included explicitly. Browser clock precision applies, and negative cross-context gaps remain unavailable rather than being clamped to a false zero. Module-ready is sampled after imports execute, so creation→module-ready includes script fetch, module startup and scheduling. Request-post measures the synchronous clone/post call; module-ready/send-after→worker-received is residual deserialization and scheduling, not a pure transfer benchmark. Compiler clocks wrap the compiler only; bootstrap validation/slicing retain their existing separate durations. Graph-installed is the actual retained installation point, after successful initialization, and may precede a later job that reuses the graph. Result-post-return→main-receive includes dispatch/deserialization and main scheduling. The complete handler end includes starting the next job; `mainResultHandled` excludes that pump. These measurements identify where a stall accumulates without claiming every residual is a single platform cause.
+
+The manual native Chrome trial harness extends the pinned baseline tooling and does not run in CI:
+
+```sh
+pnpm perf:workers --origin https://sourcefor.dev --runs 20 --output /tmp/cla385-production.json
+pnpm perf:workers --origin https://staging.sourcefor.dev --runs 20 --output /tmp/cla385-staging.json
+```
+
+It uses installed headed Chrome, fresh temporary contexts, CPU rate 1, a 1440×1000 viewport and normal background scheduling (Playwright's three flags disabling background throttling are omitted). It alternates the no-selection web-root deep link and the full App lens link. Every measured cold/warm load plays the published story, jumps to step 3 and waits for the actual paused state with matching inspector selection. Cold HTTP cache is cleared and disabled throughout the journey. Warm cache is enabled, primed with one unmeasured full journey, then measured on a new document; workers are fresh on reload. Browser/GPU process and shader caches are shared, and cold precedes warm. Actual cache-hit response counts and visibility/focus transitions accompany each row. There is no request routing that silently disables HTTP caching.
+
+Only published read flows are exercised. CDP blocks known Ask/operator/model endpoints, and unexpected non-read application requests invalidate a row. Production/staging retain remote network and server-cache variance; local loopback origins can use the existing pinned server. Reports record hardware, browser, OS, source/dirty state, public snapshot and deployed asset fingerprints. Production builds without the new worker records are explicitly marked uninstrumented. Older deployed builds use drawn residency as a usability surrogate; newer builds require visible entities. Those two usable contracts must not be compared as identical metrics. The first N20 reproduction attempt is evidence, not a performance budget or proof that an intermittent stall cannot recur. Raw reports and traces stay outside the repository.
+
 ## Enable recording
 
 Append `perf=1` to the page query before loading, for example `/?perf=1` or `/?fixture=stress&perf=1`. Alternatively press Shift+Alt+P to start or stop a session. Late activation cannot reconstruct the application bootstrap; reload with the query flag for that measurement. The panel appears outside the application root, including on `/new` and error pages.
 
 Choose **Export safe timing JSON** before **Stop recording**. Stopping discards the local session and removes observers, the frame loop and refresh timer. When a page enters the browser Back/Forward cache, collectors stop; an active session resumes on restoration, while a manually stopped session stays stopped. The query does not persist a preference. Recording is disabled by default and has no network endpoint or account synchronization.
 
-The export contains only a schema version, capability states, a dropped-sample count and at most 240 samples with fixed metric identifiers and numeric start/duration values. It does not collect resource URLs, event names/targets, question text, source excerpts, credentials, heap dumps or attribution. Review any separate DevTools trace before sharing: those traces can contain information excluded from this export.
+The export contains a schema version, capability states, dropped counts, at most 240 samples with fixed metric identifiers and numeric start/duration values, and at most 64 correlated worker-job summaries. Worker summaries contain local numeric job/session/worker counters, fixed operation/priority/outcome labels, boolean state and numeric timestamps. They do not collect resource URLs, entity IDs, event targets, question text, source excerpts, credentials or heap dumps. Review any separate DevTools trace before sharing: those traces can contain information excluded from this export.
 
 ## Interpret the measurements
 

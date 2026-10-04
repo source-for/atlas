@@ -3,7 +3,7 @@ import type { SceneCompileRequest, SceneCompileResponse, SceneWorkerRequest, Sce
 import type { ScanSceneInput } from './scanScene';
 const compile = vi.hoisted(() => vi.fn((input: ScanSceneInput) => ({ rootEntityId: input.focusEntityId, previous: input.previous })));
 vi.mock('./scanScene', () => ({ compileScanScene: compile }));
-afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); compile.mockClear(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.resetModules(); compile.mockClear(); });
 it('owns one graph generation and bounds previous scene references to the last two results', async () => {
   const worker = { onmessage: null as ((event: { data: SceneCompileRequest }) => void) | null, postMessage: vi.fn() };
   vi.stubGlobal('self', worker);
@@ -53,4 +53,23 @@ it('initialization retains the full graph while compiling a temporary bootstrap 
   expect('status' in response && response.status).toBe('invalid');
   worker.onmessage!({ data: { id: 4, generation: 2, input } });
   expect((worker.postMessage.mock.lastCall![0] as SceneCompileResponse).ok).toBe(false);
+});
+
+it('opt-in clocks separate compiler work from progress and result post costs', async () => {
+  let now = 0;
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
+  const worker = { onmessage:null as ((event:{data:SceneWorkerRequest})=>void)|null,
+    postMessage:vi.fn((_response:SceneWorkerResponse)=>{ now += 5; }) };
+  vi.stubGlobal('self', worker);
+  compile.mockImplementationOnce((input:ScanSceneInput)=>{ now += 7; return {rootEntityId:input.focusEntityId, previous:input.previous}; });
+  await import('./sceneCompileWorker');
+  worker.onmessage!({data:{id:1,generation:0,diagnostics:true,graph:{snapshot:{} as ScanSceneInput['snapshot'],view:{rootEntityId:'root'} as ScanSceneInput['view'],childCounts:{},unpublishedChildren:[]},input:{focusEntityId:'root'} as SceneCompileRequest['input']}});
+  const messages = worker.postMessage.mock.calls.map(call=>call[0]);
+  const result = messages.find(message=>!('operation' in message))!;
+  const ack = messages.at(-1)!;
+  expect('operation' in ack && ack.operation).toBe('timing');
+  expect(result.clocks!.workerCompileEnd! - result.clocks!.workerCompileStart!).toBe(7);
+  expect(ack.clocks!.workerResultPostAfter! - ack.clocks!.workerResultPostBefore!).toBe(5);
+  expect(result.clocks!.workerGraphInstalled).toBeGreaterThanOrEqual(result.clocks!.workerReceived!);
+  expect(messages[0]).toMatchObject({operation:'progress', phase:'received', clocks:{workerModuleReady:expect.any(Number),workerTimeOrigin:performance.timeOrigin}});
 });

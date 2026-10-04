@@ -1476,6 +1476,9 @@ export function App() {
       maxZoom: ATLAS_CAMERA_BOUNDS.maxZoom,
     };
   }, [goldenScene, query.fixture, query.seed, stressDefaultEntityId]);
+  // The controller owns history across stress boot; later decodes use fresh loaded defaults.
+  const navigationDefaultsRef = useRef(navigationDefaults);
+  navigationDefaultsRef.current = navigationDefaults;
   const stressNavigationSourceRef = useRef({ entities: [{ id: 'stress-loading' }] });
   const initialNavigationHrefRef = useRef(window.location.href);
   const stressBootNavigationSupersededRef = useRef(false);
@@ -1492,7 +1495,7 @@ export function App() {
         hasRelationKind: isKnownRelationKind,
       },
     };
-  }, [goldenScene.entities, activeSnapshot, scanFixture, importedAtlas, navigationDefaults, query.fixture]);
+  }, [goldenScene.entities, activeSnapshot, scanFixture, importedAtlas, navigationDefaults.snapshotId, navigationDefaults.viewId, query.fixture]);
   const initialNavigation = useMemo(() => navigationStateFromUrl(
     window.location.href,
     navigationDefaults,
@@ -2558,9 +2561,10 @@ export function App() {
 
   useEffect(() => {
     const controller = createNavigationHistoryController({
-      defaults: navigationDefaults,
+      get defaults() { return navigationDefaultsRef.current; },
       urlOptions: navigationUrlOptions,
       async restore(next, source) {
+        const navigationDefaults = navigationDefaultsRef.current;
         const request = scanFixture && !importedAtlasRef.current
           ? beginForegroundScanNavigation('Restoring architecture navigation', true, true) : undefined;
         cancelGestureSceneRequests();
@@ -2751,7 +2755,7 @@ export function App() {
       controller.dispose();
       if (historyControllerRef.current === controller) historyControllerRef.current = undefined;
     };
-  }, [goldenScene, initialCameraExplicit, navigationDefaults, navigationUrlOptions, query.fixture]);
+  }, [goldenScene, initialCameraExplicit, navigationUrlOptions, query.fixture]);
 
   useEffect(() => {
     if (restoringNavigationRef.current) return;
@@ -2786,6 +2790,7 @@ export function App() {
       stressNavigationSourceRef.current.entities = stressScene.entities;
       const defaultId = stressScene.entities[0]?.id ?? 'stress-loading';
       const loadedDefaults = { ...navigationDefaults, rootEntityId: defaultId, selectedId: defaultId };
+      navigationDefaultsRef.current = loadedDefaults;
       setStressDefaultEntityId(defaultId);
       const decoded = navigationStateFromUrl(stressBootNavigationSupersededRef.current ? window.location.href : initialNavigationHrefRef.current,
         loadedDefaults, navigationUrlOptions).state;
