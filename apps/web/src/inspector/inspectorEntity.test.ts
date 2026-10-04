@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { goldenSnapshot } from '@okie/scene-compiler';
 import { entityForScene } from '../renderer/goldenC4Scene';
-import { inspectorEntityForFraming, resolveInspectorEntity } from './inspectorEntity';
+import { inspectorEntityForFraming, resolveInspectorEntity, retainResidentInspectorEntity } from './inspectorEntity';
 
 function fixture() {
   const snapshot = structuredClone(goldenSnapshot);
@@ -42,4 +42,27 @@ it('preserves authored resident presentations and their real geometry; unknown s
   expect(selected).toBe(authored);
   expect(inspectorEntityForFraming(residents, selected)).toBe(authored);
   expect(resolveInspectorEntity(snapshot, residents, 'unknown')).toBe(residents[0]);
+});
+
+it('relationship scope changes cannot promote canonical-only inspection into rendered geometry', () => {
+  const { snapshot, container, residents } = fixture();
+  const canonical = resolveInspectorEntity(snapshot, residents, container.id);
+  const next = { entities: [...residents] };
+  expect(retainResidentInspectorEntity(next, residents, canonical)).toBe(next);
+  expect(next.entities.some(entity => entity.id === container.id)).toBe(false);
+});
+
+it('relationship scope changes retain only the actual authored resident and do not duplicate an existing target', () => {
+  const { container, residents } = fixture();
+  const resident = { ...entityForScene(container, {}), name: 'Authored resident', x: 200, y: 300, width: 900, height: 400 };
+  const inspected = { ...resident, x: 0, y: 0, width: 1, height: 1 };
+  residents.push(resident);
+  const next = { entities: [residents[0]!], protocolPatch: { revision: 3 }, protocolSnapshot: { revision: 4 }, projection: { id: 'retained' } };
+  const retained = retainResidentInspectorEntity(next, residents, inspected);
+  expect(retained.entities.at(-1)).toBe(resident);
+  expect(retained.protocolPatch).toBe(next.protocolPatch);
+  expect(retained.protocolSnapshot).toBe(next.protocolSnapshot);
+  expect(retained.projection).toBe(next.projection);
+  expect(next.entities).toHaveLength(1);
+  expect(retainResidentInspectorEntity(retained, residents, inspected)).toBe(retained);
 });

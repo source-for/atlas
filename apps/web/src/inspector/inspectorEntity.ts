@@ -16,3 +16,12 @@ export function resolveInspectorEntity(snapshot: ArchitectureSnapshot, residents
 export function inspectorEntityForFraming(residents: readonly SceneEntity[], inspected: SceneEntity): SceneEntity | undefined {
   return residents.find(entity => entity.id === inspected.id);
 }
+
+/** Retain an existing scene presentation across a relationship scope change,
+ * without promoting a canonical-only inspector record into drawable geometry.
+ */
+export function retainResidentInspectorEntity<T extends { entities: SceneEntity[] }>(next: T, residents: readonly SceneEntity[], inspected: SceneEntity): T {
+  if (next.entities.some(entity => entity.id === inspected.id)) return next;
+  const resident = inspectorEntityForFraming(residents, inspected);
+  return resident ? { ...next, entities: [...next.entities, resident] } : next;
+}

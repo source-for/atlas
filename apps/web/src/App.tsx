@@ -1,5 +1,5 @@
 import { completeFixturePreparation } from './renderer/fixturePreparation';
-import { inspectorEntityForFraming, resolveInspectorEntity } from './inspector/inspectorEntity';
+import { inspectorEntityForFraming, resolveInspectorEntity, retainResidentInspectorEntity } from './inspector/inspectorEntity';
 import { navigationEntityReference } from './navigation/entityReferences';
 import { prepareLevelSceneWithDeadline, clearLevelScenePreparation, levelScenePreparationPending, runLevelSceneGesture, LEVEL_SCENE_PREPARING } from './renderer/levelScenePreparation';
 import { compileCurrentGeneration } from './renderer/compileCurrentGeneration';
@@ -4326,7 +4326,7 @@ export function App() {
         return;
       }
       setVisibilityMode('all');
-      if (plan.scene !== scene) setScene(plan.scene.entities.some(entity => entity.id === selected.id) ? plan.scene : { ...plan.scene, entities: [...plan.scene.entities, selected] });
+      if (plan.scene !== scene) setScene(retainResidentInspectorEntity(plan.scene, scene.entities, selected));
       if (plan.representation === 'aggregate') setLiveMessage('Showing the aggregate map representation that contains this relationship.');
       startInspectorCameraFlight({
         targetId: selected.id,
