@@ -102,14 +102,15 @@ describe('operator users scripts (CLA-316)', () => {
     expect(deployBlockedReason('production', sources('x [pending owner: confirm or drop] y', ''))).toBe(message);
   });
 
-  function fakeDeploy(argv: string[], options: { privacy?: string; terms?: string; dist?: boolean; status?: number } = {}) {
+  function fakeDeploy(argv: string[], options: { privacy?: string; terms?: string; dist?: boolean; status?: number; results?: Array<ReturnType<DeploySpawn>> } = {}) {
     const spawned: Array<{ command: string; args: string[]; env: Record<string, string | undefined> }> = [];
     const out: string[] = [];
     const err: string[] = [];
     const reads: string[] = [];
+    const waits: number[] = [];
     const spawn: DeploySpawn = (command, args, spawnOptions) => {
       spawned.push({ command, args, env: spawnOptions.env });
-      return { status: options.status ?? 0 };
+      return options.results?.[spawned.length - 1] ?? { status: options.status ?? 0 };
     };
     const code = runDeploy({
       argv: ['node', 'deploy.mjs', ...argv],
@@ -119,10 +120,11 @@ describe('operator users scripts (CLA-316)', () => {
       readFile: path => { reads.push(path); return sources(options.privacy ?? privacySource, options.terms ?? termsSource)(path.replace('/repo/', '')); },
       exists: () => options.dist ?? true,
       spawn,
+      sleep: milliseconds => waits.push(milliseconds),
       log: message => out.push(message),
       error: message => err.push(message),
     });
-    return { code, spawned, out, err, reads };
+    return { code, spawned, out, err, reads, waits };
   }
 
   it('deploy.mjs production stops at the privacy guard before running anything; a dry run only warns', () => {
@@ -146,6 +148,7 @@ describe('operator users scripts (CLA-316)', () => {
     expect(staging.code).toBe(0);
     expect(staging.err).toEqual([]);
     expect(staging.spawned.map(call => call.args)).toEqual([
+      ['exec', 'wrangler', 'd1', 'execute', 'USERS_DB', '--env', 'staging', '--remote', '--command', 'SELECT 1'],
       ['exec', 'wrangler', 'd1', 'migrations', 'apply', 'USERS_DB', '--env', 'staging', '--remote'],
       ['exec', 'wrangler', 'deploy', '--env', 'staging'],
     ]);
@@ -154,12 +157,52 @@ describe('operator users scripts (CLA-316)', () => {
     const production = fakeDeploy(['production'], { privacy: 'Run by Example Ltd.' });
     expect(production.code).toBe(0);
     expect(production.reads).toEqual(['/repo/apps/web/src/privacyPage.ts', '/repo/apps/web/src/termsPage.ts']);
-    expect(production.spawned).toHaveLength(2);
+    expect(production.spawned).toHaveLength(3);
     expect(fakeDeploy(['production'], { privacy: 'Run by Example Ltd.', terms: '[pending owner]' })).toMatchObject({ code: 1, spawned: [] });
 
-    expect(fakeDeploy(['staging'], { status: 7 })).toMatchObject({ code: 7, spawned: [{ args: expect.arrayContaining(['migrations']) }] });
+    expect(fakeDeploy(['staging'], { status: 7 })).toMatchObject({ code: 7, spawned: [{ args: expect.arrayContaining(['execute']) }] });
     expect(fakeDeploy(['staging'], { dist: false })).toMatchObject({ code: 1, spawned: [], err: ['apps/web/dist is missing; run `pnpm build` first'] });
     expect(fakeDeploy(['prod'])).toMatchObject({ code: 2, spawned: [], reads: [] });
+  });
+
+  it.each(['preflight', 'migrations'])('retries %s once after code 7403 without exposing captured output', phase => {
+    const failed = { status: 1, stderr: '[ERROR] D1 unauthorized [code: 7403] token=never-print-this' };
+    const prefix = phase === 'migrations' ? [{ status: 0 }] : [];
+    const result = fakeDeploy(['staging'], { results: [...prefix, failed, { status: 0 }] });
+    expect(result.code).toBe(0);
+    expect(result.waits).toEqual([5000]);
+    expect(result.out).toContain(`USERS_DB ${phase} returned code 7403; waiting 5 seconds before one retry (OAuth refresh).`);
+    const index = prefix.length;
+    expect(result.spawned[index]!.args).toEqual(result.spawned[index + 1]!.args);
+    expect(result.spawned.at(-1)!.args).toEqual(['exec', 'wrangler', 'deploy', '--env', 'staging']);
+    expect([...result.out, ...result.err].join(' ')).not.toContain('never-print-this');
+    expect(result.spawned.every(call => !('CLOUDFLARE_API_TOKEN' in call.env))).toBe(true);
+  });
+
+  it.each(['preflight', 'migrations'])('stops after the second 7403 failure in %s', phase => {
+    const prefix = phase === 'migrations' ? [{ status: 0 }] : [];
+    const result = fakeDeploy(['production'], { results: [...prefix, { status: 3, stdout: 'CODE7403' }, { status: 9, stderr: 'code: 7403' }] });
+    expect(result.code).toBe(9);
+    expect(result.waits).toEqual([5000]);
+    expect(result.spawned).toHaveLength(prefix.length + 2);
+    expect(result.spawned.some(call => call.args.includes('deploy'))).toBe(false);
+  });
+
+  it.each(['preflight', 'migrations'])('never retries other failures in %s', phase => {
+    const prefix = phase === 'migrations' ? [{ status: 0 }] : [];
+    for (const stderr of ['[code: 7404]', 'row count: 7403', 'code: 17403']) {
+      const result = fakeDeploy(['staging'], { results: [...prefix, { status: 7, stderr }] });
+      expect(result.code).toBe(7);
+      expect(result.waits).toEqual([]);
+      expect(result.spawned).toHaveLength(prefix.length + 1);
+    }
+  });
+
+  it('dry runs perform no D1 preflight, migration, or wait even with 7403 output', () => {
+    const result = fakeDeploy(['staging', '--dry-run'], { results: [{ status: 7, stderr: 'code: 7403' }] });
+    expect(result.spawned).toHaveLength(1);
+    expect(result.spawned[0]!.args).toContain('deploy');
+    expect(result.waits).toEqual([]);
   });
 
   it('deploy.mjs itself is only runDeploy wired to the real process, fs and child_process', () => {
