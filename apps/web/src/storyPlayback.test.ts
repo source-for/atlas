@@ -10,6 +10,7 @@ import {
   estimateStoryDuration,
   formatStoryDuration,
   pauseStoryFlight,
+  freezeCommittedStoryFlight,
   resumeStoryFlight,
   resolveStoryHoldDuration,
   sampleStoryArrivalClock,
@@ -141,4 +142,19 @@ describe('cinematic story flight sampling', () => {
     });
     expect(positionMs).toBeLessThan(offsets[2]);
   });
+});
+
+it('freezes the committed flight sample through a long restore delay and resumes only its remaining canonical duration', () => {
+  const flight = createStoryFlight({ x: 0, y: 0, zoom: 1 }, { x: 200, y: 100, zoom: 2 }, viewport, 1000, { durationMs: 600 });
+  const committed = sampleStoryFlight(flight, 1250);
+  const live = { ...committed.camera, x: committed.camera.x + 4 };
+  const frozen = freezeCommittedStoryFlight(flight, committed, live, 9000);
+  expect(frozen.flight.running).toBe(false);
+  expect(frozen.flight.canonicalElapsedMs).toBe(250);
+  expect(frozen.flight.frozenCamera).toEqual(live);
+  expect(sampleStoryFlight(frozen.flight, 20000).elapsedMs).toBe(250);
+  const resumed = resumeStoryFlight(frozen.flight, live, viewport, 20000);
+  expect(resumed.durationMs).toBe(350);
+  expect(sampleStoryFlight(resumed, 20000).elapsedMs).toBe(250);
+  expect(sampleStoryFlight(resumed, 20350).elapsedMs).toBe(600);
 });

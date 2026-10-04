@@ -144,3 +144,17 @@ export function beginForegroundCameraIntent(level: AbortController | undefined, 
   supersede();
   return true;
 }
+
+/** Relationship editing freezes playback without becoming a camera/navigation
+ * intent or writing the old story entry over an in-flight history restoration.
+ */
+export function beginMapInteraction(mode: 'camera' | 'semantic-edit', actions: {
+  beginCameraIntent(): boolean;
+  interrupt(): void;
+  pauseWithoutHistory(): void;
+}): boolean {
+  if (mode === 'semantic-edit') { actions.pauseWithoutHistory(); return true; }
+  if (!actions.beginCameraIntent()) return false;
+  actions.interrupt();
+  return true;
+}

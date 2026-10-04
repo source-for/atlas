@@ -71,7 +71,7 @@ import {
   type SemanticDetail,
 } from './navigation/navigationState';
 import { createGoldenC4Scene, goldenAppStory, scanDeeperBandHasPeerCards, scanDrillDeeperDetail, scanWindowedCompileDropsPeerGraph, scanZoomCompileHandoff, scanZoomEntityUnderPointer, scanZoomHandoffPreferredId, semanticBounds, type AppStoryPlan, type AppStoryPlanStep } from './renderer/goldenC4Scene';
-import { completeForegroundSceneRequest, createForegroundSceneRequestOwner, isSceneRequestAbort, createSceneGenerationFence, preparedSceneEntity, createPreparedSceneGenerations, createForegroundRequestStatus, prepareForegroundWithRetry, beginForegroundPlaybackPreparation, beginForegroundCameraIntent, storyArrivalCanPublish } from './renderer/foregroundSceneRequest';
+import { completeForegroundSceneRequest, createForegroundSceneRequestOwner, isSceneRequestAbort, createSceneGenerationFence, preparedSceneEntity, createPreparedSceneGenerations, createForegroundRequestStatus, prepareForegroundWithRetry, beginForegroundPlaybackPreparation, beginForegroundCameraIntent, storyArrivalCanPublish, beginMapInteraction } from './renderer/foregroundSceneRequest';
 import { createSceneRequestOwner, ownsNeighborhoodSceneCache, ownsScenePublication, readNeighborhoodScene, retainNeighborhoodScene } from './renderer/sceneRequestOwner';
 import { cacheableNeighborhoodScene, scanCompileFocusForBand, scanEntityHasChildren, scanNextBand, scanPrefetchFocusIds } from './renderer/lazyBandCompile';
 import { getActiveScanFixture, scanKeepsResidentL3Landmarks } from './renderer/fixtureBundle';
@@ -214,6 +214,7 @@ import {
   resumeStoryFlight,
   sampleStoryFlight,
   type StoryFlight,
+  freezeCommittedStoryFlight,
   type StoryFlightSample,
 } from './storyPlayback';
 import {
@@ -370,6 +371,7 @@ type CanvasViewportProps = {
   onCameraSettled: (camera: Camera) => void;
   onNavigationFlush: (camera: Camera) => void;
   onInteractionStart: (reason: string, camera: Camera) => void;
+  onSemanticEditStart: (reason: string, camera: Camera) => void;
   onCameraFlightCancel: () => void;
   onLensCancel: (reason: string, camera: Camera) => void;
   onLensPan: (camera: Camera) => void;
@@ -402,7 +404,7 @@ type CanvasViewportProps = {
   }) => void;
 };
 
-function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, semanticRenderPacketRef, semanticLensSession, scene, camera, setCamera, selectedId, onPick, onOpenInside, focusedIds, relationFocusIds, activeRelationIds, flowRelationIds, requestedBackend, reduceMotion, animationActive, inspectorFlightActive, flowActive, projectionOverride, onSemanticZoom, cinematicTransition, onDiagnostics, onViewportChange, onCameraSettled, onNavigationFlush, onInteractionStart, onCameraFlightCancel, onLensCancel, onLensPan, onSemanticZoomBurstStart, onLodState, scanZoomAdoptRawRef, visibilityMode, authoringTool, authoringEnabled, authoringDetail, authoringEntityIds, selectedRelationId, onCreateRelationship, onGuideRelationship }: CanvasViewportProps) {
+function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, semanticRenderPacketRef, semanticLensSession, scene, camera, setCamera, selectedId, onPick, onOpenInside, focusedIds, relationFocusIds, activeRelationIds, flowRelationIds, requestedBackend, reduceMotion, animationActive, inspectorFlightActive, flowActive, projectionOverride, onSemanticZoom, cinematicTransition, onDiagnostics, onViewportChange, onCameraSettled, onNavigationFlush, onInteractionStart, onSemanticEditStart, onCameraFlightCancel, onLensCancel, onLensPan, onSemanticZoomBurstStart, onLodState, scanZoomAdoptRawRef, visibilityMode, authoringTool, authoringEnabled, authoringDetail, authoringEntityIds, selectedRelationId, onCreateRelationship, onGuideRelationship }: CanvasViewportProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<AtlasRenderer | undefined>(undefined);
   const liveCameraRef = useRef(camera);
@@ -483,6 +485,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
   const onCameraSettledRef = useRef(onCameraSettled);
   const onNavigationFlushRef = useRef(onNavigationFlush);
   const onInteractionStartRef = useRef(onInteractionStart);
+  const onSemanticEditStartRef = useRef(onSemanticEditStart);
   const onCameraFlightCancelRef = useRef(onCameraFlightCancel);
   const onLensCancelRef = useRef(onLensCancel);
   const onLensPanRef = useRef(onLensPan);
@@ -494,6 +497,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
   onCameraSettledRef.current = onCameraSettled;
   onNavigationFlushRef.current = onNavigationFlush;
   onInteractionStartRef.current = onInteractionStart;
+  onSemanticEditStartRef.current = onSemanticEditStart;
   onCameraFlightCancelRef.current = onCameraFlightCancel;
   onLensCancelRef.current = onLensCancel;
   onLensPanRef.current = onLensPan;
@@ -1092,7 +1096,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
           syncContinuousRendering();
           pointerRef.current = undefined;
           updateConnectionDraft({ from: portHit.entityId, sourcePort: portHit.port, points: [start, start], safe: true });
-          onInteractionStartRef.current('Created a relationship', liveCameraRef.current);
+          onSemanticEditStartRef.current('Created a relationship', liveCameraRef.current);
           return;
         }
       }
@@ -1123,7 +1127,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
             applied: false,
             diagnostic: 'applied',
           });
-          onInteractionStartRef.current('Guided a relationship route', liveCameraRef.current);
+          onSemanticEditStartRef.current('Guided a relationship route', liveCameraRef.current);
           return;
         }
       }
@@ -1600,6 +1604,7 @@ export function App() {
   const [foregroundViewLoading, setForegroundViewLoading] = useState(false);
   const [storyPreparing, setStoryPreparing] = useState(false);
   const storyStepRef = useRef(-1);
+  const freezeStoryPlaybackRef = useRef<(camera: Camera) => { canonicalPhase: StoryCanonicalPhase; elapsed: number } | undefined>(() => undefined);
   const storyPreparationActiveRef = useRef(false);
   const storyPreparationStatusRef = useRef(createForegroundRequestStatus(pending => { storyPreparationActiveRef.current = pending; setStoryPreparing(pending); }));
   const foregroundRequestStatusRef = useRef(createForegroundRequestStatus(setForegroundViewLoading));
@@ -1760,7 +1765,7 @@ export function App() {
   useEffect(() => {
     if (foregroundRequestStatusRef.current.obsolete()) {
       setLiveMessage('This view changed while navigation was being prepared. Try again.');
-      if (storyPreparationActiveRef.current) { setStoryPlaying(false); setStoryPhase('paused'); }
+      if (storyPreparationActiveRef.current) pauseStoryWithoutHistory(renderedCameraRef.current);
       cancelForegroundSceneRequest();
     }
     cancelGestureSceneRequests();
@@ -2545,7 +2550,7 @@ export function App() {
       urlOptions: navigationUrlOptions,
       async restore(next, source) {
         const request = scanFixture && !importedAtlasRef.current
-          ? beginForegroundScanNavigation('Restoring architecture navigation', true) : undefined;
+          ? beginForegroundScanNavigation('Restoring architecture navigation', true, true) : undefined;
         cancelGestureSceneRequests();
         cancelAskMapShow(); // back/forward supersedes an in-flight Ask "Show on map"
         abortInspectorCameraFlight();
@@ -2808,24 +2813,17 @@ export function App() {
     }
   }
 
-  function interruptStory(reason: string, liveCamera: Camera = camera, directManipulation = true) {
-    if (storyStep < 0) return;
+  function freezeStoryPlayback(liveCamera: Camera) {
+    if (storyStepRef.current < 0) return undefined;
     const now = performance.now();
     let canonicalPhase: StoryCanonicalPhase = storyCanonicalPhase;
     let elapsed = storyPhaseElapsedMs;
     if (storyPhase === 'flight' && storyFlightRef.current) {
       const committedSample = storyFlightSample
         ?? sampleStoryFlight(storyFlightRef.current.flight, storyFlightRef.current.flight.startedAtMs);
-      const pausedFlight: StoryFlight = {
-        ...storyFlightRef.current.flight,
-        elapsedMs: committedSample.segmentElapsedMs,
-        canonicalElapsedMs: committedSample.elapsedMs,
-        startedAtMs: Math.round(now),
-        running: false,
-        frozenCamera: { ...liveCamera },
-      };
-      storyFlightRef.current = { ...storyFlightRef.current, flight: pausedFlight };
-      const frozenSample = { ...committedSample, camera: { ...liveCamera } };
+      const frozen = freezeCommittedStoryFlight(storyFlightRef.current.flight, committedSample, liveCamera, now);
+      storyFlightRef.current = { ...storyFlightRef.current, flight: frozen.flight };
+      const frozenSample = frozen.sample;
       setStoryFlightSample(frozenSample);
       pausedStoryPhaseRef.current = 'flight';
       pausedStoryPhaseElapsedRef.current = frozenSample.elapsedMs;
@@ -2846,6 +2844,21 @@ export function App() {
       canonicalPhase = 'hold';
     }
     storyStartedAtRef.current = undefined;
+    return { canonicalPhase, elapsed };
+  }
+  freezeStoryPlaybackRef.current = freezeStoryPlayback;
+
+  function pauseStoryWithoutHistory(liveCamera: Camera) {
+    freezeStoryPlaybackRef.current(liveCamera);
+    setStoryPlaying(false);
+    setStoryPhase(storyStepRef.current >= 0 ? 'paused' : 'idle');
+  }
+
+  function interruptStory(reason: string, liveCamera: Camera = camera, directManipulation = true) {
+    if (storyStep < 0) return;
+    const frozen = freezeStoryPlayback(liveCamera);
+    if (!frozen) return;
+    const { canonicalPhase, elapsed } = frozen;
     setStoryPlaying(false);
     setStoryPhase(directManipulation ? 'interrupted' : 'paused');
     setReturnToStoryFrameRequired(directManipulation && canonicalPhase === 'flight');
@@ -3689,8 +3702,19 @@ export function App() {
   }
 
   function handleMapInteractionStart(reason: string, reachedCamera: Camera) {
-    if (!beginUserCameraIntent()) return;
-    interruptStory(reason, reachedCamera);
+    beginMapInteraction('camera', {
+      beginCameraIntent: beginUserCameraIntent,
+      interrupt: () => interruptStory(reason, reachedCamera),
+      pauseWithoutHistory: () => pauseStoryWithoutHistory(reachedCamera),
+    });
+  }
+
+  function handleSemanticEditStart(reason: string, reachedCamera: Camera) {
+    beginMapInteraction('semantic-edit', {
+      beginCameraIntent: beginUserCameraIntent,
+      interrupt: () => interruptStory(reason, reachedCamera),
+      pauseWithoutHistory: () => { pauseStoryWithoutHistory(reachedCamera); setStoryInterruption(reason); },
+    });
   }
 
   function beginForegroundScanNavigation(reason: string, historyRestore = false, storyPreparation = false) {
@@ -3701,8 +3725,8 @@ export function App() {
     inspectorNeighborhoodRequest.current.cancel();
     const liveCamera = abortInspectorCameraFlight();
     beginForegroundPlaybackPreparation(historyRestore ? 'restore' : storyPreparation ? 'story' : 'navigation', {
-      pauseWithoutHistory: () => { setStoryPlaying(false); setStoryPhase(storyStepRef.current >= 0 ? 'paused' : 'idle'); },
-      preserveStory: () => { storyElapsedRef.current = currentStoryElapsed(); storyStartedAtRef.current = undefined; },
+      pauseWithoutHistory: () => pauseStoryWithoutHistory(liveCamera),
+      preserveStory: () => { freezeStoryPlaybackRef.current(liveCamera); },
       interrupt: () => interruptStory(reason, liveCamera, false),
     });
     const request = foregroundSceneRequestRef.current.begin();
@@ -3731,7 +3755,7 @@ export function App() {
       () => prepareForegroundWithRetry(request, () => prepare(request), 3, commit => commit()), () => {},
       () => {
         setLiveMessage('This map could not be prepared. Try again.');
-        if (storyPreparation) { setStoryPlaying(false); setStoryPhase('paused'); setStoryInterruption('The requested story step could not be prepared.'); }
+        if (storyPreparation) { pauseStoryWithoutHistory(renderedCameraRef.current); setStoryInterruption('The requested story step could not be prepared.'); }
       });
   }
 
@@ -4777,11 +4801,11 @@ export function App() {
   function navigateRootLoaded(entityId: string, preparedScene?: AtlasScene) {
     cancelGestureSceneRequests();
     if (query.fixture === 'stress' || entityId === navigationIdentity.rootEntityId) return;
+    const target = preparedScene ? preparedSceneEntity(preparedScene, entityId) : scene.entities.find(entity => entity.id === entityId);
+    if (!target) { setLiveMessage('The requested map root is not available in the prepared view.'); return; }
     const liveCamera = abortInspectorCameraFlight();
     setInspectorHistory([]);
     cancelSemanticLensAt('breadcrumb navigation', liveCamera);
-    const target = scene.entities.find(entity => entity.id === entityId) ?? preparedScene?.entities.find(entity => entity.id === entityId);
-    if (!target) return;
     interruptStory(`Returned to ${target.name}`);
     const nextScene = preparedScene ?? composeScene(target.id, scene, authoringHistoryRef.current.present);
     const nextCamera = frameProjectionScope(nextScene, target.id, baseDetail, viewport, measureCurrentMapSafeArea())
@@ -6334,6 +6358,7 @@ export function App() {
             onDiagnostics={setDiagnostics}
             onGuideRelationship={guideRelationship}
             onInteractionStart={handleMapInteractionStart}
+            onSemanticEditStart={handleSemanticEditStart}
             onLensCancel={cancelSemanticLensAt}
             onLensPan={stabilizeSemanticLensForPan}
             onLodState={publishLodState}

@@ -225,6 +225,17 @@ export function pauseStoryFlight(flight: StoryFlight, nowMs: number) {
   };
 }
 
+/** Freeze the last frame actually committed to the UI, independent of how long
+ * neighborhood preparation took. No URL/history write belongs to this operation.
+ */
+export function freezeCommittedStoryFlight(flight: StoryFlight, sample: StoryFlightSample, liveCamera: Camera, nowMs: number) {
+  return {
+    flight: { ...flight, elapsedMs: sample.segmentElapsedMs, canonicalElapsedMs: sample.elapsedMs,
+      startedAtMs: quantizeStoryMilliseconds(nowMs), running: false, frozenCamera: { ...liveCamera } },
+    sample: { ...sample, camera: { ...liveCamera } },
+  };
+}
+
 export function resumeStoryFlight(
   flight: StoryFlight,
   liveCamera: Camera,

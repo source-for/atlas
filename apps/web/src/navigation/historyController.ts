@@ -34,7 +34,7 @@ export type NavigationHistoryController = {
   flush(state: NavigationState): void;
   /** Writes any deferred camera URL now (e.g. before reading location.href to share it). */
   flushUrl(): void;
-  /** Cancel a pending async restore without changing the current URL/state. */
+  /** Abandon scene application while adopting the entry already reached by Back. */
   cancelRestore(): void;
   dispose(): void;
 };
@@ -98,6 +98,8 @@ export function createNavigationHistoryController(options: NavigationHistoryOpti
   let state = canonicalNavigationState({}, options.defaults);
   let settledEpoch = 0;
   let restoreGeneration = 0;
+  let pendingRestore: { generation: number; state: NavigationState; source: 'initialize' | 'popstate'; href: string } | undefined;
+  let abandonedEntryHref: string | undefined;
   let detach = () => {};
   const cameraUrlMinIntervalMs = options.cameraUrlMinIntervalMs ?? 200;
   let lastReplaceAtMs = Number.NEGATIVE_INFINITY;
@@ -105,6 +107,7 @@ export function createNavigationHistoryController(options: NavigationHistoryOpti
   let pendingTimer: ReturnType<typeof setTimeout> | undefined;
   /** The state whose URL is deferred (snapshot: a push moves `state` on before landing it). */
   let pendingState: NavigationState | undefined;
+  let pendingMode: 'push' | 'replace' = 'replace';
 
   const recordWrite = () => {
     const now = adapter.now();
@@ -125,9 +128,11 @@ export function createNavigationHistoryController(options: NavigationHistoryOpti
     if (pendingTimer !== undefined) clearTimeout(pendingTimer);
     pendingTimer = undefined;
     pendingState = undefined;
+    pendingMode = 'replace';
   };
-  const schedulePendingReplace = (delayMs: number) => {
+  const schedulePendingReplace = (delayMs: number, mode: 'push' | 'replace' = 'replace') => {
     pendingState = state;
+    pendingMode = pendingTimer !== undefined && pendingMode === 'push' ? 'push' : mode;
     if (pendingTimer !== undefined) return;
     pendingTimer = setTimeout(flushPendingReplace, Math.max(0, delayMs));
   };
@@ -147,10 +152,17 @@ export function createNavigationHistoryController(options: NavigationHistoryOpti
   function flushPendingReplace() {
     const pending = pendingState;
     if (pendingTimer === undefined || !pending) return;
+    const mode = pendingMode;
     cancelPendingReplace();
     const href = adapter.getHref();
     const url = canonicalNavigationUrl(pending, href, options.urlOptions);
-    if (new URL(url, href).href !== new URL(href).href) replaceNow(url);
+    if (new URL(url, href).href !== new URL(href).href) {
+      if (mode === 'push') {
+        recordWrite();
+        try { adapter.pushState(historyData(), url); abandonedEntryHref = undefined; }
+        catch { schedulePendingReplace(URL_WRITE_RETRY_MS, 'push'); }
+      } else replaceNow(url);
+    }
   }
 
   const notify = (source: NavigationCommit['source'], canonicalUrl: string) => {
@@ -162,7 +174,15 @@ export function createNavigationHistoryController(options: NavigationHistoryOpti
 
   const write = (mode: 'push' | 'replace', source: NavigationCommit['source'], immediate = false) => {
     restoreGeneration += 1;
+    pendingRestore = undefined;
     const canonicalUrl = canonicalNavigationUrl(state, adapter.getHref(), options.urlOptions);
+    // App may still display the pre-Back scene after abandonment. A later write
+    // based on that view must leave the popped entry available instead of erasing it.
+    if (mode === 'replace' && abandonedEntryHref) {
+      const currentUrl = navigationStateFromUrl(adapter.getHref(), options.defaults, options.urlOptions).canonicalUrl;
+      const abandonedUrl = navigationStateFromUrl(abandonedEntryHref, options.defaults, options.urlOptions).canonicalUrl;
+      if (differsOnlyInCamera(currentUrl, abandonedUrl) && !differsOnlyInCamera(canonicalUrl, currentUrl)) mode = 'push';
+    }
     if (mode === 'push') {
       // A pending camera replacement belongs to the entry being left; land it first
       // so Back returns to the latest camera.
@@ -170,9 +190,10 @@ export function createNavigationHistoryController(options: NavigationHistoryOpti
       recordWrite();
       try {
         adapter.pushState(historyData(), canonicalUrl);
+        abandonedEntryHref = undefined;
       } catch {
-        // Rate-limited: at least keep the address bar on the current view.
-        schedulePendingReplace(URL_WRITE_RETRY_MS);
+        // Retrying as replace would erase an abandoned Back target.
+        schedulePendingReplace(URL_WRITE_RETRY_MS, 'push');
       }
     } else {
       // CLA-326: wheel/pinch/assist frames commit on every frame. The URL is a side
@@ -195,13 +216,32 @@ export function createNavigationHistoryController(options: NavigationHistoryOpti
     // The pending camera URL belonged to the entry the user just left.
     cancelPendingReplace();
     const decoded = navigationStateFromUrl(adapter.getHref(), options.defaults, options.urlOptions);
-    const restored = await options.restore(decoded.state, source);
+    abandonedEntryHref = undefined;
+    pendingRestore = { generation, state: decoded.state, source, href: adapter.getHref() };
+    let restored: NavigationState | void;
+    try { restored = await options.restore(decoded.state, source); }
+    catch {
+      if (generation === restoreGeneration) abandonRestore();
+      return state;
+    }
     if (generation !== restoreGeneration) return state;
+    pendingRestore = undefined;
+    abandonedEntryHref = undefined;
     state = restored ?? decoded.state;
     const canonicalUrl = canonicalNavigationUrl(state, adapter.getHref(), options.urlOptions);
-    adapter.replaceState(historyData(), canonicalUrl);
+    try { adapter.replaceState(historyData(), canonicalUrl); }
+    catch { schedulePendingReplace(URL_WRITE_RETRY_MS); }
     notify(source, canonicalUrl);
     return state;
+  };
+
+  const abandonRestore = () => {
+    if (pendingRestore?.generation === restoreGeneration) {
+      state = pendingRestore.state;
+      abandonedEntryHref = pendingRestore.source === 'popstate' ? pendingRestore.href : undefined;
+    }
+    pendingRestore = undefined;
+    restoreGeneration += 1;
   };
 
   return {
@@ -221,7 +261,7 @@ export function createNavigationHistoryController(options: NavigationHistoryOpti
       return state;
     },
     current: () => state,
-    cancelRestore() { restoreGeneration += 1; },
+    cancelRestore: abandonRestore,
     push(next) {
       state = canonicalNavigationState(next, options.defaults);
       write('push', 'push');
