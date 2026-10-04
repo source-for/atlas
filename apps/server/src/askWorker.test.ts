@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { buildAskIndex, retrieveAskSections, type AskCorpusLocation } from "./askRetrieval.js";
-import { createAskRetrievalWorker, type AskRetrievalTicket, type AskRetrievalWorker } from "./askWorker.js";
+import { ASK_RETRIEVAL_COLD_TIMEOUT_MS, createAskRetrievalWorker, type AskRetrievalTicket, type AskRetrievalWorker } from "./askWorker.js";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const SNAPSHOT = {
@@ -168,11 +168,15 @@ test("ask worker: the worker builds only keys it was admitted to build; a stale 
 
 test("ask worker: a slow retrieval after a finished build does not blame the key", async () => {
   const { dir, location } = corpusDir();
-  const worker = createAskRetrievalWorker({ workerUrl: SLOW, timeoutMs: 5_000, coldTimeoutMs: 1_500 });
+  // This request starts cold, so its deadline remains the cold budget even
+  // after the "built" notification. Give fresh worker startup the production
+  // budget; a short cold deadline can fail the ordinary retry under CI load.
+  const coldTimeoutMs = ASK_RETRIEVAL_COLD_TIMEOUT_MS;
+  const worker = createAskRetrievalWorker({ workerUrl: SLOW, timeoutMs: 5_000, coldTimeoutMs });
   try {
     const at = location();
     // The build finishes ("built" clears the blamed key), then the retrieval stalls past the deadline.
-    await assert.rejects(ticketOf(worker.admit([at], SHA)).run(query("slowafter:8000")), /timed out/);
+    await assert.rejects(ticketOf(worker.admit([at], SHA)).run(query(`slowafter:${coldTimeoutMs + 5_000}`)), /timed out/);
     assert.equal(worker.stats().timeouts, 1);
     assert.deepEqual(worker.stats().failedKeys, [], "the key built fine: it is not negatively cached");
     assert.ok(await ticketOf(worker.admit([at], SHA)).run(query("renderer")), "the next request rebuilds it on a fresh worker");
