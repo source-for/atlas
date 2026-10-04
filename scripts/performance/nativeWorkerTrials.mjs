@@ -80,7 +80,8 @@ export async function createNativeWorkerTrialSession({tab,cdp,origin,runs=20,out
   await cdp.send('Runtime.enable',{});await cdp.send('Network.enable',{});
   await cdp.send('Network.setBlockedURLs',{urls:['*://*/api/ask*','*://*/api/operator/*','https://openrouter.ai/*','https://api.openai.com/*','https://api.anthropic.com/*']});
   originalDevMode=await evaluate(`(()=>{if(location.origin!==${JSON.stringify(origin)})throw new Error('Expected already signed-in target origin');const original=localStorage.getItem('okie.devMode');localStorage.setItem('okie.devMode','1');return original;})()`);
-  report.environment.browser=await cdp.send('Browser.getVersion',{}).then(value=>({product:value.product,jsVersion:value.jsVersion,protocolVersion:value.protocolVersion})).catch(()=>({unavailable:true}));
+  const browserMetadata=await cdp.send('Runtime.evaluate',{expression:`(async()=>{const data=navigator.userAgentData;if(!data)return{unavailable:true};const high=await data.getHighEntropyValues(['fullVersionList','platformVersion','architecture','bitness']);return{brands:high.fullVersionList??data.brands,platform:data.platform,platformVersion:high.platformVersion,architecture:high.architecture,bitness:high.bitness,mobile:data.mobile};})()`,returnByValue:true,awaitPromise:true},{timeoutMs:3000}).catch(()=>null);
+  report.environment.browser=browserMetadata?.result?.value??{unavailable:true};
   await drain();
  }catch(error){
   if(originalDevMode!==undefined)await restoreDevMode().catch(()=>{});
@@ -135,8 +136,19 @@ export async function createNativeWorkerTrialSession({tab,cdp,origin,runs=20,out
    const storyStart=await read('performance.now()');
    row.stage='story-launch';
    await click(tab.playwright.locator('[data-testid="story-launch-overview"]'));
+   row.stage='story-launch-ready';
+   await poll(`(()=>{const player=document.querySelector('.story-player'),app=document.querySelector('[data-testid="atlas-app"]');return player?.dataset.storyPreparing==='false'&&player.getAttribute('aria-busy')==='false'&&window.__okieBenchmark.inspectorEntityId()===app?.dataset.selectedEntityId;})()`);
+   const playback=await read(`document.querySelector('.story-player')?.dataset.playbackState`);
+   if(playback!=='paused'){
+    row.stage='story-pause';
+    await click(tab.playwright.getByRole('button',{name:/^Pause (camera flight|arrival settle|narration)$/}));
+   }
+   await poll(`document.querySelector('.story-player')?.dataset.playbackState==='paused'&&document.querySelector('.story-player')?.dataset.storyPreparing==='false'`);
+   const jumpState=`(()=>{const player=document.querySelector('.story-player'),app=document.querySelector('[data-testid="atlas-app"]');let navigation;try{navigation=JSON.parse(app?.dataset.navigationState??'{}');}catch{}return{atMs:performance.now(),step:navigation?.story?.step,playbackState:player?.dataset.playbackState,preparing:player?.dataset.storyPreparing==='true',inspectorMatches:window.__okieBenchmark.inspectorEntityId()===app?.dataset.selectedEntityId};})()`;
+   row.beforeJump=await read(jumpState);
    row.stage='story-jump';
    await click(tab.playwright.getByRole('button',{name:/^Go to story step 3:/}));
+   row.afterJump=await read(jumpState);
    row.stage='story-paused';
    await poll(`(()=>{const player=document.querySelector('[data-playback-state="paused"]'),app=document.querySelector('[data-testid="atlas-app"]');return player?.dataset.storyPreparing==='false'&&player.getAttribute('aria-busy')==='false'&&player.querySelector('.story-copy small')?.textContent.includes('STEP 3 OF')&&window.__okieBenchmark.inspectorEntityId()===app?.dataset.selectedEntityId;})()`);
    row.metrics.storyPausedMs=(await read('performance.now()'))-storyStart;
