@@ -83,6 +83,8 @@ export function createSceneCompileSession(health = browserSceneWorkerHealth): Sc
     let lastPhase: SceneWorkerProgress['phase'] | 'queued' = 'queued';
     const fail = (reason: SceneWorkerDiagnosticMetric = 'atlas-worker-response-error') => {
       if (active !== job) return;
+      // Response rejection can depend on the requested scene/scope rather than platform health.
+      // Reset that worker, but reserve the session retry cap for transport/runtime stalls.
       if (reason === 'atlas-worker-unavailable' || reason === 'atlas-worker-post-message-error') health.markBroken();
       else if (!job.abandoned && (reason === 'atlas-worker-timeout' || reason === 'atlas-worker-runtime-error' || reason === 'atlas-worker-message-error')) health.transientFailure();
       // Abandoned work has no waiting user intent; its deadline only frees the worker.

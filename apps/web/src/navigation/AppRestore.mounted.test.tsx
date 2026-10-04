@@ -184,9 +184,18 @@ describe('mounted App story history restoration', () => {
    await act(async () => root.unmount());
    const graph = JSON.parse(JSON.stringify(snapshot).replaceAll('container:web-app', 'container:apps-web').replaceAll('Atlas web app', '@okie/web')) as ArchitectureSnapshot;
    const graphView = structuredClone(view) as ArchitectureView;
-   const packet = sliceArchitectureNeighborhood(graph, graphView, { focusEntityId: graphView.rootEntityId });
+   const packet = structuredClone(sliceArchitectureNeighborhood(graph, graphView, { focusEntityId: graphView.rootEntityId }));
+   const container = graph.entities.find(entity => entity.id === 'container:apps-web')!;
+   const description = container.responsibility!;
+   expect(description).toBeTruthy();
+   const loadNeighborhood = vi.fn(async (focus: string) => {
+     const deepPacket = structuredClone(sliceArchitectureNeighborhood(graph, graphView, { focusEntityId: focus }));
+     // Partial deep packets omit prose already captured in the boot neighborhood.
+     delete deepPacket.snapshot.entities.find(entity => entity.id === container.id)!.responsibility;
+     return deepPacket;
+   });
    const renamedStory = JSON.parse(JSON.stringify(story).replaceAll('container:web-app', 'container:apps-web'));
-   fixture = compileScanNeighborhoodFixture(packet, renamedStory, { loadNeighborhood: async focus => sliceArchitectureNeighborhood(graph, graphView, { focusEntityId: focus }), loadStory: async () => renamedStory, loadExcerpts: async () => undefined });
+   fixture = compileScanNeighborhoodFixture(packet, renamedStory, { loadNeighborhood, loadStory: async () => renamedStory, loadExcerpts: async () => undefined });
    setActiveScanFixture(fixture);
    const module = await import('../App'); module.refreshAppScanFixture();
    window.history.replaceState(null, '', '/?fixture=scan&backend=canvas2d&root=container%3Aapps-web&detail=context&lens=system%3Aokie&z=7.95');
@@ -195,7 +204,12 @@ describe('mounted App story history restoration', () => {
    await act(async () => { host.querySelector<HTMLButtonElement>('#overview-tab')!.click(); });
    expect(captured.controller!.current()).toMatchObject({ rootEntityId: 'container:apps-web', selectedId: 'container:apps-web' });
    expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-selected-entity-id')).toBe('container:apps-web');
-   expect(host.querySelector('[data-testid="inspector-overview"]')!.textContent).toContain('@okie/web');
+   expect(loadNeighborhood).toHaveBeenCalledWith('container:apps-web', expect.anything());
+   const overview = host.querySelector('[data-testid="inspector-overview"]')!;
+   expect(overview.querySelector('[data-contextual-overview]')!.getAttribute('data-contextual-overview')).toBe('container:apps-web');
+   expect(overview.querySelector('.overview-title')!.textContent).toBe('@okie/web');
+   expect(overview.querySelector('.overview-identity-meta .overview-chip')!.textContent).toBe('Container');
+   expect(overview.textContent).toContain(description);
  });
 
  it.each([false, true])('validates %s stress deep-link IDs against the loaded fixture', async unknown => {

@@ -1462,9 +1462,10 @@ export function App() {
   const [importMermaidSource, setImportMermaidSource] = useState('');
   const [importMermaidError, setImportMermaidError] = useState<string>();
   const goldenScene = useMemo(() => activeCreateScene(scanFixture?.navigation.rootEntityId ?? 'system:okie'), []);
+  const [stressDefaultEntityId, setStressDefaultEntityId] = useState('stress-loading');
   const navigationDefaults = useMemo<NavigationDefaults>(() => {
     const identity = query.fixture === 'stress'
-      ? { repositoryId: 'repo:renderer-stress', snapshotId: `snapshot:stress:${query.seed}`, viewId: 'view:stress:overview', rootEntityId: 'stress-loading' }
+      ? { repositoryId: 'repo:renderer-stress', snapshotId: `snapshot:stress:${query.seed}`, viewId: 'view:stress:overview', rootEntityId: stressDefaultEntityId }
       : scanFixture?.navigation ?? { repositoryId: 'repo:okie-golden', snapshotId: 'snapshot:okie-golden-worktree-v1', viewId: 'view:okie-golden-hierarchy', rootEntityId: 'system:okie' };
     return {
       ...identity,
@@ -1474,7 +1475,7 @@ export function App() {
       minZoom: ATLAS_CAMERA_BOUNDS.minZoom,
       maxZoom: ATLAS_CAMERA_BOUNDS.maxZoom,
     };
-  }, [goldenScene, query.fixture, query.seed]);
+  }, [goldenScene, query.fixture, query.seed, stressDefaultEntityId]);
   const stressNavigationSourceRef = useRef({ entities: [{ id: 'stress-loading' }] });
   const initialNavigationHrefRef = useRef(window.location.href);
   const stressBootNavigationSupersededRef = useRef(false);
@@ -1764,9 +1765,15 @@ export function App() {
   const semanticRenderTopologyRef = useRef<{ key: string; scene: AtlasScene; projection: ProjectionOverride | undefined } | undefined>(undefined);
   const semanticLens = semanticLensSessionPresentationState(semanticLensSession);
 
-  // Canonical selection survives a guarded or paged scene. Read each render: enrichment
-  // merges mutate the published snapshot in place without changing its identity.
-  const selected = resolveInspectorEntity(activeSnapshot, scene.entities, selectedId, Boolean(scanFixture && !importedAtlas));
+  // Keep published presentation stable during camera renders, while graph generations
+  // invalidate enrichment merged into the same canonical snapshot identity.
+  const selectedCanonical = activeSnapshot.entities.find(entity => entity.id === selectedId);
+  const selectedResident = scene.entities.find(entity => entity.id === selectedId)
+    ?? (selectedCanonical ? undefined : scene.entities[0]);
+  const publishedInspector = Boolean(scanFixture && !importedAtlas);
+  const selectedSceneGeneration = scanFixture?.getSceneGeneration();
+  const selected = useMemo(() => resolveInspectorEntity(activeSnapshot, scene.entities, selectedId, publishedInspector),
+    [selectedCanonical, selectedResident, selectedId, publishedInspector, selectedSceneGeneration]);
   useEffect(() => {
     if (foregroundRequestStatusRef.current.obsolete()) {
       setLiveMessage('This view changed while navigation was being prepared. Try again.');
@@ -2778,14 +2785,13 @@ export function App() {
       setScene(stressScene);
       stressNavigationSourceRef.current.entities = stressScene.entities;
       const defaultId = stressScene.entities[0]?.id ?? 'stress-loading';
-      // The history controller retains this defaults object across asynchronous boot.
-      navigationDefaults.rootEntityId = defaultId;
-      navigationDefaults.selectedId = defaultId;
+      const loadedDefaults = { ...navigationDefaults, rootEntityId: defaultId, selectedId: defaultId };
+      setStressDefaultEntityId(defaultId);
       const decoded = navigationStateFromUrl(stressBootNavigationSupersededRef.current ? window.location.href : initialNavigationHrefRef.current,
-        navigationDefaults, navigationUrlOptions).state;
+        loadedDefaults, navigationUrlOptions).state;
       const restoredBaseDetail = decoded.detail ?? semanticDetails[getLevel(decoded.camera.zoom)];
       const validated = validateRestoredSemanticLensPath(stressScene, restoredBaseDetail, decoded.lensPath ?? [], decoded.camera.zoom);
-      const restored = canonicalNavigationState({ ...decoded, lensPath: validated.entries.map(entry => entry.targetId) }, navigationDefaults);
+      const restored = canonicalNavigationState({ ...decoded, lensPath: validated.entries.map(entry => entry.targetId) }, loadedDefaults);
       installSemanticSession({ baseDetail: restoredBaseDetail, settled: validated.entries, active: idleSemanticLens() });
       updateCamera(restored.camera);
       setSelectedId(restored.selectedId);
