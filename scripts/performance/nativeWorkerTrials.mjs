@@ -91,7 +91,7 @@ export async function createNativeWorkerTrialSession({tab,cdp,origin,runs=20,out
  const runOne=async({scenario,cache,repetition,prime=false})=>{
   if(finished||busy)throw new Error('Session finished or another journey is running');
   if(!['web','app'].includes(scenario)||!['cold','warm'].includes(cache)||!Number.isInteger(repetition)||repetition<1||repetition>runs||prime&&cache!=='warm')throw new Error('Invalid journey configuration');
-  busy=true;const row={scenario,cache,repetition,prime,expected:expectedFor(scenario),metrics:{},warnings:[],unexpectedRequests:[],cacheResponses:{total:0,disk:0,serviceWorker:0}};
+  busy=true;const row={scenario,cache,repetition,prime,expected:expectedFor(scenario),stage:'setup',metrics:{},warnings:[],unexpectedRequests:[],cacheResponses:{total:0,disk:0,serviceWorker:0}};
   const started=Date.now(),deadline=started+deadlineMs,key=`${scenario}:${repetition}`;
   const remaining=()=>{const left=deadline-Date.now();if(left<=0)throw new Error('Journey deadline exceeded');return left;};
   const read=expression=>evaluate(expression,Math.min(3000,remaining()));
@@ -113,11 +113,16 @@ export async function createNativeWorkerTrialSession({tab,cdp,origin,runs=20,out
   };
   try{
    await drain();
+   row.stage='cache-clear';
    if(cache==='cold'){primed.clear();await cdp.send('Network.clearBrowserCache',{});}
+   row.stage='cache-policy';
    await cdp.send('Network.setCacheDisabled',{cacheDisabled:cache==='cold'});
    if(cache==='warm'&&!prime&&!primed.has(key))throw new Error('Measured warm journey requires a successful explicit prime');
+   row.stage='navigate';
    await bounded(tab.goto(`${origin}${paths[scenario]}&perf=1&backend=${backend}`),remaining());
+   row.stage='probe';
    row.probeAvailability=await read(script);
+   row.stage='readiness';
    row.metrics.usableMs=await poll(`(()=>{const app=document.querySelector('[data-testid="atlas-app"]');let replay,navigation;try{replay=JSON.parse(app?.dataset.rendererReplayState??'{}');navigation=JSON.parse(app?.dataset.navigationState??'{}');}catch{return false;}if(Array.from(document.querySelectorAll('[role="status"]')).some(node=>/This history entry could not|Background scene preparation is unavailable|Reload this page/.test(node.textContent??'')))return{failure:'deep-history-preparation'};const loading=Boolean(document.querySelector('.map-heading [role="status"]'));const canvas=document.querySelector('[data-testid="atlas-canvas"] canvas');const drawn=app?.hasAttribute('data-renderer-visible-entities')?Number(app.dataset.rendererVisibleEntities)>0:replay.residency?.partitionDrawn>0;return !loading&&navigation.selectedId===${JSON.stringify(row.expected)}&&navigation.rootEntityId==='container:apps-web'&&Number(app?.dataset.cameraSettledEpoch)>0&&app?.dataset.selectedEntityId===${JSON.stringify(row.expected)}&&window.__okieBenchmark?.inspectorEntityId()===${JSON.stringify(row.expected)}&&Number(app.dataset.projectionEntityCount)>0&&drawn&&canvas?.width>0&&canvas?.height>0&&performance.now();})()`);
    row.initialBackend=row.backend=await read(`document.querySelector('[data-testid="renderer-status"]')?.dataset.activeBackend`);
    row.backendMismatch=row.backend!==backend;
@@ -125,14 +130,19 @@ export async function createNativeWorkerTrialSession({tab,cdp,origin,runs=20,out
    row.usableContract=await read(`document.querySelector('[data-testid="atlas-app"]')?.hasAttribute('data-renderer-visible-entities')?'visible-entities':'residency-surrogate'`);
    row.deepSelection=await read(`(()=>{const query=new URLSearchParams(location.search),overview=document.querySelector('[data-contextual-overview]'),prose=overview?.querySelector('.overview-description,.overview-lead,[data-block-type="markdown"],[data-block-type="observed_text"]');return{selected:document.querySelector('[data-testid="atlas-app"]')?.dataset.selectedEntityId,lensDepth:query.getAll('lens').length,heading:overview?.querySelector('.overview-title')?.textContent,kind:overview?.querySelector('.overview-chip')?.textContent,descriptionPresent:Boolean(prose?.textContent?.trim())&&!overview?.textContent.includes('No description has been captured yet.')};})()`);
    if(scenario==='app'&&row.deepSelection.lensDepth!==3)throw new Error('Deep App lens path was rewritten');
+   row.stage='story-menu';
    if(await read(`Boolean(document.querySelector('.story-catalog-menu > summary'))`))await click(tab.playwright.locator('.story-catalog-menu > summary'));
    const storyStart=await read('performance.now()');
+   row.stage='story-launch';
    await click(tab.playwright.locator('[data-testid="story-launch-overview"]'));
+   row.stage='story-jump';
    await click(tab.playwright.getByRole('button',{name:/^Go to story step 3:/}));
+   row.stage='story-paused';
    await poll(`(()=>{const player=document.querySelector('[data-playback-state="paused"]'),app=document.querySelector('[data-testid="atlas-app"]');return player?.dataset.storyPreparing==='false'&&player.getAttribute('aria-busy')==='false'&&player.querySelector('.story-copy small')?.textContent.includes('STEP 3 OF')&&window.__okieBenchmark.inspectorEntityId()===app?.dataset.selectedEntityId;})()`);
    row.metrics.storyPausedMs=(await read('performance.now()'))-storyStart;
    row.afterStory=await read(`(${timingReport.toString()})()`);
-  }catch(error){row.error=/^(Journey deadline exceeded|Diagnostic evaluation failed|Measured warm journey requires a successful explicit prime|Deep App lens path was rewritten|Deep history preparation failed)$/.test(error.message)?error.message:'Navigation or UI action failed (external details omitted)';
+   row.stage='complete';
+  }catch(error){row.exceptionType=['Error','ReferenceError','TypeError','SyntaxError','RangeError'].includes(error?.name)?error.name:'Other';row.error=/^(setTimeout is not defined|clearTimeout is not defined|Journey deadline exceeded|Diagnostic evaluation failed|Measured warm journey requires a successful explicit prime|Deep App lens path was rewritten|Deep history preparation failed)$/.test(error.message)?error.message:'Navigation or UI action failed (external details omitted)';
    if(error.message==='Journey deadline exceeded')await evaluate('window.stop()',2000).catch(()=>{});
    row.lastDiagnostics=await evaluate(`(${timingReport.toString()})()`,2000).catch(()=>null);}
   finally{
