@@ -1,3 +1,4 @@
+import { scenePreparationFailureMessage } from './renderer/scanFixture';
 import { completeFixturePreparation } from './renderer/fixturePreparation';
 import { inspectorEntityForFraming, resolveInspectorEntity, retainResidentInspectorEntity } from './inspector/inspectorEntity';
 import { navigationEntityReference } from './navigation/entityReferences';
@@ -1820,7 +1821,7 @@ export function App() {
     if (scanFixture && !importedAtlasRef.current) {
       await runForegroundScanNavigation('Preparing inspector child', async request => {
         request.generationFence.allowChanges();
-        await request.fixture.ensureNeighborhood(id);
+        await request.fixture.ensureNeighborhood(id, request.signal);
         requireForegroundSceneRequest(request);
         const target = activeSnapshot.entities.find(entity => entity.id === id);
         const focusId = target?.kind === 'code' ? target.parentId ?? id : id;
@@ -2569,7 +2570,7 @@ export function App() {
             restoredScene = await prepareForegroundWithRetry(request, async () => {
               for (const id of new Set([next.rootEntityId, next.selectedId, ...(next.lensPath ?? [])])) {
                 request.generationFence.allowChanges();
-                await request.fixture.ensureNeighborhood(id);
+                await request.fixture.ensureNeighborhood(id, request.signal);
                 requireForegroundSceneRequest(request);
               }
               const compileFocus = next.lensPath?.at(-1) ?? next.selectedId ?? next.rootEntityId;
@@ -2584,7 +2585,7 @@ export function App() {
           if (!request) throw error;
           if (request.tokenCurrent()) {
             controller.cancelRestore();
-            if (!isSceneRequestAbort(error)) setLiveMessage('This history entry could not be prepared.');
+            if (!isSceneRequestAbort(error)) setLiveMessage(scenePreparationFailureMessage(error, 'This history entry could not be prepared.'));
           }
           if (navigationRestoreGenerationRef.current === restoreGeneration) restoringNavigationRef.current = false;
           request?.finish();
@@ -2713,13 +2714,16 @@ export function App() {
           return restoredNavigation;
         } catch (error) {
           if (!request) throw error;
-          if (request.tokenCurrent()) controller.cancelRestore();
-          setLiveMessage('This history entry could not be applied.');
+          if (request.tokenCurrent()) {
+            controller.cancelRestore();
+            if (!isSceneRequestAbort(error)) setLiveMessage(scenePreparationFailureMessage(error, 'This history entry could not be applied.'));
+          }
         } finally {
           request?.finish();
           if (navigationRestoreGenerationRef.current === restoreGeneration) restoringNavigationRef.current = false;
         }
       },
+      onRestoreError(error) { setLiveMessage(scenePreparationFailureMessage(error, 'This history entry could not be applied.')); },
       onCommit(commit) {
         setSettledNavigation(commit.state);
         setCameraSettledEpoch(commit.settledEpoch);
@@ -3675,6 +3679,7 @@ export function App() {
 
   function cancelForegroundSceneRequest(cancelHistoryRestore = true) {
     const pending = foregroundSceneRequestRef.current.pending();
+    if (storyPreparationActiveRef.current) pauseStoryWithoutHistory(renderedCameraRef.current);
     foregroundSceneRequestRef.current.cancel();
     foregroundRequestStatusRef.current.cancel();
     storyPreparationStatusRef.current.cancel();
@@ -3713,7 +3718,12 @@ export function App() {
     beginMapInteraction('semantic-edit', {
       beginCameraIntent: beginUserCameraIntent,
       interrupt: () => interruptStory(reason, reachedCamera),
-      pauseWithoutHistory: () => { pauseStoryWithoutHistory(reachedCamera); setStoryInterruption(reason); },
+      pauseWithoutHistory: () => {
+        // Editing supersedes a prepared story destination without adopting camera intent.
+        if (storyPreparationActiveRef.current) cancelForegroundSceneRequest();
+        pauseStoryWithoutHistory(reachedCamera);
+        setStoryInterruption(reason);
+      },
     });
   }
 
@@ -3753,9 +3763,9 @@ export function App() {
     const request = beginForegroundScanNavigation(reason, false, storyPreparation);
     await completeForegroundSceneRequest({ ...request, owns: request.tokenCurrent },
       () => prepareForegroundWithRetry(request, () => prepare(request), 3, commit => commit()), () => {},
-      () => {
-        setLiveMessage('This map could not be prepared. Try again.');
-        if (storyPreparation) { pauseStoryWithoutHistory(renderedCameraRef.current); setStoryInterruption('The requested story step could not be prepared.'); }
+      error => {
+        setLiveMessage(scenePreparationFailureMessage(error, 'This map could not be prepared. Try again.'));
+        if (storyPreparation) { pauseStoryWithoutHistory(renderedCameraRef.current); setStoryInterruption(scenePreparationFailureMessage(error, 'The requested story step could not be prepared.')); }
       });
   }
 
@@ -3773,7 +3783,7 @@ export function App() {
 
   async function prepareScanOpenInside(request: ReturnType<typeof beginForegroundScanNavigation>, entityId: string, codeChildId?: string) {
     request.generationFence.allowChanges();
-    await request.fixture.ensureNeighborhood(entityId);
+    await request.fixture.ensureNeighborhood(entityId, request.signal);
     requireForegroundSceneRequest(request);
     const target = request.sourceScene.entities.find(entity => entity.id === entityId);
     const canonical = activeSnapshot.entities.find(entity => entity.id === entityId);
@@ -3791,7 +3801,7 @@ export function App() {
     if (!detail) return undefined;
     const compileFocus = scanCompileFocusForBand(activeSnapshot, entityId, detail, request.fixture.navigation.rootEntityId);
     request.generationFence.allowChanges();
-    await request.fixture.ensureNeighborhood(compileFocus);
+    await request.fixture.ensureNeighborhood(compileFocus, request.signal);
     requireForegroundSceneRequest(request);
     const prepared = await composeScanSceneAsync(compileFocus, request.sourceScene, request.signal, undefined, [entityId, ...(codeChildId ? [codeChildId] : [])], request.generationFence);
     requireForegroundSceneRequest(request);
@@ -3888,7 +3898,7 @@ export function App() {
         setScene(nextScene);
       }
     }).catch(error => {
-      if (request.owns() && !(error instanceof DOMException && error.name === 'AbortError')) setLiveMessage('This map view could not be prepared. Try again.');
+      if (request.owns() && !(error instanceof DOMException && error.name === 'AbortError')) setLiveMessage(scenePreparationFailureMessage(error, 'This map view could not be prepared. Try again.'));
     }).finally(() => {
       if (request.owns()) viewportRequestedTileRef.current = undefined;
     });
@@ -4047,7 +4057,7 @@ export function App() {
       { fixture: scanFixture, scene: sceneRef.current, session: semanticLensSessionRef.current, selection: inspectorSelectionRef.current },
     );
     zoomHandoffInflightRef.current = handoff;
-    void fixture.ensureNeighborhood(handoff.compileFocus).then(async () => {
+    void fixture.ensureNeighborhood(handoff.compileFocus, request.signal).then(async () => {
       if (!owns()) return;
       const prepared = await composeScanSceneAsync(handoff.compileFocus, sourceScene, request.signal);
       if (!owns()) return;
@@ -4067,7 +4077,7 @@ export function App() {
       if (!still || still.compileFocus !== handoff.compileFocus || still.detail !== handoff.detail) return;
       applyCamera(applyScanZoomHandoff(still, liveCamera, livePreferredId, prepared));
     }).catch(error => {
-      if (owns() && !(error instanceof DOMException && error.name === 'AbortError')) setLiveMessage('This detail level could not be prepared. Try again.');
+      if (owns() && !(error instanceof DOMException && error.name === 'AbortError')) setLiveMessage(scenePreparationFailureMessage(error, 'This detail level could not be prepared. Try again.'));
     }).finally(() => {
       if (token === zoomHandoffGenerationRef.current) zoomHandoffInflightRef.current = undefined;
     });
@@ -4091,11 +4101,11 @@ export function App() {
     if (scanFixture && !importedAtlasRef.current) {
       void runForegroundScanNavigation('Preparing captured entity', async request => {
         request.generationFence.allowChanges();
-        await request.fixture.ensureNeighborhood(entity.id);
+        await request.fixture.ensureNeighborhood(entity.id, request.signal);
         requireForegroundSceneRequest(request);
         const compileFocus = scanCompileFocusForBand(activeSnapshot, entity.id, semanticLensSessionRef.current.baseDetail, request.fixture.navigation.rootEntityId);
         request.generationFence.allowChanges();
-        await request.fixture.ensureNeighborhood(compileFocus);
+        await request.fixture.ensureNeighborhood(compileFocus, request.signal);
         requireForegroundSceneRequest(request);
         const compiled = await composeScanSceneAsync(compileFocus, request.sourceScene, request.signal, undefined, [entity.id], request.generationFence);
         return () => {
@@ -4294,7 +4304,7 @@ export function App() {
           session: semanticLensSessionRef.current, viewport: nextViewport, safeArea: measureCurrentMapSafeArea(), signal: request.signal,
           compileScope: async focusId => {
             request.generationFence.allowChanges();
-            await request.fixture.ensureNeighborhood(focusId);
+            await request.fixture.ensureNeighborhood(focusId, request.signal);
             requireForegroundSceneRequest(request);
             const compiled = await composeScanSceneAsync(focusId, request.sourceScene, request.signal, undefined, [selected.id], request.generationFence);
             requireForegroundSceneRequest(request);
@@ -4529,10 +4539,10 @@ export function App() {
       void prepareLevelSceneWithDeadline(controller, () => completeForegroundSceneRequest({ ...request, owns: request.tokenCurrent },
         () => prepareForegroundWithRetry(request, async () => {
           request.generationFence.allowChanges();
-          await fixture.ensureNeighborhood(initialFocus);
+          await fixture.ensureNeighborhood(initialFocus, controller.signal);
           requireForegroundSceneRequest(request);
           const focus = scanCompileFocusForBand(activeSnapshot, preferredId, detail, fixture.navigation.rootEntityId);
-          await fixture.ensureNeighborhood(focus);
+          await fixture.ensureNeighborhood(focus, controller.signal);
           requireForegroundSceneRequest(request);
           const viewRootId = fixture.navigation.rootEntityId;
           const currentFocus = initialScene.rootEntityId ?? viewRootId;
@@ -4540,7 +4550,7 @@ export function App() {
           const compileFocus = handoff?.compileFocus ?? currentFocus;
           return composeScanSceneAsync(compileFocus, initialScene, controller.signal, undefined, initialSelection ? [initialSelection] : undefined, request.generationFence);
         }, 3, prepared => selectLevelLoaded(index, prepared)), () => {},
-        () => setLiveMessage('This detail level could not be prepared. Try again.')), () => {
+        error => setLiveMessage(scenePreparationFailureMessage(error, 'This detail level could not be prepared. Try again.'))), () => {
           if (request.tokenCurrent()) {
             setLiveMessage('Detail level preparation timed out. Choose a level to try again.');
             cancelForegroundSceneRequest();
@@ -4787,7 +4797,7 @@ export function App() {
       if (entityId === navigationIdentityRef.current.rootEntityId) return;
       void runForegroundScanNavigation('Preparing parent architecture', async request => {
         request.generationFence.allowChanges();
-        await request.fixture.ensureNeighborhood(entityId);
+        await request.fixture.ensureNeighborhood(entityId, request.signal);
         requireForegroundSceneRequest(request);
         const compiled = await composeScanSceneAsync(entityId, request.sourceScene, request.signal, undefined, undefined, request.generationFence);
         return () => navigateRootLoaded(entityId, compiled);
@@ -4924,14 +4934,14 @@ export function App() {
         const preferredId = step.focusEntityIds[0] ?? request.fixture.navigation.rootEntityId;
         const initialFocus = scanCompileFocusForBand(activeSnapshot, preferredId, step.reveal, request.fixture.navigation.rootEntityId);
         request.generationFence.allowChanges();
-        await request.fixture.ensureNeighborhood(initialFocus);
+        await request.fixture.ensureNeighborhood(initialFocus, request.signal);
         requireForegroundSceneRequest(request);
         request.generationFence.allowChanges();
-        await request.fixture.ensureNeighborhood(preferredId);
+        await request.fixture.ensureNeighborhood(preferredId, request.signal);
         requireForegroundSceneRequest(request);
         const compileFocus = scanCompileFocusForBand(activeSnapshot, preferredId, step.reveal, request.fixture.navigation.rootEntityId);
         request.generationFence.allowChanges();
-        await request.fixture.ensureNeighborhood(compileFocus);
+        await request.fixture.ensureNeighborhood(compileFocus, request.signal);
         requireForegroundSceneRequest(request);
         const prepared = await composeScanSceneAsync(compileFocus, request.sourceScene, request.signal, undefined, step.focusEntityIds, request.generationFence);
         return () => setStepLoaded(index, play, historyMode, plan, prepared);

@@ -44,6 +44,8 @@ export type NavigationHistoryOptions = {
   adapter?: NavigationHistoryAdapter;
   urlOptions?: NavigationUrlOptions;
   restore(state: NavigationState, source: 'initialize' | 'popstate'): NavigationState | void | Promise<NavigationState | void>;
+  /** Reports only a current restore's unexpected failure; aborts and obsolete work are silent. */
+  onRestoreError?(error: unknown, source: 'initialize' | 'popstate'): void;
   onCommit?(commit: NavigationCommit): void;
   cameraCoalesceMs?: number;
   /** Minimum spacing of camera-only URL replacements (default 200 ms); see `write`. */
@@ -176,6 +178,14 @@ export function createNavigationHistoryController(options: NavigationHistoryOpti
     restoreGeneration += 1;
     pendingRestore = undefined;
     const canonicalUrl = canonicalNavigationUrl(state, adapter.getHref(), options.urlOptions);
+    // A failed push has not created its entry yet. Replacements belong to that
+    // pending entry, so coalesce them into its retry rather than landing it and
+    // promoting the same replacement to a second protected push.
+    if (mode === 'replace' && pendingTimer !== undefined && pendingMode === 'push') {
+      pendingState = state;
+      notify(source, canonicalUrl);
+      return;
+    }
     // App may still display the pre-Back scene after abandonment. A later write
     // based on that view must leave the popped entry available instead of erasing it.
     if (mode === 'replace' && abandonedEntryHref) {
@@ -220,8 +230,15 @@ export function createNavigationHistoryController(options: NavigationHistoryOpti
     pendingRestore = { generation, state: decoded.state, source, href: adapter.getHref() };
     let restored: NavigationState | void;
     try { restored = await options.restore(decoded.state, source); }
-    catch {
-      if (generation === restoreGeneration) abandonRestore();
+    catch (error) {
+      if (generation === restoreGeneration) {
+        abandonRestore();
+        const aborted = typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError';
+        if (!aborted) {
+          if (options.onRestoreError) options.onRestoreError(error, source);
+          else console.error('Atlas navigation restore failed', error);
+        }
+      }
       return state;
     }
     if (generation !== restoreGeneration) return state;

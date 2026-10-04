@@ -68,6 +68,18 @@ export type ScanNavigationDefaults = {
   rootEntityId: string;
 };
 
+export class ScanWorkerUnavailableError extends Error {
+  constructor() {
+    super('Background scene preparation is unavailable. Reload this page to try again.');
+    this.name = 'ScanWorkerUnavailableError';
+  }
+}
+
+/** Fixed user-facing copy; never expose worker payloads or exception text. */
+export function scenePreparationFailureMessage(error: unknown, fallback: string): string {
+  return error instanceof ScanWorkerUnavailableError ? error.message : fallback;
+}
+
 /** A validated, live-compiled scanned snapshot ready to drive the app shell. */
 export type ScanFixture = {
   snapshot: ArchitectureSnapshot;
@@ -97,7 +109,7 @@ export type ScanFixture = {
   /** How the snapshot arrived — neighborhood fetch vs the full published trio. */
   boot: 'neighborhood' | 'full';
   /** Fetch+merge a container/file subgraph. No-op when the neighborhood is already resident. */
-  ensureNeighborhood: (focusEntityId: string) => Promise<void>;
+  ensureNeighborhood: (focusEntityId: string, signal?: AbortSignal) => Promise<void>;
   /** Fetch portable excerpts for one entity when Source opens. */
   ensureExcerpts: (entityId: string) => Promise<SourceExcerpt[] | undefined>;
   /**
@@ -110,9 +122,9 @@ export type ScanFixture = {
 };
 
 export type RawScanTrio = { snapshot: unknown; view: unknown; story: unknown; stories?: unknown };
-export type ScanTrioLoader = (name: 'snapshot' | 'view' | 'story') => Promise<unknown>;
+export type ScanTrioLoader = (name: 'snapshot' | 'view' | 'story', signal?: AbortSignal) => Promise<unknown>;
 export type ScanNeighborhoodHost = {
-  loadNeighborhood: (focusEntityId: string) => Promise<ArchitectureNeighborhoodPacket>;
+  loadNeighborhood: (focusEntityId: string, signal?: AbortSignal) => Promise<ArchitectureNeighborhoodPacket>;
   loadExcerpts: (entityId: string) => Promise<SourceExcerpt[] | undefined>;
   loadStory: () => Promise<unknown>;
   /** Optional published `stories.json` catalog. Missing/404 is undefined, never fatal. */
@@ -180,7 +192,7 @@ function buildLiveScanFixture(
   rememberPublishedChildCounts(snapshot, childCounts);
   const unpublishedChildren: ContainmentEntity[] = [...(extras.unpublishedChildren ?? [])];
   const loadedFocusIds = extras.loadedFocusIds ?? new Set<string>();
-  const inflight = new Map<string, Promise<void>>();
+  const inflight = new Map<string, { work: Promise<void>; controller: AbortController; waiters: Set<object> }>();
   const host = extras.host;
   // CLA-94: after a nested (L3/L4) neighborhood merge, the view-root packet
   // must be fetched again before compiling L1/L2. loadedFocusIds + "already
@@ -207,6 +219,7 @@ function buildLiveScanFixture(
   let sceneWorkerLifetime = 0;
   const disposeSceneWorker = () => {
     sceneWorkerLifetime++;
+    for (const entry of inflight.values()) entry.controller.abort();
     inflight.clear();
     sceneWorker?.dispose();
     sceneWorker = undefined;
@@ -266,12 +279,16 @@ function buildLiveScanFixture(
   const createSceneAsync = async (focusEntityId: string, previous?: AtlasScene, residency?: ScanViewportResidency, signal?: AbortSignal): Promise<AtlasScene> => {
     return compileCurrentGeneration(() => snapshotGeneration, async () => {
       const prepared = await measureAtlasAsyncPhase('atlas-worker-round-trip', () => workerSession().compile({ snapshot, view, focusEntityId, boot: extras.boot, modeOptions: options, childCounts, unpublishedChildren, ...(previous ? { previous } : {}), ...(residency ? { residency } : {}) }, { generation: fullWorkerGeneration(), priority: 'selected', signal }));
-      if (!prepared && snapshot.entities.length > SCAN_BAND_DEPTH_MIN_ENTITIES) throw new Error('Background scene preparation is unavailable. Keep the current view and try again.');
+      if (!prepared && snapshot.entities.length > SCAN_BAND_DEPTH_MIN_ENTITIES) {
+        if (workerSession().unavailable()) throw new ScanWorkerUnavailableError();
+        throw new Error('Background scene preparation is unavailable. Keep the current view and try again.');
+      }
       return prepared ?? createScene(focusEntityId, previous, residency);
     }, signal);
   };
 
-  const ensureNeighborhood = async (focusEntityId: string): Promise<void> => {
+  const ensureNeighborhood = async (focusEntityId: string, signal?: AbortSignal): Promise<void> => {
+    signal?.throwIfAborted();
     if (!host) return;
     const focus = focusEntityId.trim();
     if (!focus) return;
@@ -288,14 +305,27 @@ function buildLiveScanFixture(
       loadedFocusIds.add(focus);
       return;
     }
+    const waitFor = async (entry: NonNullable<ReturnType<typeof inflight.get>>) => {
+      const waiter = {};
+      entry.waiters.add(waiter);
+      const leave = () => {
+        entry.waiters.delete(waiter);
+        if (signal?.aborted && entry.waiters.size === 0) {
+          entry.controller.abort();
+          if (inflight.get(focus) === entry) inflight.delete(focus);
+        }
+      };
+      signal?.addEventListener('abort', leave, { once: true });
+      try { await awaitAbortableWork(entry.work, signal); }
+      finally { signal?.removeEventListener('abort', leave); leave(); }
+    };
     const pending = inflight.get(focus);
-    if (pending) {
-      await pending;
-      return;
-    }
+    if (pending) return waitFor(pending);
+    const controller = new AbortController();
     const lifetime = sceneWorkerLifetime;
     const work = (async () => {
-      const packet = await host.loadNeighborhood(focus);
+      const packet = await awaitAbortableWork(host.loadNeighborhood(focus, controller.signal), controller.signal);
+      controller.signal.throwIfAborted();
       if (lifetime !== sceneWorkerLifetime) throw new DOMException('Fixture preparation cancelled', 'AbortError');
       const packetIssues = measureAtlasPhase('atlas-validate', () => validateNeighborhoodPacket(packet));
       if (packetIssues.length) throw new ScanFixtureError(packetIssues);
@@ -333,12 +363,11 @@ function buildLiveScanFixture(
         fetchedDeeperThanRoot = false;
       }
     })();
-    inflight.set(focus, work);
-    try {
-      await work;
-    } finally {
-      if (inflight.get(focus) === work) inflight.delete(focus);
-    }
+    const entry = { work, controller, waiters: new Set<object>() };
+    inflight.set(focus, entry);
+    const clear = () => { if (inflight.get(focus) === entry) inflight.delete(focus); };
+    void work.then(clear, clear);
+    await waitFor(entry);
   };
 
   const ensureExcerpts = async (entityId: string): Promise<SourceExcerpt[] | undefined> => {
@@ -530,14 +559,16 @@ export function availableScanRepoSlugs(): string[] {
  * a missing or invalid object raises ScanFixtureError, never a partial fixture.
  */
 export function fetchScanTrioLoader(slug?: string, fetchImpl: typeof fetch = fetch): ScanTrioLoader {
-  return async name => {
+  return async (name, signal) => {
+    signal?.throwIfAborted();
     const path = slug
       ? `/scan/${encodeURIComponent(slug)}/${name}.json`
       : `/scan/${name}.json`;
     let response: Response;
     try {
-      response = await measureAtlasAsyncPhase('atlas-fetch', () => fetchImpl(path));
+      response = await measureAtlasAsyncPhase('atlas-fetch', () => awaitAbortableWork(fetchImpl(path, { signal }), signal));
     } catch (error) {
+      signal?.throwIfAborted();
       throw new ScanFixtureError([{
         path: name,
         message: `Could not reach the scan service for ${path} (${error instanceof Error ? error.message : String(error)}).`,
@@ -552,9 +583,11 @@ export function fetchScanTrioLoader(slug?: string, fetchImpl: typeof fetch = fet
       }]);
     }
     try {
-      const text = await measureAtlasAsyncPhase('atlas-body', () => response.text());
-    return measureAtlasPhase('atlas-parse', () => JSON.parse(text)) as unknown;
+      const text = await measureAtlasAsyncPhase('atlas-body', () => awaitAbortableWork(response.text(), signal));
+      signal?.throwIfAborted();
+      return measureAtlasPhase('atlas-parse', () => JSON.parse(text)) as unknown;
     } catch {
+      signal?.throwIfAborted();
       throw new ScanFixtureError([{ path: name, message: `${path} is not valid JSON.` }]);
     }
   };
@@ -594,36 +627,41 @@ export function resolveScanDocLoader(
   return maps.root[key]!;
 }
 
-async function fetchScanDoc(name: 'snapshot' | 'view' | 'story', slug?: string): Promise<unknown> {
-  return (await resolveScanDocLoader(name, slug, { root: rootScanLoaders, repo: repoScanLoaders })()).default;
+async function fetchScanDoc(name: 'snapshot' | 'view' | 'story', slug?: string, signal?: AbortSignal): Promise<unknown> {
+  signal?.throwIfAborted();
+  return (await awaitAbortableWork(resolveScanDocLoader(name, slug, { root: rootScanLoaders, repo: repoScanLoaders })(), signal)).default;
 }
 
-async function loadOptionalStoryCatalog(slug?: string, fetchImpl: typeof fetch = fetch): Promise<unknown> {
-  const fetched = await fetchOptionalScanJson(scanObjectPath(slug, 'stories.json'), fetchImpl);
+async function loadOptionalStoryCatalog(slug?: string, fetchImpl: typeof fetch = fetch, signal?: AbortSignal): Promise<unknown> {
+  const fetched = await fetchOptionalScanJson(scanObjectPath(slug, 'stories.json'), fetchImpl, signal);
   if (fetched !== undefined) return fetched;
   const loaders = slug ? repoStoryCatalogLoaders : rootStoryCatalogLoaders;
   const suffix = slug ? `/fixtures/scan/${slug}/stories.json` : '/stories.json';
   const key = Object.keys(loaders).find(path => path.endsWith(suffix));
   if (!key) return undefined;
   try {
-    return (await loaders[key]!()).default;
+    return (await awaitAbortableWork(loaders[key]!(), signal)).default;
   } catch {
+    signal?.throwIfAborted();
     return undefined;
   }
 }
 
-async function fetchOptionalScanJson(path: string, fetchImpl: typeof fetch): Promise<unknown> {
+async function fetchOptionalScanJson(path: string, fetchImpl: typeof fetch, signal?: AbortSignal): Promise<unknown> {
   let response: Response;
   try {
-    response = await measureAtlasAsyncPhase('atlas-fetch', () => fetchImpl(path));
+    response = await measureAtlasAsyncPhase('atlas-fetch', () => awaitAbortableWork(fetchImpl(path, { signal }), signal));
   } catch {
+    signal?.throwIfAborted();
     return undefined;
   }
   if (response.status === 404 || !response.ok) return undefined;
   try {
-    const text = await measureAtlasAsyncPhase('atlas-body', () => response.text());
+    const text = await measureAtlasAsyncPhase('atlas-body', () => awaitAbortableWork(response.text(), signal));
+    signal?.throwIfAborted();
     return measureAtlasPhase('atlas-parse', () => JSON.parse(text)) as unknown;
   } catch {
+    signal?.throwIfAborted();
     return undefined;
   }
 }
@@ -631,10 +669,11 @@ async function fetchOptionalScanJson(path: string, fetchImpl: typeof fetch): Pro
 export async function loadPublishedEnrichmentHonesty(
   slug: string | undefined,
   fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
 ): Promise<PublishedEnrichmentHonesty | undefined> {
   const [reportRaw, statusRaw] = await Promise.all([
-    fetchOptionalScanJson(scanObjectPath(slug, 'enrichment-report.json'), fetchImpl),
-    fetchOptionalScanJson(scanObjectPath(slug, 'enrichment-status.json'), fetchImpl),
+    fetchOptionalScanJson(scanObjectPath(slug, 'enrichment-report.json'), fetchImpl, signal),
+    fetchOptionalScanJson(scanObjectPath(slug, 'enrichment-status.json'), fetchImpl, signal),
   ]);
   return publishedEnrichmentHonesty({
     report: parsePublishedEnrichmentReport(reportRaw),
@@ -667,11 +706,12 @@ function scanObjectPath(slug: string | undefined, basename: string, query?: stri
   return query ? `${path}?${query}` : path;
 }
 
-async function fetchScanJson(path: string, fetchImpl: typeof fetch, label: string): Promise<unknown> {
+async function fetchScanJson(path: string, fetchImpl: typeof fetch, label: string, signal?: AbortSignal): Promise<unknown> {
   let response: Response;
   try {
-    response = await measureAtlasAsyncPhase('atlas-fetch', () => fetchImpl(path));
+    response = await measureAtlasAsyncPhase('atlas-fetch', () => awaitAbortableWork(fetchImpl(path, { signal }), signal));
   } catch (error) {
+    signal?.throwIfAborted();
     throw new ScanFixtureError([{
       path: label,
       message: `Could not reach the scan service for ${path} (${error instanceof Error ? error.message : String(error)}).`,
@@ -686,9 +726,11 @@ async function fetchScanJson(path: string, fetchImpl: typeof fetch, label: strin
     }]);
   }
   try {
-    const text = await measureAtlasAsyncPhase('atlas-body', () => response.text());
+    const text = await measureAtlasAsyncPhase('atlas-body', () => awaitAbortableWork(response.text(), signal));
+    signal?.throwIfAborted();
     return measureAtlasPhase('atlas-parse', () => JSON.parse(text)) as unknown;
   } catch {
+    signal?.throwIfAborted();
     throw new ScanFixtureError([{ path: label, message: `${path} is not valid JSON.` }]);
   }
 }
@@ -719,10 +761,10 @@ export function fetchScanNeighborhoodHost(slug?: string, fetchImpl: typeof fetch
     return params.toString();
   };
   return {
-    async loadNeighborhood(focusEntityId: string) {
+    async loadNeighborhood(focusEntityId: string, signal?: AbortSignal) {
       const focus = focusEntityId.trim();
       const query = focus ? new URLSearchParams({ focus }).toString() : undefined;
-      const raw = await fetchScanJson(scanObjectPath(slug, 'neighborhood.json', pinnedQuery(query)), fetchImpl, 'neighborhood');
+      const raw = await fetchScanJson(scanObjectPath(slug, 'neighborhood.json', pinnedQuery(query)), fetchImpl, 'neighborhood', signal);
       if (!isNeighborhoodPacket(raw)) {
         throw new ScanFixtureError([{ path: 'neighborhood', message: 'Scan neighborhood packet is structurally invalid.' }]);
       }
@@ -759,18 +801,24 @@ export async function loadScanFixture(
   load?: ScanTrioLoader,
   options: ScanModeOptions = {},
   slug?: string,
+  signal?: AbortSignal,
 ): Promise<ScanFixture> {
-  const loader: ScanTrioLoader = load ?? (name => fetchScanDoc(name, slug));
+  signal?.throwIfAborted();
+  const loader: ScanTrioLoader = load ?? ((name, requestSignal) => fetchScanDoc(name, slug, requestSignal));
   const [snapshot, view, story, catalog, honesty] = await Promise.all([
-    loader('snapshot'),
-    loader('view'),
-    loader('story'),
-    loadOptionalStoryCatalog(slug),
-    load && !slug ? Promise.resolve(undefined) : loadPublishedEnrichmentHonesty(slug),
+    awaitAbortableWork(loader('snapshot', signal), signal),
+    awaitAbortableWork(loader('view', signal), signal),
+    awaitAbortableWork(loader('story', signal), signal),
+    loadOptionalStoryCatalog(slug, fetch, signal),
+    load && !slug ? Promise.resolve(undefined) : loadPublishedEnrichmentHonesty(slug, fetch, signal),
   ]);
+  signal?.throwIfAborted();
   const fixture = withEnrichmentHonesty(compileScanFixture({ snapshot, view, story, stories: catalog }, options), honesty);
-  await fixture.prepareInitialScene();
-  return fixture;
+  try {
+    await fixture.prepareInitialScene(signal);
+    signal?.throwIfAborted();
+    return fixture;
+  } catch (error) { fixture.disposeSceneWorker(); throw error; }
 }
 
 export async function loadScanNeighborhoodFixture(
@@ -797,7 +845,7 @@ export async function loadScanNeighborhoodFixture(
     // The host supplies a fresh, exclusively owned parsed packet. It remains
     // unexposed and unmodified until its worker clone has passed validation.
     // Its publication pins auxiliary requests before those requests are started.
-    const packet = await Promise.race([host.loadNeighborhood(focusEntityId ?? ''), aborted]);
+    const packet = await Promise.race([host.loadNeighborhood(focusEntityId ?? '', signal), aborted]);
     throwIfAborted();
     const [initialized, story, catalog, honesty] = await Promise.race([Promise.all([
       worker.initializeNeighborhood(packet, options, { generation: fullSceneWorkerGeneration(0), signal }),
@@ -849,7 +897,7 @@ export async function loadScanNeighborhoodFixtureFromSearch(
     const focuses = [...params.getAll('lens'), params.get('root'), params.get('sel')];
     for (const focus of new Set(focuses.map(id => id?.trim()).filter((id): id is string => Boolean(id)))) {
       if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
-      await awaitAbortableWork(fixture.ensureNeighborhood(focus), signal);
+      await awaitAbortableWork(fixture.ensureNeighborhood(focus, signal), signal);
     }
     if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
     return fixture;

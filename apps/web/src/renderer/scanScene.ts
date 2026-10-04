@@ -289,7 +289,7 @@ export type ScanSceneInput = {
  * publish-time share card both call this, so the card shows exactly the scene
  * the app compiles for the same focus.
  */
-export function compileScanScene(input: ScanSceneInput): AtlasScene {
+export function compileScanScene(input: ScanSceneInput, onPhase?: (phase: 'root-slice' | 'projection' | 'layout' | 'adapter') => void): AtlasScene {
   const { snapshot, view, previous, residency, childCounts, modeOptions: options } = input;
   const decision = guardScanCompile(snapshot, input.focusEntityId, view.rootEntityId);
   const scoped = decision.options;
@@ -297,6 +297,7 @@ export function compileScanScene(input: ScanSceneInput): AtlasScene {
   // every opened L3/L4 subgraph. Keep live published childCounts + CLA-81
   // unpublished stubs — a re-slice of an already-slim L1 packet would zero
   // container counts and collapse reserved shells.
+  onPhase?.('root-slice');
   const rootPacket = input.boot === 'neighborhood' && decision.focusEntityId === view.rootEntityId
     ? sliceArchitectureNeighborhood(snapshot, view, {
       focusEntityId: decision.focusEntityId,
@@ -310,6 +311,7 @@ export function compileScanScene(input: ScanSceneInput): AtlasScene {
     || (Boolean(child.parentId) && compileIds.has(child.parentId!) && !compileIds.has(child.id)));
   const keepResidentL3 = scanKeepsResidentL3Landmarks(snapshot, decision.focusEntityId);
   const scene = createC4Scene({
+    onPhase,
     baseSnapshot: compileSnapshot,
     rootEntityId: view.rootEntityId,
     focusEntityId: decision.focusEntityId,

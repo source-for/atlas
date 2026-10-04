@@ -27,4 +27,5 @@ export type SceneCompileResponse = {
 };
 export type NeighborhoodInitializeResponse = { operation: 'initializeNeighborhood'; id: number; generation: number }
   & (NeighborhoodBootstrapResult | { status: 'failed' });
-export type SceneWorkerResponse = SceneCompileResponse | NeighborhoodInitializeResponse;
+export type SceneWorkerProgress = { operation: 'progress'; id: number; generation: number; phase: 'received' | 'compiling' | 'compiled' | 'root-slice' | 'projection' | 'layout' | 'adapter' };
+export type SceneWorkerResponse = SceneCompileResponse | NeighborhoodInitializeResponse | SceneWorkerProgress;

@@ -1,3 +1,8 @@
+// Fixtures intentionally exercise platform faults; each test session owns isolated health.
+vi.mock('./compileSceneOffThread', async importOriginal => {
+  const actual = await importOriginal<typeof import('./compileSceneOffThread')>();
+  return { ...actual, createSceneCompileSession: () => actual.createSceneCompileSession(actual.createSceneWorkerHealth()) };
+});
 import { subscribeLoadTiming, type LoadMetric } from '../performance/loadTimings';
 import { afterEach, expect, it, vi } from 'vitest';
 import { sliceArchitectureNeighborhood, validateNeighborhoodPacket, type ArchitectureNeighborhoodPacket, type ArchitectureSnapshot, type ArchitectureView } from '@okie/architecture';
@@ -224,4 +229,43 @@ it('disposes immediately when a deep-link fetch is cancelled and never reads its
   complete(latePacket);
   await Promise.resolve(); await Promise.resolve();
   expect(readSnapshot).not.toHaveBeenCalled(); expect(published).not.toHaveBeenCalled();
+});
+
+it('retains bootstrap generation 2, then resends excerpt-enriched generation 4 through the real worker', async () => {
+  const packet = largePacket();
+  const entity = packet.snapshot.entities.find(candidate => candidate.id === 'code:web-shell:app')!;
+  const excerpts = structuredClone(entity.sourceExcerpts!);
+  delete entity.sourceExcerpts;
+  const host = { onmessage: null as ((event: { data: SceneWorkerRequest }) => void) | null, postMessage: vi.fn() };
+  vi.stubGlobal('self', host);
+  await import('./sceneCompileWorker');
+  const requests: SceneWorkerRequest[] = [];
+  class Bridge {
+    onmessage: ((event: { data: SceneWorkerResponse }) => void) | null = null;
+    terminate() {}
+    postMessage(raw: SceneWorkerRequest) {
+      const request = structuredClone(raw); requests.push(request);
+      queueMicrotask(() => {
+        const start = host.postMessage.mock.calls.length;
+        host.onmessage!({ data: request });
+        for (const call of host.postMessage.mock.calls.slice(start)) this.onmessage?.({ data: structuredClone(call[0]) });
+      });
+    }
+  }
+  vi.stubGlobal('Worker', Bridge);
+  const fixture = await loadScanNeighborhoodFixture({ ...hostFor(packet), loadExcerpts: async () => excerpts }, undefined);
+  try {
+    expect(requests[0]).toMatchObject({ operation: 'initializeNeighborhood', generation: 2 });
+    await fixture.createSceneAsync(packet.view.rootEntityId);
+    const retained = requests[1] as SceneCompileRequest;
+    expect(retained.generation).toBe(2);
+    expect(retained.graph).toBeUndefined();
+    await fixture.ensureExcerpts(entity.id);
+    const scene = await fixture.createSceneAsync(entity.id);
+    const resent = requests[2] as SceneCompileRequest;
+    expect(resent.generation).toBe(4);
+    expect(resent.previousId).toBeUndefined();
+    expect(resent.graph!.snapshot.entities.find(candidate => candidate.id === entity.id)?.sourceExcerpts).toEqual(excerpts);
+    expect(scene.entities.find(candidate => candidate.id === entity.id)?.sourceExcerpts).toEqual(excerpts);
+  } finally { fixture.disposeSceneWorker(); }
 });

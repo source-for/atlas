@@ -1,9 +1,15 @@
+// Fixtures intentionally exercise platform faults; each test session owns isolated health.
+vi.mock('./compileSceneOffThread', async importOriginal => {
+  const actual = await importOriginal<typeof import('./compileSceneOffThread')>();
+  return { ...actual, createSceneCompileSession: () => actual.createSceneCompileSession(actual.createSceneWorkerHealth()) };
+});
 import { c4CodeChildSlots, sliceArchitectureNeighborhood, type ArchitectureSnapshot, type ArchitectureView } from '@okie/architecture';
 import { describe, expect, it, vi } from 'vitest';
 import { compileScanScene, type ScanSceneInput } from './scanScene';
 import * as scanSceneCompiler from './scanScene';
 import type { SceneCompileRequest } from './sceneCompileProtocol';
 import { semanticInspectorHierarchyPlan } from '../semantic/semanticLensEngine';
+import { ScanWorkerUnavailableError, scenePreparationFailureMessage } from './scanFixture';
 import demoSnapshot from '../../../../fixtures/architecture/demo-snapshot.json';
 import demoView from '../../../../fixtures/architecture/demo-view.json';
 import demoStory from '../../../../fixtures/architecture/demo-story.json';
@@ -18,7 +24,7 @@ function validTrio() {
 }
 
 describe('scan fixture loader', () => {
-  it('retries optional enrichment after worker failure without compiling large graphs on the UI thread', async () => {
+  it('keeps optional enrichment disabled after worker failure without compiling large graphs on the UI thread', async () => {
     const snapshot = structuredClone(demoSnapshot) as unknown as ArchitectureSnapshot;
     const view = structuredClone(demoView) as unknown as ArchitectureView;
     const owner = snapshot.entities.find(entity => entity.kind === 'component')!;
@@ -42,8 +48,8 @@ describe('scan fixture loader', () => {
         }
       }
       vi.stubGlobal('Worker', Worker);
-      expect(await fixture.enrichInitialScene()).toBeDefined();
-      expect(posts).toBe(1);
+      expect(await fixture.enrichInitialScene()).toBeUndefined();
+      expect(posts).toBe(0);
     } finally { fixture.disposeSceneWorker(); compiler.mockRestore(); vi.unstubAllGlobals(); }
   });
 
@@ -122,16 +128,49 @@ describe('scan fixture loader', () => {
     const compile = vi.spyOn(scanSceneCompiler, 'compileScanScene');
     vi.stubGlobal('Worker', undefined);
     try {
-      await expect(fixture.createSceneAsync(fixture.navigation.rootEntityId)).rejects.toThrow('Background scene preparation');
+      await expect(fixture.createSceneAsync(fixture.navigation.rootEntityId)).rejects.toBeInstanceOf(ScanWorkerUnavailableError);
+      await expect(fixture.createSceneAsync(fixture.navigation.rootEntityId)).rejects.toThrow('Reload this page');
       expect(compile).not.toHaveBeenCalled();
       vi.useFakeTimers();
       vi.stubGlobal('Worker', class { onmessage = null; onerror = null; postMessage() {} terminate() {} });
-      const result = fixture.createSceneAsync(fixture.navigation.rootEntityId);
-      const rejection = expect(result).rejects.toThrow('Background scene preparation');
+      const timedFixture = compileScanFixture(trio);
+      const result = timedFixture.createSceneAsync(timedFixture.navigation.rootEntityId);
+      const rejection = expect(result).rejects.toThrow('Reload this page');
       await vi.advanceTimersByTimeAsync(20_000);
       await rejection;
+      timedFixture.disposeSceneWorker();
       expect(compile).not.toHaveBeenCalled();
     } finally { fixture.disposeSceneWorker(); compile.mockRestore(); vi.useRealTimers(); vi.unstubAllGlobals(); }
+  });
+
+  it('keeps request-specific worker failures retryable and selects reload guidance only for latched health', async () => {
+    const trio = validTrio();
+    const snapshot = trio.snapshot as unknown as ArchitectureSnapshot;
+    const owner = snapshot.entities.find(entity => entity.kind === 'component')!;
+    snapshot.entities.push(...Array.from({ length: 2001 }, (_, index) => ({ id: `component:retry-${index}`, kind: 'component' as const, parentId: owner.parentId, name: `Retry ${index}`, sourceRefs: [] })));
+    const fixture = compileScanFixture(trio);
+    let calls = 0;
+    vi.stubGlobal('Worker', class {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      terminate() {}
+      postMessage(request: SceneCompileRequest) {
+        const ok = ++calls > 1;
+        queueMicrotask(() => this.onmessage?.({ data: { id: request.id, generation: request.generation, ok,
+          ...(ok ? { scene: { rootEntityId: request.input.focusEntityId } } : {}),
+        } } as MessageEvent));
+      }
+    });
+    try {
+      const failure = await fixture.createSceneAsync(fixture.navigation.rootEntityId).catch(error => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(ScanWorkerUnavailableError);
+      expect(failure.message).toContain('try again');
+      expect(scenePreparationFailureMessage(failure, 'Try this navigation again.')).toBe('Try this navigation again.');
+      expect(scenePreparationFailureMessage(new ScanWorkerUnavailableError(), 'Try this navigation again.')).toContain('Reload this page');
+      expect(scenePreparationFailureMessage(new DOMException('Cancelled', 'AbortError'), 'fallback')).toBe('fallback');
+      await expect(fixture.createSceneAsync(fixture.navigation.rootEntityId)).resolves.toMatchObject({ rootEntityId: fixture.navigation.rootEntityId });
+      expect(calls).toBe(2);
+    } finally { fixture.disposeSceneWorker(); vi.unstubAllGlobals(); }
   });
 
   it('retries a real neighborhood merge while the worker is preparing a level', async () => {
