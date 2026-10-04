@@ -99,6 +99,8 @@ function browserAdapter(): NavigationHistoryAdapter {
 
 export function createNavigationHistoryController(options: NavigationHistoryOptions): NavigationHistoryController {
   const adapter = options.adapter ?? browserAdapter();
+  // An absent hasEntity validator accepts bounded entity IDs for restore hydration.
+  // Parsing limits and other validators remain active; start(false) stays eager.
   const restoreUrlOptions = options.deferEntityValidationOnRestore
     ? { ...options.urlOptions, references: { ...options.urlOptions?.references, hasEntity: undefined } }
     : options.urlOptions;

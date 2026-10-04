@@ -2565,7 +2565,7 @@ export function App() {
       get defaults() { return navigationDefaultsRef.current; },
       urlOptions: navigationUrlOptions,
       deferEntityValidationOnRestore: scanFixture?.boot === 'neighborhood' && !importedAtlasRef.current,
-      async restore(next, source) {
+      async restore(requestedNavigation, source) {
         const navigationDefaults = navigationDefaultsRef.current;
         const request = scanFixture && !importedAtlasRef.current
           ? beginForegroundScanNavigation('Restoring architecture navigation', true, true) : undefined;
@@ -2575,36 +2575,54 @@ export function App() {
         const restoreGeneration = navigationRestoreGenerationRef.current + 1;
         navigationRestoreGenerationRef.current = restoreGeneration;
         restoringNavigationRef.current = true;
-        const restoredLevel = next.detail
-          ? Math.max(0, semanticDetails.indexOf(next.detail))
-          : getLevel(next.camera.zoom);
+        const restoredLevel = requestedNavigation.detail
+          ? Math.max(0, semanticDetails.indexOf(requestedNavigation.detail))
+          : getLevel(requestedNavigation.camera.zoom);
         const restoredBaseDetail = semanticDetails[restoredLevel];
-        let restoredScene: AtlasScene;
-        // Keep the bounded candidate intact across retries; residency is not entity validity.
-        const requestedNavigation = next;
+        const validateRequestedNavigation = () => navigationStateFromUrl(
+          canonicalNavigationUrl(requestedNavigation, window.location.href, navigationUrlOptions),
+          navigationDefaults, navigationUrlOptions,
+        ).state;
+        const requestedStoryPlan = storyCatalog.find(plan => plan.id === requestedNavigation.story?.id);
+        const requestedStoryStep = requestedNavigation.story && requestedStoryPlan
+          ? requestedStoryPlan.steps[Math.min(requestedStoryPlan.steps.length - 1, requestedNavigation.story.step)] : undefined;
+        const requestedStoryFocusIds = requestedStoryStep?.focusEntityIds ?? [];
+        let prepared: { scene: AtlasScene; navigation: NavigationState };
         try {
           if (query.fixture === 'stress') {
-            restoredScene = sceneRef.current;
-          } else if (source === 'initialize' && scanFixture && next.rootEntityId === goldenScene.rootEntityId
-            && [next.rootEntityId, next.selectedId, ...(next.lensPath ?? [])].every(navigationUrlOptions.references.hasEntity)) {
-            restoredScene = goldenScene;
+            prepared = { scene: sceneRef.current, navigation: validateRequestedNavigation() };
+          } else if (source === 'initialize' && scanFixture && requestedNavigation.rootEntityId === goldenScene.rootEntityId
+            && [requestedNavigation.rootEntityId, requestedNavigation.selectedId, ...(requestedNavigation.lensPath ?? [])].every(navigationUrlOptions.references.hasEntity)
+            && requestedStoryFocusIds.every(id => goldenScene.entities.some(entity => entity.id === id))) {
+            prepared = { scene: goldenScene, navigation: validateRequestedNavigation() };
           } else if (request) {
-            restoredScene = await prepareForegroundWithRetry(request, async () => {
-              for (const id of new Set([requestedNavigation.rootEntityId, requestedNavigation.selectedId, ...(requestedNavigation.lensPath ?? [])])) {
+            prepared = await prepareForegroundWithRetry(request, async () => {
+              // Keep the bounded candidate intact across retries; residency is not entity validity.
+              for (const id of new Set([requestedNavigation.rootEntityId, requestedNavigation.selectedId, ...(requestedNavigation.lensPath ?? []), ...requestedStoryFocusIds])) {
                 request.generationFence.allowChanges();
                 await request.fixture.ensureNeighborhood(id, request.signal);
                 requireForegroundSceneRequest(request);
               }
               // Entity references read the live published array, including the neighborhoods above.
-              next = navigationStateFromUrl(canonicalNavigationUrl(requestedNavigation, window.location.href, navigationUrlOptions),
-                navigationDefaults, navigationUrlOptions).state;
-              const compileFocus = next.lensPath?.at(-1) ?? next.selectedId ?? next.rootEntityId;
-              const prepared = await composeScanSceneAsync(compileFocus, request.sourceScene, request.signal, undefined, [next.selectedId], request.generationFence);
+              const navigation = validateRequestedNavigation();
+              // A restored story may target a neighborhood absent from its URL selection/lens.
+              const storyFocus = requestedStoryFocusIds[0];
+              const compileFocus = requestedStoryStep && storyFocus
+                ? scanCompileFocusForBand(activeSnapshot, storyFocus, requestedStoryStep.reveal, navigation.rootEntityId)
+                : navigation.lensPath?.at(-1) ?? navigation.selectedId ?? navigation.rootEntityId;
+              if (requestedStoryStep) {
+                request.generationFence.allowChanges();
+                await request.fixture.ensureNeighborhood(compileFocus, request.signal);
+                requireForegroundSceneRequest(request);
+              }
+              const scene = await composeScanSceneAsync(compileFocus, request.sourceScene, request.signal, undefined,
+                [navigation.selectedId, ...requestedStoryFocusIds], request.generationFence);
               requireForegroundSceneRequest(request);
-              return prepared;
+              return { scene, navigation };
             });
           } else {
-            restoredScene = composeScene(next.rootEntityId, goldenScene, authoringHistoryRef.current.present);
+            const navigation = validateRequestedNavigation();
+            prepared = { scene: composeScene(navigation.rootEntityId, goldenScene, authoringHistoryRef.current.present), navigation };
           }
         } catch (error) {
           if (!request) throw error;
@@ -2621,6 +2639,7 @@ export function App() {
           if (navigationRestoreGenerationRef.current === restoreGeneration) restoringNavigationRef.current = false;
           request.finish(); return;
         }
+        const { scene: restoredScene, navigation: next } = prepared;
         let restoredNavigation = next;
         try {
           request?.beginPublication();

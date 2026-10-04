@@ -9,7 +9,7 @@ import { compileScanFixture, compileScanNeighborhoodFixture, type ScanFixture } 
 import { setActiveScanFixture } from '../renderer/fixtureBundle';
 import type { NavigationHistoryController } from './historyController';
 import { sliceArchitectureNeighborhood, type ArchitectureNeighborhoodPacket, type ArchitectureSnapshot, type ArchitectureView } from '@okie/architecture';
-import { canonicalNavigationUrl } from './navigationState';
+import { canonicalNavigationUrl, type NavigationState } from './navigationState';
 import { entityForScene } from '../renderer/goldenC4Scene';
 import type { AtlasScene } from '../renderer/types';
 
@@ -47,13 +47,13 @@ function player() { return host.querySelector('[data-playback-state]')!; }
 
 // Reload leaves only the current web neighborhood in memory, while the browser
 // still owns the older model-container entry. Exercise native history traversal.
-async function reloadNeighborhoodHistory(load: (focus: string, signal?: AbortSignal) => Promise<ArchitectureNeighborhoodPacket>, selectedId = 'component:model-schema', rootResident = false) {
+async function reloadNeighborhoodHistory(load: (focus: string, signal?: AbortSignal) => Promise<ArchitectureNeighborhoodPacket>, selectedId = 'component:model-schema', rootResident = false, options: { previous?: Partial<NavigationState>; back?: boolean; currentStory?: NavigationState['story'] } = {}) {
   const previous = { ...captured.controller!.current(), rootEntityId: 'container:architecture-model', selectedId,
     detail: 'context' as const, lensPath: ['system:okie', 'container:architecture-model', ...(rootResident ? ['component:model-schema'] : [])],
-    camera: { ...captured.controller!.current().camera, zoom: 32 }, story: undefined };
+    camera: { ...captured.controller!.current().camera, zoom: 32 }, story: undefined, ...options.previous };
   const urlOptions = { preserveParams: ['fixture', 'backend'] };
   const previousUrl = canonicalNavigationUrl(previous, window.location.href, urlOptions);
-  const currentUrl = canonicalNavigationUrl({ ...previous, rootEntityId: 'container:web-app', selectedId: 'container:web-app', lensPath: ['system:okie'] }, window.location.href, urlOptions);
+  const currentUrl = canonicalNavigationUrl({ ...previous, rootEntityId: 'container:web-app', selectedId: 'container:web-app', lensPath: ['system:okie'], story: options.currentStory }, window.location.href, urlOptions);
   await act(async () => root.unmount());
   const packet = structuredClone(sliceArchitectureNeighborhood(snapshot as ArchitectureSnapshot, view as ArchitectureView, { focusEntityId: 'system:okie' }));
   const omitted = new Set(snapshot.entities.filter(entity => (!rootResident && entity.id === 'container:architecture-model') || entity.parentId === 'container:architecture-model').map(entity => entity.id));
@@ -77,7 +77,7 @@ async function reloadNeighborhoodHistory(load: (focus: string, signal?: AbortSig
   await act(async () => root.render(<App/>)); await settle();
   expect(fixture.snapshot.entities.some(entity => entity.id === selectedId)).toBe(false);
   expect(fixture.snapshot.entities.some(entity => entity.id === 'container:architecture-model')).toBe(rootResident);
-  await act(async () => window.history.back()); await settle();
+  if (options.back !== false) { await act(async () => window.history.back()); await settle(); }
   return { previous, previousUrl, packet };
 }
 beforeEach(async () => {
@@ -114,11 +114,61 @@ describe('mounted App story history restoration', () => {
 
   it('rejects a genuinely unknown selection only after its neighborhood response arrives', async () => {
     const load = vi.fn(async (focus: string) => sliceArchitectureNeighborhood(snapshot as ArchitectureSnapshot, view as ArchitectureView, { focusEntityId: focus }));
-    await reloadNeighborhoodHistory(load, 'component:truly-unknown'); await settle();
+    const { previous } = await reloadNeighborhoodHistory(load, 'component:truly-unknown'); await settle();
     expect(load).toHaveBeenCalledWith('component:truly-unknown', expect.any(AbortSignal));
     expect(captured.controller!.current().selectedId).toBe('container:architecture-model');
-    expect(new URL(window.location.href).searchParams.get('sel')).not.toBe('component:truly-unknown');
+    expect(captured.controller!.current().lensPath).toEqual(previous.lensPath);
+    expect(window.location.href).toBe(canonicalNavigationUrl({ ...previous, selectedId: previous.rootEntityId }, window.location.href));
     expect(captured.controller!.current().rootEntityId).toBe('container:architecture-model');
+  });
+
+  it('fetches then removes a genuinely unknown lens entry from the exact restored URL', async () => {
+    const load = vi.fn(async (focus: string) => sliceArchitectureNeighborhood(snapshot as ArchitectureSnapshot, view as ArchitectureView, { focusEntityId: focus }));
+    const { previous } = await reloadNeighborhoodHistory(load, undefined, false, {
+      previous: { lensPath: ['system:okie', 'container:architecture-model', 'component:unknown-lens'] },
+    }); await settle();
+    expect(load).toHaveBeenCalledWith('component:unknown-lens', expect.any(AbortSignal));
+    const lensPath = ['system:okie', 'container:architecture-model'];
+    expect(captured.controller!.current()).toMatchObject({ selectedId: previous.selectedId, rootEntityId: previous.rootEntityId, lensPath });
+    expect(window.location.href).toBe(canonicalNavigationUrl({ ...previous, lensPath }, window.location.href));
+  });
+
+  it('fetches then replaces a genuinely unknown root in the exact restored URL', async () => {
+    const load = vi.fn(async (focus: string) => sliceArchitectureNeighborhood(snapshot as ArchitectureSnapshot, view as ArchitectureView, { focusEntityId: focus }));
+    const { previous } = await reloadNeighborhoodHistory(load, undefined, false, {
+      previous: { rootEntityId: 'container:unknown-root', selectedId: 'container:unknown-root', lensPath: ['system:okie'] },
+    }); await settle();
+    expect(load).toHaveBeenCalledWith('container:unknown-root', expect.any(AbortSignal));
+    expect(captured.controller!.current()).toMatchObject({ rootEntityId: 'system:okie', selectedId: 'system:okie', lensPath: previous.lensPath });
+    expect(window.location.href).toBe(canonicalNavigationUrl({ ...previous, rootEntityId: 'system:okie', selectedId: 'system:okie' }, window.location.href));
+  });
+
+  it('prepares an unloaded story focus reached by Back and publishes its populated inspector paused', async () => {
+    let resolve!: (packet: ArchitectureNeighborhoodPacket) => void;
+    const load = vi.fn(async (focus: string, _signal?: AbortSignal) => sliceArchitectureNeighborhood(snapshot as ArchitectureSnapshot, view as ArchitectureView, { focusEntityId: focus }))
+      .mockImplementationOnce((_focus, _signal) => new Promise<ArchitectureNeighborhoodPacket>(done => { resolve = done; }));
+    const { previousUrl } = await reloadNeighborhoodHistory(load, undefined, false, {
+      back: false, currentStory: { id: story.id, step: 0, positionMs: 0 },
+      previous: { rootEntityId: 'container:web-app', selectedId: 'container:web-app', lensPath: ['system:okie'], story: { id: story.id, step: 1, positionMs: 0 } },
+    });
+    expect(load).not.toHaveBeenCalled();
+    await act(async () => window.history.back()); await settle();
+    expect(load).toHaveBeenCalledWith('container:architecture-model', expect.any(AbortSignal));
+    expect(player().getAttribute('data-playback-state')).toBe('preparing');
+    await act(async () => resolve(sliceArchitectureNeighborhood(snapshot as ArchitectureSnapshot, view as ArchitectureView, { focusEntityId: 'container:architecture-model' }))); await settle();
+    expect(player().getAttribute('data-playback-state')).toBe('paused');
+    expect(player().textContent).toContain('STEP 2 OF');
+    expect(captured.controller!.current().story).toEqual({ id: story.id, step: 1, positionMs: 0 });
+    expect(player().getAttribute('aria-busy')).toBe('false');
+    expect(player().getAttribute('data-story-preparing')).toBe('false');
+    expect(window.location.href).toBe(previousUrl);
+    expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-selected-entity-id')).toBe('container:architecture-model');
+    await act(async () => host.querySelector<HTMLButtonElement>('#overview-tab')!.click());
+    const overview = host.querySelector('[data-testid="inspector-overview"]')!;
+    expect(overview.querySelector('[data-contextual-overview]')!.getAttribute('data-contextual-overview')).toBe('container:architecture-model');
+    expect(overview.querySelector('.overview-title')!.textContent).toBe('Architecture model');
+    expect(overview.querySelector('.overview-identity-meta .overview-chip')!.textContent).toBe('Container');
+    expect(overview.textContent).toContain(snapshot.entities.find(entity => entity.id === 'container:architecture-model')!.responsibility!);
   });
 
   it('preserves the reached Back entry when neighborhood preparation fails', async () => {

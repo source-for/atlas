@@ -669,8 +669,8 @@
           "path": "apps/web/src/App.tsx",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "CanvasViewport",
-          "startLine": 6379,
-          "endLine": 6384
+          "startLine": 6398,
+          "endLine": 6403
         }
       ],
       "sourceExcerpts": [
@@ -678,9 +678,9 @@
           "path": "apps/web/src/App.tsx",
           "symbol": "CanvasViewport",
           "language": "tsx",
-          "startLine": 6379,
-          "endLine": 6384,
-          "highlightLine": 6379,
+          "startLine": 6398,
+          "endLine": 6403,
+          "highlightLine": 6398,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "          <CanvasViewport",
@@ -809,12 +809,12 @@
           "lines": [
             "export function createNavigationHistoryController(options: NavigationHistoryOptions): NavigationHistoryController {",
             "  const adapter = options.adapter ?? browserAdapter();",
+            "  // An absent hasEntity validator accepts bounded entity IDs for restore hydration.",
+            "  // Parsing limits and other validators remain active; start(false) stays eager.",
             "  const restoreUrlOptions = options.deferEntityValidationOnRestore",
-            "    ? { ...options.urlOptions, references: { ...options.urlOptions?.references, hasEntity: undefined } }",
-            "    : options.urlOptions;",
-            "  void options.cameraCoalesceMs;"
+            "    ? { ...options.urlOptions, references: { ...options.urlOptions?.references, hasEntity: undefined } }"
           ],
-          "text": "export function createNavigationHistoryController(options: NavigationHistoryOptions): NavigationHistoryController {\n  const adapter = options.adapter ?? browserAdapter();\n  const restoreUrlOptions = options.deferEntityValidationOnRestore\n    ? { ...options.urlOptions, references: { ...options.urlOptions?.references, hasEntity: undefined } }\n    : options.urlOptions;\n  void options.cameraCoalesceMs;"
+          "text": "export function createNavigationHistoryController(options: NavigationHistoryOptions): NavigationHistoryController {\n  const adapter = options.adapter ?? browserAdapter();\n  // An absent hasEntity validator accepts bounded entity IDs for restore hydration.\n  // Parsing limits and other validators remain active; start(false) stays eager.\n  const restoreUrlOptions = options.deferEntityValidationOnRestore\n    ? { ...options.urlOptions, references: { ...options.urlOptions?.references, hasEntity: undefined } }"
         }
       ],
       "parentId": "component:web-navigation",
