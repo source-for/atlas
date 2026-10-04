@@ -98,6 +98,21 @@ describe('scan fixture loader', () => {
     } finally { fixture.disposeSceneWorker(); vi.unstubAllGlobals(); }
   });
 
+  it('prepares a history component focus with retained selection outside the initial neighborhood', async () => {
+    const packet = sliceArchitectureNeighborhood(demoSnapshot as unknown as ArchitectureSnapshot, demoView as unknown as ArchitectureView, { focusEntityId: 'system:okie' });
+    const fixture = compileScanNeighborhoodFixture(packet, demoStory, {
+      loadNeighborhood: async focus => sliceArchitectureNeighborhood(demoSnapshot as unknown as ArchitectureSnapshot, demoView as unknown as ArchitectureView, { focusEntityId: focus }),
+      loadExcerpts: async () => [], loadStory: async () => demoStory,
+    });
+    const initial = fixture.createScene('system:okie');
+    const target = 'component:web-shell';
+    expect(initial.entities.some(entity => entity.id === target)).toBe(false);
+    await fixture.ensureNeighborhood(target);
+    const restored = await fixture.createSceneAsync(target, initial, { keepEntityIds: [target] });
+    expect(restored.entities.some(entity => entity.id === target)).toBe(true);
+    fixture.disposeSceneWorker();
+  });
+
   it('keeps large navigation off the main thread when workers are unsupported or time out', async () => {
     const trio = validTrio();
     const snapshot = trio.snapshot as unknown as ArchitectureSnapshot;

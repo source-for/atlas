@@ -627,8 +627,8 @@
           "path": "apps/web/src/App.tsx",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "App",
-          "startLine": 1441,
-          "endLine": 1446
+          "startLine": 1450,
+          "endLine": 1455
         }
       ],
       "sourceExcerpts": [
@@ -636,9 +636,9 @@
           "path": "apps/web/src/App.tsx",
           "symbol": "App",
           "language": "tsx",
-          "startLine": 1441,
-          "endLine": 1446,
-          "highlightLine": 1441,
+          "startLine": 1450,
+          "endLine": 1455,
+          "highlightLine": 1450,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "export function App() {",
@@ -669,8 +669,8 @@
           "path": "apps/web/src/App.tsx",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "CanvasViewport",
-          "startLine": 5988,
-          "endLine": 5993
+          "startLine": 6337,
+          "endLine": 6342
         }
       ],
       "sourceExcerpts": [
@@ -678,9 +678,9 @@
           "path": "apps/web/src/App.tsx",
           "symbol": "CanvasViewport",
           "language": "tsx",
-          "startLine": 5988,
-          "endLine": 5993,
-          "highlightLine": 5988,
+          "startLine": 6337,
+          "endLine": 6342,
+          "highlightLine": 6337,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "          <CanvasViewport",
@@ -793,8 +793,8 @@
           "path": "apps/web/src/navigation/historyController.ts",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "createNavigationHistoryController",
-          "startLine": 93,
-          "endLine": 98
+          "startLine": 95,
+          "endLine": 100
         }
       ],
       "sourceExcerpts": [
@@ -802,9 +802,9 @@
           "path": "apps/web/src/navigation/historyController.ts",
           "symbol": "createNavigationHistoryController",
           "language": "typescript",
-          "startLine": 93,
-          "endLine": 98,
-          "highlightLine": 93,
+          "startLine": 95,
+          "endLine": 100,
+          "highlightLine": 95,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "export function createNavigationHistoryController(options: NavigationHistoryOptions): NavigationHistoryController {",

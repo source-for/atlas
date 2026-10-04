@@ -1,6 +1,9 @@
+import { createStoryFlight, freezeCommittedStoryFlight, resumeStoryFlight, sampleStoryFlight } from '../storyPlayback';
+import { navigationEntityReference } from './entityReferences';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createNavigationHistoryController, type NavigationHistoryAdapter } from './historyController';
 import { canonicalNavigationState, canonicalNavigationUrl, type NavigationDefaults, type NavigationState } from './navigationState';
+import { beginForegroundPlaybackPreparation, createForegroundSceneRequestOwner, createForegroundRequestStatus, beginMapInteraction } from '../renderer/foregroundSceneRequest';
 
 const defaults: NavigationDefaults = {
   repositoryId: 'repo:atlas',
@@ -17,6 +20,7 @@ type FakeHistory = NavigationHistoryAdapter & {
   replacements: string[];
   replacementTimes: number[];
   throwOnReplace: boolean;
+  throwOnPush: boolean;
   pop(url: string): void;
   hide(): void;
 };
@@ -30,8 +34,10 @@ function fakeHistory(href: string): FakeHistory {
     replacements: [],
     replacementTimes: [],
     throwOnReplace: false,
+    throwOnPush: false,
     getHref() { return this.href; },
     pushState(_data, url) {
+      if (this.throwOnPush) throw new DOMException('Rate limited', 'SecurityError');
       this.href = url;
       this.pushes.push(url);
     },
@@ -201,4 +207,224 @@ describe('navigation history camera URL coalescing (CLA-326)', () => {
     expect(adapter.href).toContain('sel=entity%3Aorders');
     controller.dispose();
   });
+});
+
+it('cancelRestore adopts the decoded entry without applying or committing a late restore', async () => {
+  const adapter = fakeHistory('https://atlas.example/map?root=container%3Aapi&cx=200&cy=300&z=2');
+  let finish!: () => void;
+  const pending = new Promise<void>(resolve => { finish = resolve; });
+  const controller = createNavigationHistoryController({ defaults, adapter, restore: () => pending });
+  const startup = controller.start();
+  controller.cancelRestore();
+  finish(); await startup;
+  expect(adapter.replacements).toHaveLength(0);
+  expect(controller.current().rootEntityId).toBe('container:api');
+  expect(adapter.href).toContain('root=container%3Aapi');
+  controller.dispose();
+});
+it('history restore pauses an active story without writing the old entry and commits corrected applied state', async () => {
+  const adapter = fakeHistory('https://atlas.example/map?root=container%3Aapi&sel=component%3Afile&lens=system%3Aatlas&lens=missing');
+  const commits = vi.fn(); let playing = true;
+  const controller = createNavigationHistoryController({ defaults, adapter, onCommit: commits,
+    restore: async next => {
+      beginForegroundPlaybackPreparation('restore', {
+        interrupt: () => controller.replace(state({})),
+        pauseWithoutHistory: () => { playing = false; }, preserveStory: () => {},
+      });
+      expect(adapter.replacements).toHaveLength(0);
+      await Promise.resolve();
+      return { ...next, lensPath: ['system:atlas'] };
+    },
+  });
+  await controller.start();
+  expect(playing).toBe(false);
+  expect(controller.current().rootEntityId).toBe('container:api');
+  expect(controller.current().lensPath).toEqual(['system:atlas']);
+  expect(adapter.href).not.toContain('missing'); expect(commits).toHaveBeenCalledOnce();
+  controller.dispose();
+});
+it('cancels an unapplied restore by token while an older restore cannot cancel a newer popstate', async () => {
+  const adapter = fakeHistory('https://atlas.example/map?root=container%3Afirst');
+  const owner = createForegroundSceneRequestOwner();
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const controller = createNavigationHistoryController({ defaults, adapter, restore: async () => {
+    const request = owner.begin();
+    await blocked;
+    if (request.owns()) controller.cancelRestore(); // Current token, even when full scene ownership was lost.
+    request.finish();
+  } });
+  const first = controller.start();
+  adapter.pop('https://atlas.example/map?root=container%3Asecond');
+  release(); await first; await Promise.resolve();
+  expect(controller.current().rootEntityId).toBe('container:second');
+  expect(adapter.replacements).toHaveLength(0);
+  controller.dispose();
+});
+it('an obsolete restore never cancels the newer popstate that has already published', async () => {
+  const adapter = fakeHistory('https://atlas.example/map?root=container%3Afirst');
+  const owner = createForegroundSceneRequestOwner();
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  const controller = createNavigationHistoryController({ defaults, adapter, restore: async next => {
+    const token = owner.begin();
+    if (++calls === 1) {
+      await blocked;
+      if (token.owns()) controller.cancelRestore();
+    }
+    token.finish();
+    return next;
+  } });
+  const first = controller.start();
+  adapter.pop('https://atlas.example/map?root=container%3Asecond');
+  await Promise.resolve(); await Promise.resolve();
+  expect(controller.current().rootEntityId).toBe('container:second');
+  release(); await first;
+  expect(controller.current().rootEntityId).toBe('container:second');
+  expect(adapter.replacements).toHaveLength(1);
+  controller.dispose();
+});
+
+it('Back restores canonical published selection outside initial residency and sees later snapshot merges', async () => {
+  const root = 'system:atlas'; const component = 'component:apps-web-src-app-tsx';
+  const published = { entities: [{ id: root }, { id: component }] };
+  const hasEntity = navigationEntityReference({ rendered: { entities: [{ id: root }] }, published });
+  const adapter = fakeHistory('https://atlas.example/map?root=system%3Aatlas');
+  const restored: string[] = [];
+  const controller = createNavigationHistoryController({ defaults, adapter, urlOptions: { references: { hasEntity } },
+    restore: async next => { restored.push(next.selectedId); await Promise.resolve(); },
+  });
+  await controller.start();
+  adapter.pop(`https://atlas.example/map?root=${root}&sel=${component}&lens=${root}&lens=${component}`);
+  await Promise.resolve(); await Promise.resolve();
+  expect(restored.at(-1)).toBe(component);
+  expect(controller.current().selectedId).toBe(component);
+  expect(new URL(adapter.href).searchParams.get('sel')).toBe(component);
+  const merged = 'component:lazy-child'; published.entities.push({ id: merged });
+  adapter.pop(`https://atlas.example/map?root=${root}&sel=${merged}`);
+  await Promise.resolve(); await Promise.resolve();
+  expect(controller.current().selectedId).toBe(merged);
+  expect(new URL(adapter.href).searchParams.get('sel')).toBe(merged);
+  controller.dispose();
+});
+
+it('abandoned Back adopts its entry without applying it; an old App camera base pushes instead of erasing it', async () => {
+  const adapter = fakeHistory('https://atlas.example/map');
+  let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
+  const applied = vi.fn(); const commits = vi.fn();
+  const owner = createForegroundSceneRequestOwner();
+  const controller = createNavigationHistoryController({ defaults, adapter, onCommit: commits, restore: async () => { const token = owner.begin(); await blocked; if (token.owns()) applied(); token.finish(); } });
+  await controller.start(false);
+  const oldBase = state({ rootEntityId: 'container:old', selectedId: 'container:old' });
+  controller.push(oldBase); adapter.replacements.length = 0; adapter.pushes.length = 0; commits.mockClear();
+  const popped = 'https://atlas.example/map?root=container%3Apopped&sel=container%3Apopped';
+  adapter.pop(popped); owner.cameraIntent(); controller.cancelRestore();
+  expect(controller.current().rootEntityId).toBe('container:popped');
+  expect(adapter.href).toBe(popped); expect(commits).not.toHaveBeenCalled(); expect(applied).not.toHaveBeenCalled();
+  controller.commitSettledCamera({ x: 80, y: 90, zoom: 2 }, oldBase);
+  expect(adapter.pushes).toHaveLength(1); expect(adapter.replacements).toHaveLength(0);
+  expect(new URL(adapter.pushes[0]!, popped).searchParams.get('root')).toBe('container:old');
+  release(); await Promise.resolve(); await Promise.resolve();
+  expect(applied).not.toHaveBeenCalled();
+  expect(controller.current().rootEntityId).toBe('container:old');
+  controller.dispose();
+});
+
+it('failed Back is consumed and preserves the popped entry through camera-only writes and a later old story replacement', async () => {
+  const adapter = fakeHistory('https://atlas.example/map');
+  const controller = createNavigationHistoryController({ defaults, adapter, cameraUrlMinIntervalMs: 0, restore: async () => { throw new Error('host unavailable'); } });
+  await controller.start(false); adapter.replacements.length = 0;
+  const popped = 'https://atlas.example/map?root=container%3Apopped&sel=container%3Apopped';
+  adapter.pop(popped); await Promise.resolve(); await Promise.resolve();
+  expect(controller.current().rootEntityId).toBe('container:popped');
+  expect(adapter.replacements).toHaveLength(0);
+  controller.commitSettledCamera({ x: 9, y: 8, zoom: 1 });
+  expect(adapter.pushes).toHaveLength(0); expect(adapter.replacements).toHaveLength(1);
+  const oldStory = state({ rootEntityId: 'container:old', selectedId: 'container:old', story: { id: 'overview', step: 2, positionMs: 500 } });
+  controller.replace(oldStory);
+  expect(adapter.pushes).toHaveLength(1); expect(adapter.replacements).toHaveLength(1);
+  expect(new URL(adapter.href).searchParams.get('root')).toBe('container:old');
+  controller.dispose();
+});
+
+it('a rate-limited protected push is retried as push when disposing, never as replacement of the popped entry', async () => {
+  vi.useFakeTimers();
+  try {
+    const adapter = fakeHistory('https://atlas.example/map');
+    let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
+    const controller = createNavigationHistoryController({ defaults, adapter, restore: () => blocked });
+    await controller.start(false); adapter.replacements.length = 0;
+    const popped = 'https://atlas.example/map?root=container%3Apopped';
+    adapter.pop(popped); controller.cancelRestore();
+    adapter.throwOnPush = true; controller.replace(state({ rootEntityId: 'container:old' }));
+    expect(adapter.href).toBe(popped); expect(adapter.replacements).toHaveLength(0);
+    controller.commitSettledCamera({ x: 88, y: 99, zoom: 2 });
+    expect(adapter.href).toBe(popped); expect(adapter.replacements).toHaveLength(0);
+    adapter.throwOnPush = false; controller.dispose();
+    expect(adapter.pushes).toHaveLength(1); expect(adapter.replacements).toHaveLength(0);
+    release(); await Promise.resolve();
+  } finally { vi.useRealTimers(); }
+});
+
+it('Back exposes preparing on the old story until owned scene publication, then pauses on the restored step without replaying elapsed flight time', async () => {
+  const adapter = fakeHistory('https://atlas.example/map');
+  const owner = createForegroundSceneRequestOwner();
+  const ui = { preparing: false, step: 4, phase: 'flight' as string, scene: 'old' };
+  const status = createForegroundRequestStatus(pending => { ui.preparing = pending; });
+  const viewport = { width: 1200, height: 800 };
+  let flight = createStoryFlight({ x: 0, y: 0, zoom: 1 }, { x: 200, y: 100, zoom: 2 }, viewport, 1000, { durationMs: 600 });
+  const committed = sampleStoryFlight(flight, 1250);
+  let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
+  const playback = () => ui.preparing ? 'preparing' : ui.phase;
+  const controller = createNavigationHistoryController({ defaults, adapter, restore: async next => {
+    const request = status.track(owner.begin());
+    beginForegroundPlaybackPreparation('restore', {
+      interrupt: () => { throw new Error('Restore must not write interruption history'); },
+      preserveStory: () => {},
+      pauseWithoutHistory: () => { flight = freezeCommittedStoryFlight(flight, committed, committed.camera, 9000).flight; ui.phase = 'paused'; },
+    });
+    try {
+      await blocked;
+      if (!request.owns()) return;
+      request.beginPublication();
+      ui.scene = 'restored'; ui.step = next.story!.step; ui.phase = 'paused';
+      expect(playback()).toBe('preparing');
+      return next;
+    } finally { request.finish(); }
+  } });
+  await controller.start(false); adapter.replacements.length = 0;
+  adapter.pop('https://atlas.example/map?story=overview&step=2&t=500');
+  expect(playback()).toBe('preparing'); expect(ui.step).toBe(4); expect(ui.scene).toBe('old');
+  expect(adapter.replacements).toHaveLength(0);
+  expect(flight.running).toBe(false); expect(flight.canonicalElapsedMs).toBe(250);
+  expect(resumeStoryFlight(flight, committed.camera, viewport, 20000).durationMs).toBe(350);
+  const cameraIntent = vi.fn(() => { owner.cameraIntent(); controller.cancelRestore(); return true; });
+  const interrupt = vi.fn(() => controller.replace(state({ rootEntityId: 'container:old' })));
+  beginMapInteraction('semantic-edit', { beginCameraIntent: cameraIntent, interrupt,
+    pauseWithoutHistory: () => { flight = freezeCommittedStoryFlight(flight, committed, committed.camera, 12000).flight; ui.phase = 'paused'; } });
+  expect(cameraIntent).not.toHaveBeenCalled(); expect(interrupt).not.toHaveBeenCalled();
+  expect(owner.pending()).toBe(true); expect(playback()).toBe('preparing'); expect(adapter.replacements).toHaveLength(0);
+  release(); await Promise.resolve(); await Promise.resolve();
+  expect(playback()).toBe('paused'); expect(ui.step).toBe(2); expect(ui.scene).toBe('restored');
+  expect(controller.current().story?.step).toBe(2);
+  controller.dispose();
+});
+
+it('keeps a successfully applied restore authoritative when its canonical URL replacement is rate-limited', async () => {
+  const adapter = fakeHistory('https://atlas.example/map');
+  const commits = vi.fn();
+  const controller = createNavigationHistoryController({ defaults, adapter, onCommit: commits,
+    restore: async next => ({ ...next, selectedId: 'component:applied' }),
+  });
+  await controller.start(false); commits.mockClear(); adapter.replacements.length = 0;
+  adapter.throwOnReplace = true;
+  adapter.pop('https://atlas.example/map?root=container%3Atarget');
+  await Promise.resolve(); await Promise.resolve();
+  expect(controller.current().selectedId).toBe('component:applied');
+  expect(commits).toHaveBeenCalledOnce();
+  adapter.throwOnReplace = false; controller.flushUrl();
+  expect(new URL(adapter.href).searchParams.get('sel')).toBe('component:applied');
+  expect(adapter.pushes).toHaveLength(0);
+  controller.dispose();
 });

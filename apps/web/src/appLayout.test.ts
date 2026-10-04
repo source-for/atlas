@@ -141,7 +141,11 @@ describe('view and edit interaction modes', () => {
     const viewportEnd = app.indexOf('function App()', viewportStart);
     const viewport = app.slice(viewportStart, viewportEnd);
 
-    expect(app).toContain('onCameraFlightCancel={cancelInspectorCameraFlight}');
+    expect(app).toContain('onCameraFlightCancel={handleDirectCameraInput}');
+    const directInput = app.slice(app.indexOf('function handleDirectCameraInput'), app.indexOf('function handleMapInteractionStart'));
+    expect(directInput).toContain('beginUserCameraIntent();');
+    expect(directInput).toContain('return cancelInspectorCameraFlight();');
+    expect(directInput).not.toContain('interruptStory');
     expect(app).toContain('const liveCamera = { ...renderedCameraRef.current };');
     expect(app).toContain('updateCamera(liveCamera);');
     expect(viewport.match(/onCameraFlightCancelRef\.current\(\)/g)).toHaveLength(3);
@@ -803,7 +807,7 @@ describe('inspector hierarchy QA regressions', () => {
     const hierarchy = app.slice(start, end);
     expect(hierarchy.indexOf('setExplicitInspectorSelection(true)')).toBeGreaterThan(hierarchy.indexOf('if (!plan)'));
     expect(hierarchy.indexOf('setExplicitInspectorSelection(true)')).toBeLessThan(hierarchy.indexOf('setSelectedId(entity.id)'));
-    expect(app).toContain('explicitInspectorSelection ? selected.id : semanticLensCanonicalPathIds(semanticLensSession)');
+    expect(app).toContain('contextualOverviewEntityId({ selectedId: selected.id, storyStep, explicitSelection: explicitInspectorSelection');
   });
   it('builds dependency participants from the same scene facts used to offer the action', () => {
     expect(app).toContain('const hasDependencyDiagram = scene.relations.some');

@@ -1,5 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+
+it('marks direct drag camera intent before movement while old settle/assist callbacks cannot supersede navigation', () => {
+  const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+  expect(source).toContain('onCameraFlightCancel={handleDirectCameraInput}');
+  const direct = source.slice(source.indexOf('function handleDirectCameraInput'), source.indexOf('function handleMapInteractionStart'));
+  expect(direct.indexOf('beginUserCameraIntent()')).toBeLessThan(direct.indexOf('cancelInspectorCameraFlight()'));
+  const pan = source.slice(source.indexOf('function stabilizeSemanticLensForPan'), source.indexOf('function beginSemanticZoomBurst'));
+  expect(pan).toContain('if (foregroundSceneRequestRef.current.pending()) return;');
+  expect(pan).not.toContain('beginUserCameraIntent()');
+  expect(source).toContain('if (foregroundSceneRequestRef.current.pending()) return sample.camera;');
+});
 import {
   cameraWorldRect,
   expandRectByTileRing,
@@ -71,8 +82,8 @@ describe('CLA-104: continuous zoom L2→L3 hands off the focused container graph
     expect(refreshViewportNeighborhood).toContain('composeScanSceneAsync(compileFocus, sourceScene, request.signal, next)');
     expect(refreshViewportNeighborhood).toContain('viewportRequestedTileRef.current !== tileKey');
     expect(refreshViewportNeighborhood).not.toContain('updateCamera(');
-    expect(refreshViewportNeighborhood).toContain('if (!scanFixture || levelScenePreparationPending(levelCompileAbortRef.current) || zoomHandoffInflightRef.current) return;');
-    expect(maybeScanZoomHandoff).toContain('if (!scanFixture || levelScenePreparationPending(levelCompileAbortRef.current)) return false;');
+    expect(refreshViewportNeighborhood).toContain('if (!scanFixture || foregroundSceneRequestRef.current.pending() || levelScenePreparationPending(levelCompileAbortRef.current) || zoomHandoffInflightRef.current) return;');
+    expect(maybeScanZoomHandoff).toContain('if (!scanFixture || foregroundSceneRequestRef.current.pending() || levelScenePreparationPending(levelCompileAbortRef.current)) return false;');
     expect(applyScanZoomHandoff).not.toContain('composeScene(');
     expect(settleCamera).toContain('maybeScanZoomHandoff(');
     expect(settleCamera).toContain('scanZoomPointerRef.current');

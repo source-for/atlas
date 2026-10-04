@@ -24,20 +24,25 @@ import { semanticLensSessionDetail } from './semantic/semanticLens';
 
 const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
 
+it('retains both the requested Open-inside owner and deep child and rejects a missing prepared target', () => {
+  const prepare = app.slice(app.indexOf('async function prepareScanOpenInside'), app.indexOf('function scanSceneRequest'));
+  expect(prepare).toContain('[entityId, ...(codeChildId ? [codeChildId] : [])], request.generationFence');
+  const commit = app.slice(app.indexOf('function openInsideLoaded'), app.indexOf('function navigateRoot'));
+  expect(commit).toContain('preparedSceneEntity(preparedScene ?? scene, entityId)');
+  expect(commit).toContain("!requestedTarget) { setLiveMessage('This requested entity is unavailable in its prepared map.'); return; }");
+});
+
 describe('CLA-78: Code rail after Open inside a container', () => {
   // Supplementary static wiring guard; executable sequencing tests live in levelScenePreparation.test.ts.
   it('wires neighborhood preparation before the level rail compiles', () => {
     expect(app).toContain('function selectLevel(');
     expect(app).toContain('function selectLevelLoaded(');
-    expect(app).toContain('void prepareLevelSceneWithDeadline(controller, () => prepareLoadedLevelScene({');
-    expect(app).toContain('ensure: focus => fixture.ensureNeighborhood(focus)');
+    expect(app).toContain('await fixture.ensureNeighborhood(initialFocus)');
+    expect(app).toContain('await fixture.ensureNeighborhood(focus)');
     const selectLevel = app.slice(app.indexOf('function selectLevel('), app.indexOf('function selectLevelLoaded('));
-    const neighborhoodReady = selectLevel.indexOf('ensure: focus => fixture.ensureNeighborhood(focus)');
-    const cachedCompile = selectLevel.indexOf('return composeScanSceneAsync(');
-    expect(neighborhoodReady).toBeGreaterThanOrEqual(0);
-    expect(cachedCompile).toBeGreaterThanOrEqual(0);
-    expect(neighborhoodReady).toBeLessThan(cachedCompile);
-    expect(selectLevel).toContain('owns: () => fixture === scanFixture');
+    expect(selectLevel.indexOf('await fixture.ensureNeighborhood(focus)')).toBeLessThan(selectLevel.indexOf('return composeScanSceneAsync('));
+    expect(selectLevel).toContain('prepareForegroundWithRetry(request');
+    expect(selectLevel).toContain('requireForegroundSceneRequest(request)');
     expect(selectLevel).toContain('selectLevelLoaded(index, prepared)');
   });
 
@@ -198,7 +203,7 @@ describe('CLA-110: Open inside L4 lands at code-band zoom (no kick-out to system
     const openInspectorChild = sliceBetween(app, 'async function openInspectorChild(', 'const omittedChildNodes', 'openInspectorChild');
     const openInsideLoaded = sliceBetween(app, 'function openInsideLoaded(', 'function navigateRoot(', 'openInsideLoaded');
     const composeScene = sliceBetween(app, 'function composeScene(', '/** Recompile the current C4 neighborhood', 'composeScene');
-    expect(openInspectorChild).toContain("if (resident?.detail !== 'code' && resident && residentPlan)");
+    expect(openInspectorChild).toContain("navigateResidentInspectorChild({ entities: sceneRef.current.entities, id,");
     expect(openInspectorChild).toContain("openInsideLoaded(focusId, 'preserve', id)");
     expect(openInspectorChild).toContain('if (target?.kind === \'code\' && focusId !== id)');
     expect(openInspectorChild).toContain("updateInspectorHistoryForNavigation('panel')");
