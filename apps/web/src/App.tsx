@@ -2608,7 +2608,7 @@ export function App() {
               // A restored story may target a neighborhood absent from its URL selection/lens.
               const storyFocus = requestedStoryFocusIds[0];
               const compileFocus = requestedStoryStep && storyFocus
-                ? scanCompileFocusForBand(activeSnapshot, storyFocus, requestedStoryStep.reveal, navigation.rootEntityId)
+                ? scanCompileFocusForBand(activeSnapshot, storyFocus, requestedStoryStep.reveal, request.fixture.navigation.rootEntityId)
                 : navigation.lensPath?.at(-1) ?? navigation.selectedId ?? navigation.rootEntityId;
               if (requestedStoryStep) {
                 request.generationFence.allowChanges();

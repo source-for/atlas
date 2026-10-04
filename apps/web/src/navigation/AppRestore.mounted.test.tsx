@@ -152,10 +152,16 @@ describe('mounted App story history restoration', () => {
       previous: { rootEntityId: 'container:web-app', selectedId: 'container:web-app', lensPath: ['system:okie'], story: { id: story.id, step: 1, positionMs: 0 } },
     });
     expect(load).not.toHaveBeenCalled();
+    expect(fixture.navigation.rootEntityId).toBe('system:okie');
+    expect(new URL(previousUrl).searchParams.get('root')).toBe('container:web-app');
+    const compile = vi.spyOn(fixture, 'createSceneAsync');
     await act(async () => window.history.back()); await settle();
     expect(load).toHaveBeenCalledWith('container:architecture-model', expect.any(AbortSignal));
     expect(player().getAttribute('data-playback-state')).toBe('preparing');
     await act(async () => resolve(sliceArchitectureNeighborhood(snapshot as ArchitectureSnapshot, view as ArchitectureView, { focusEntityId: 'container:architecture-model' }))); await settle();
+    expect(compile).toHaveBeenCalledTimes(1);
+    expect(compile.mock.calls[0]![0]).toBe('system:okie');
+    expect((await compile.mock.results[0]!.value)!.rootEntityId).toBe(fixture.navigation.rootEntityId);
     expect(player().getAttribute('data-playback-state')).toBe('paused');
     expect(player().textContent).toContain('STEP 2 OF');
     expect(captured.controller!.current().story).toEqual({ id: story.id, step: 1, positionMs: 0 });
