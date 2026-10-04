@@ -807,7 +807,7 @@ describe('inspector hierarchy QA regressions', () => {
     const hierarchy = app.slice(start, end);
     expect(hierarchy.indexOf('setExplicitInspectorSelection(true)')).toBeGreaterThan(hierarchy.indexOf('if (!plan)'));
     expect(hierarchy.indexOf('setExplicitInspectorSelection(true)')).toBeLessThan(hierarchy.indexOf('setSelectedId(entity.id)'));
-    expect(app).toContain('explicitInspectorSelection ? selected.id : semanticLensCanonicalPathIds(semanticLensSession)');
+    expect(app).toContain('contextualOverviewEntityId({ selectedId: selected.id, storyStep, explicitSelection: explicitInspectorSelection');
   });
   it('builds dependency participants from the same scene facts used to offer the action', () => {
     expect(app).toContain('const hasDependencyDiagram = scene.relations.some');
