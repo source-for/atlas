@@ -234,3 +234,6 @@ Browser verification found valid component selection being removed by Back after
 
 
 PR #182 final re-review integration is based on PR #181 `58dea89`, including owned history-restoration cleanup and level deadline cancellation. Both parent and renderer review notes were preserved during rebase. Normal regeneration produced no additional generated changes; relative to the parent, only the adapter source anchor advances one line, preserving excerpt text. The deliberate combined evidence pin is `40270fdb` (from `2f8027c3`). Full corrected-head check/test/Rust/build and browser verification remain pending; previous-head results are not claimed as final-head evidence.
+
+
+PR #182 has been replayed onto PR #181 `d91cfb6`, which keeps canonical inspector selection outside render residency and retains only resident geometry when framing relationships. Renderer telemetry behavior is unchanged. Regeneration preserves the parent's reviewed anchors and adds only the adapter's one-line anchor shift relative to that parent; deliberate combined evidence pin is `9d79f772` (from `40270fdb`). Final source/head are frozen during refreshed full gates. Parent and final-head browser verification remain required; earlier-head green results are historical evidence.
