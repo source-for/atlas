@@ -93,6 +93,7 @@ async function tryBootScanFixture(
 async function tryBootNeighborhoodFixture(
   slug: string | undefined,
 ): Promise<{ ok: true } | { ok: false; error: unknown }> {
+  root.render(<main aria-busy="true" role="status" style={{ padding: '4rem 2rem', color: '#eef4f2', fontFamily: 'IBM Plex Sans, sans-serif' }}><h1>Preparing architecture map…</h1><p>Loading the published information and arranging your first view.</p></main>);
   try {
     const fixture: ScanFixture = await loadScanNeighborhoodFixtureFromSearch(
       fetchScanNeighborhoodHost(slug),

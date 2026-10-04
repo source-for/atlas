@@ -1,3 +1,5 @@
+import { subscribeLoadTiming } from './loadTimings';
+import { subscribeRenderTiming } from './renderTimings';
 import { subscribeSearchTiming } from './workerTimings';
 import { performanceQueryEnabled, startPerformanceSession, type Metric, type PerformanceHost } from './recorder';
 
@@ -25,9 +27,15 @@ export function installPerformanceDiagnostics(win: Window & typeof globalThis = 
   let panel: HTMLElement | undefined;
   let refresh: number | undefined;
   let disposed = false;
+  let unsubscribeLoad: (() => void) | undefined;
+  let unsubscribeRender: (() => void) | undefined;
   let unsubscribeTiming: (() => void) | undefined;
   let resumeRecorder: ReturnType<typeof startPerformanceSession>['recorder'] | undefined;
   const stop = () => {
+    unsubscribeLoad?.();
+    unsubscribeLoad = undefined;
+    unsubscribeRender?.();
+    unsubscribeRender = undefined;
     unsubscribeTiming?.();
     unsubscribeTiming = undefined;
     active?.stop();
@@ -42,6 +50,8 @@ export function installPerformanceDiagnostics(win: Window & typeof globalThis = 
     // A retained BFCache recorder already contains buffered entries from the previous observer.
     active = startPerformanceSession(browserHost(win, doc), recorder, recorder === undefined);
     unsubscribeTiming = subscribeSearchTiming((metric, durationMs) => active?.recorder.record(metric, win.performance.now(), durationMs));
+    unsubscribeLoad = subscribeLoadTiming((metric, startMs, durationMs) => active?.recorder.record(metric, startMs, durationMs));
+    unsubscribeRender = subscribeRenderTiming((metric, startMs, durationMs) => active?.recorder.record(metric, startMs, durationMs));
     panel = doc.createElement('section');
     panel.setAttribute('aria-label', 'Performance diagnostics');
     panel.dataset.performancePanel = 'true';
@@ -49,9 +59,15 @@ export function installPerformanceDiagnostics(win: Window & typeof globalThis = 
     const heading = doc.createElement('strong');
     heading.textContent = 'Local performance diagnostics';
     const explanation = doc.createElement('p');
-    explanation.textContent = 'Paint is browser page paint, not atlas readiness. Bootstrap completion means render requested, not rendered. Interaction timings are sampled events, not INP. Frame gaps over 50 ms exclude hidden pages. Reload with ?perf=1 to capture bootstrap. Search worker timings separate preparation, index build, query processing and round trip; their timestamps mark receipt on the UI thread.';
+    explanation.textContent = 'Paint is browser page paint, not atlas readiness. Bootstrap completion means render requested, not rendered. Interaction timings are sampled events, not INP. Frame gaps over 50 ms exclude hidden pages. Reload with ?perf=1 to capture bootstrap. Search worker timings separate preparation, index build, query processing and round trip; their timestamps mark receipt on the UI thread. Render phases measure synchronous UI work, not GPU completion; frames are sampled every 250 ms plus slow frames over 16 ms.';
     const summary = doc.createElement('pre');
     summary.style.cssText = 'white-space:pre-wrap;font:12px/1.5 monospace';
+    const rawReport = doc.createElement('pre');
+    rawReport.style.cssText = 'white-space:pre-wrap;font:11px/1.4 monospace';
+    const reportDetails = doc.createElement('details');
+    const reportLabel = doc.createElement('summary');
+    reportLabel.textContent = 'Inspect safe timing JSON';
+    reportDetails.append(reportLabel, rawReport);
     const update = () => {
       if (!active) return;
       const report = active.recorder.report();
@@ -59,11 +75,15 @@ export function installPerformanceDiagnostics(win: Window & typeof globalThis = 
       for (const metric of [...new Set(report.samples.map(sample => sample.metric))]) {
         const samples = report.samples.filter(sample => sample.metric === metric);
         const latest = samples[samples.length - 1]!;
-        lines.push(`${metric}: ${metric === 'first-paint' || metric === 'first-contentful-paint' || metric === 'largest-contentful-paint' || metric === 'bootstrap-start' || metric === 'bootstrap-complete' ? `${latest.startMs} ms since navigation` : `${latest.durationMs} ms duration`} (${samples.length} retained)`);
+        lines.push(`${metric}: ${metric === 'first-paint' || metric === 'first-contentful-paint' || metric === 'largest-contentful-paint' || metric === 'bootstrap-start' || metric === 'bootstrap-complete' || metric === 'atlas-first-frame' ? `${latest.startMs} ms since navigation` : `${latest.durationMs} ms duration`} (${samples.length} retained)`);
       }
       lines.push(`Dropped samples: ${report.droppedSamples}`);
       summary.textContent = lines.join('\n');
+
     };
+    reportDetails.addEventListener('toggle', () => {
+      if (reportDetails.open && active) rawReport.textContent = JSON.stringify(active.recorder.report(), null, 2);
+    });
     const exportButton = doc.createElement('button');
     exportButton.type = 'button';
     exportButton.textContent = 'Export safe timing JSON';
@@ -81,7 +101,7 @@ export function installPerformanceDiagnostics(win: Window & typeof globalThis = 
     close.textContent = 'Stop recording';
     close.style.marginLeft = '8px';
     close.addEventListener('click', stop);
-    panel.append(heading, explanation, summary, exportButton, close);
+    panel.append(heading, explanation, summary, exportButton, close, reportDetails);
     doc.body.append(panel);
     update();
     refresh = win.setInterval(update, 1000);

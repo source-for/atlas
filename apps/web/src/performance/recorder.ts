@@ -1,11 +1,13 @@
 export const PERFORMANCE_LIMIT = 240;
 export type SearchMetric = 'search-startup' | 'search-prepare' | 'search-index' | 'search-query' | 'search-round-trip' | 'search-fallback';
-export type Metric = SearchMetric | 'navigation' | 'first-paint' | 'first-contentful-paint' | 'largest-contentful-paint' | 'interaction' | 'long-task' | 'frame-stall' | 'bootstrap-start' | 'bootstrap-complete';
+export type RenderMetric = 'render-scene' | 'render-state' | 'render-draw' | 'render-publish';
+import type { LoadMetric } from './loadTimings';
+export type Metric = SearchMetric | RenderMetric | LoadMetric | 'navigation' | 'first-paint' | 'first-contentful-paint' | 'largest-contentful-paint' | 'interaction' | 'long-task' | 'frame-stall' | 'bootstrap-start' | 'bootstrap-complete';
 export type Capability = 'navigation' | 'paint' | 'largest-contentful-paint' | 'event' | 'longtask' | 'frames';
 export type Availability = 'available' | 'unsupported' | 'failed';
 export interface Sample { metric: Metric; startMs: number; durationMs: number }
 export interface PerformanceReport { schemaVersion: 1; capabilities: Partial<Record<Capability, Availability>>; droppedSamples: number; samples: Sample[] }
-const metrics = new Set<Metric>(['navigation', 'first-paint', 'first-contentful-paint', 'largest-contentful-paint', 'interaction', 'long-task', 'frame-stall', 'bootstrap-start', 'bootstrap-complete', 'search-startup', 'search-prepare', 'search-index', 'search-query', 'search-round-trip', 'search-fallback']);
+const metrics = new Set<Metric>(['navigation', 'first-paint', 'first-contentful-paint', 'largest-contentful-paint', 'interaction', 'long-task', 'frame-stall', 'bootstrap-start', 'bootstrap-complete', 'search-startup', 'search-prepare', 'search-index', 'search-query', 'search-round-trip', 'search-fallback', 'render-scene', 'render-state', 'render-draw', 'render-publish', 'atlas-fetch', 'atlas-body', 'atlas-parse', 'atlas-validate', 'atlas-story', 'atlas-slice', 'atlas-compile', 'atlas-worker-compile', 'atlas-worker-round-trip', 'atlas-first-frame']);
 
 /** Only fixed metric identifiers and numeric timings enter the report. Never serialize browser entries. */
 export function createPerformanceRecorder(limit = PERFORMANCE_LIMIT) {

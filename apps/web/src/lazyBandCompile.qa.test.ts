@@ -18,7 +18,8 @@ describe('CLA-66: lazy band compile is the default scan path', () => {
     expect(app).toContain('scanCompileFocusForBand(');
     expect(app).toContain('stepScene');
     expect(app).toContain('function selectLevelLoaded(');
-    expect(app).toContain('void fixture.ensureNeighborhood(initialFocus)');
+    // Static wiring guard; executable cancellation/deadline behavior lives in levelScenePreparation.test.ts.
+    expect(app).toContain('void prepareLevelSceneWithDeadline(controller, () => prepareLoadedLevelScene({');
   });
 
   it('caches scan neighborhoods even when callers pass the authoring document', () => {

@@ -1,3 +1,7 @@
+import { prepareLoadedLevelScene, prepareLevelSceneWithDeadline, clearLevelScenePreparation, levelScenePreparationPending, runLevelSceneGesture, LEVEL_SCENE_PREPARING } from './renderer/levelScenePreparation';
+import { compileCurrentGeneration } from './renderer/compileCurrentGeneration';
+import { initialSceneBandsMatch } from './renderer/initialSceneCompatibility';
+import { recordAtlasFirstFrame } from './performance/loadTimings';
 import { DiagramActionHelp } from './diagram/DiagramActionHelp';
 import { architectureStoryFromAppPlan, optionalDiagramResult } from './diagram/namedFlow';
 import { parseAppRoute } from './renderer/route';
@@ -62,6 +66,7 @@ import {
   type SemanticDetail,
 } from './navigation/navigationState';
 import { createGoldenC4Scene, goldenAppStory, scanDeeperBandHasPeerCards, scanDrillDeeperDetail, scanWindowedCompileDropsPeerGraph, scanZoomCompileHandoff, scanZoomEntityUnderPointer, scanZoomHandoffPreferredId, semanticBounds, type AppStoryPlan, type AppStoryPlanStep } from './renderer/goldenC4Scene';
+import { createSceneRequestOwner, ownsNeighborhoodSceneCache, ownsScenePublication, readNeighborhoodScene, retainNeighborhoodScene } from './renderer/sceneRequestOwner';
 import { cacheableNeighborhoodScene, scanCompileFocusForBand, scanEntityHasChildren, scanNextBand, scanPrefetchFocusIds } from './renderer/lazyBandCompile';
 import { getActiveScanFixture, scanKeepsResidentL3Landmarks } from './renderer/fixtureBundle';
 import { createRenderer, recoverRenderer, type RendererSession } from './renderer/createRenderer';
@@ -124,6 +129,7 @@ import { createScanContainerMorph, createScanDetailMorph, createScanReverseMorph
 import { explorerEntitiesForView } from './entityExplorer';
 import { defaultSearchSuggestions } from './searchSuggestions';
 import { useWorkerSearch } from './search/useWorkerSearch';
+import { beginRenderTiming } from './performance/renderTimings';
 import { recordSearchTiming } from './performance/workerTimings';
 import { askOwnsKeystrokes, askOverlayPresent, keystrokeOwnedByTextEntry, searchOwnsKeystrokes, shouldOpenAskAtlas, shouldOpenSearch, shouldToggleDevMode } from './shortcuts';
 import {
@@ -549,7 +555,9 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
       if (resolvedFrame.acknowledged) semanticRenderPacketRef.current = undefined;
       const frame = resolvedFrame.frame;
       try {
+        const renderTiming = beginRenderTiming();
         renderer.setScene(frame.scene);
+        renderTiming?.('render-scene');
         renderer.setCamera(frame.camera);
         renderer.setRenderState({
           selectedId: current.selectedId,
@@ -563,12 +571,16 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
           ...(frame.projectionOverride ? { projectionOverride: frame.projectionOverride } : {}),
           ...(current.cinematicTransition ? { cinematicTransition: current.cinematicTransition } : {}),
         });
+        renderTiming?.('render-state');
         renderer.render(time);
+        if (frame.scene.id !== 'stress-loading' && renderer.kind !== 'unsupported') recordAtlasFirstFrame();
+        renderTiming?.('render-draw');
         publishLiveCamera(frame.camera, {
           scene: frame.scene,
           projectionOverride: frame.projectionOverride,
           reduceMotion: current.reduceMotion,
         });
+        renderTiming?.('render-publish');
         if (zoomMotionTrace.isRecording()) zoomMotionTrace.recordFrame({
           timeMs: time,
           camera: frame.camera,
@@ -1489,9 +1501,17 @@ export function App() {
   const detailsTabRef = useRef<HTMLButtonElement | null>(null);
   const inspectorSelectionRef = useRef(initialNavigation.selectedId);
   const inspectorReframeGenerationRef = useRef(0);
-  const neighborhoodScenesRef = useRef<Map<string, AtlasScene>>(new Map(
-    scanFixture ? [[scanFixture.navigation.rootEntityId, goldenScene]] : [],
-  ));
+  const initialEnrichmentAbortRef = useRef<AbortController | undefined>(undefined);
+  const levelCompileAbortRef = useRef<AbortController | undefined>(undefined);
+  useEffect(() => {
+    const fixture = scanFixture;
+    return () => {
+      levelCompileAbortRef.current?.abort();
+      fixture?.disposeSceneWorker();
+    };
+  }, []);
+  const neighborhoodScenesRef = useRef<Map<string, AtlasScene>>(new Map());
+  const preparedSceneGenerationsRef = useRef(new WeakMap<AtlasScene, number>());
   const askButtonRef = useRef<HTMLButtonElement | null>(null);
   const askInputRef = useRef<HTMLTextAreaElement | null>(null);
   const askAbortRef = useRef<AbortController | undefined>(undefined);
@@ -1572,6 +1592,10 @@ export function App() {
   }));
   const navigationIdentityRef = useRef(navigationIdentity);
   navigationIdentityRef.current = navigationIdentity;
+  const gestureSceneRequestRef = useRef(createSceneRequestOwner());
+  const viewportSceneRequestRef = useRef(createSceneRequestOwner());
+  const viewportRequestedTileRef = useRef<string | undefined>(undefined);
+  const neighborhoodSceneGenerationRef = useRef<{ fixture: unknown; generation: number } | undefined>(undefined);
   const zoomHandoffGenerationRef = useRef(0);
   const zoomHandoffInflightRef = useRef<{ detail: SemanticDetail; compileFocus: string } | undefined>(undefined);
   const scanZoomPointerRef = useRef<LensPoint | undefined>(undefined);
@@ -1629,6 +1653,7 @@ export function App() {
   const [storySelectionOverride, setStorySelectionOverride] = useState(false);
   const [visibilityMode, setVisibilityMode] = useState<'all' | 'dim' | 'isolate'>('all');
   const [liveMessage, setLiveMessage] = useState('Architecture atlas loaded.');
+  const [initialDetailLoading, setInitialDetailLoading] = useState(Boolean(scanFixture?.boot === 'neighborhood' && activeSnapshot.entities.length > 128));
   const [askOpen, setAskOpen] = useState(false);
   const [askDocked, setAskDocked] = useState(false);
   const [inspectorAskActive, setInspectorAskActive] = useState(false);
@@ -1655,6 +1680,7 @@ export function App() {
   const askThreadRef = useRef<AskThreadView | undefined>(undefined);
   askThreadRef.current = askThread;
   const [viewport, setViewport] = useState<ViewportSize>(() => ({ width: Math.max(1, window.innerWidth), height: Math.max(1, window.innerHeight - 68) }));
+  useEffect(() => { cancelGestureSceneRequests(); }, [viewport.width, viewport.height]);
   const [measuredSafeArea, setMeasuredSafeArea] = useState<SafeArea>(() => storySafeArea({ width: Math.max(1, window.innerWidth), height: Math.max(1, window.innerHeight - 68) }));
   const [safeAreaEpoch, setSafeAreaEpoch] = useState(0);
   const [pickedRelationId, setPickedRelationId] = useState<string>();
@@ -1688,7 +1714,7 @@ export function App() {
   const [semanticLensSession, setSemanticLensSession] = useState<SemanticLensSession>(() => {
     const baseIndex = initialNavigation.detail ? semanticDetails.indexOf(initialNavigation.detail) : -1;
     const baseDetail = baseIndex >= 0 ? semanticDetails[baseIndex] : 'context';
-    const lensScene = query.fixture === 'stress'
+    const lensScene = query.fixture === 'stress' || initialNavigation.rootEntityId === goldenScene.rootEntityId
       ? goldenScene
       : activeCreateScene(initialNavigation.rootEntityId, goldenScene);
     const settled = validateRestoredSemanticLensPath(
@@ -1715,6 +1741,8 @@ export function App() {
   const semanticLens = semanticLensSessionPresentationState(semanticLensSession);
 
   const selected = useMemo(() => scene.entities.find(entity => entity.id === selectedId) ?? scene.entities[0], [scene.entities, selectedId]);
+  useEffect(() => () => { levelCompileAbortRef.current?.abort(); initialEnrichmentAbortRef.current?.abort(); }, [scene, selectedId]);
+  useEffect(() => () => { cancelGestureSceneRequests(); }, [scene, selectedId]);
   const pickedRelation = useMemo(() => pickedRelationId ? scene.relations.find(relation => relation.id === pickedRelationId) ?? canonicalRelationForInspection(activeSnapshot, pickedRelationId) : undefined, [activeSnapshot, pickedRelationId, scene.relations]);
   const pickedRelationPresentation = useMemo(() => pickedRelation ? selectedRelationPresentation(scene, pickedRelation, pickedRelation.from) : undefined, [pickedRelation, scene]);
   const pickedCanonicalRelation = activeSnapshot.relations.find(relation => relation.id === pickedRelationId);
@@ -1749,6 +1777,7 @@ export function App() {
   inspectorNeighborhoodFixture.current = scanFixture;
   useEffect(() => () => inspectorNeighborhoodRequest.current.cancel(), [scanFixture]);
   async function openInspectorChild(id: string) {
+    cancelGestureSceneRequests();
     inspectorNeighborhoodRequest.current.cancel();
     const resident = scene.entities.find(entity => entity.id === id);
     const residentPlan = resident && semanticInspectorHierarchyPlan(scene, id, viewport, measureCurrentMapSafeArea(), semanticLensSessionRef.current, renderedCameraRef.current);
@@ -2176,6 +2205,22 @@ export function App() {
     path: navigationPathFromDraft(pathDraft),
   }, navigationDefaults);
   const navigationRef = useRef<NavigationState>(navigationState);
+  useEffect(() => {
+    const fixture = scanFixture;
+    if (!fixture || sceneRef.current !== goldenScene) return;
+    let alive = true;
+    const controller = new AbortController();
+    initialEnrichmentAbortRef.current = controller;
+    void fixture.enrichInitialScene(controller.signal).then(enriched => {
+      if (alive) setInitialDetailLoading(false);
+      if (!alive || !enriched || fixture !== scanFixture || sceneRef.current !== goldenScene) return;
+      const detail = semanticLensSessionDetail(semanticLensSessionRef.current);
+      if (detail !== 'context' && detail !== 'container') return;
+      if (!initialSceneBandsMatch(goldenScene, enriched)) return;
+      setScene(enriched);
+    }).catch(() => { if (alive) setInitialDetailLoading(false); });
+    return () => { alive = false; controller.abort(); };
+  }, [goldenScene]);
   navigationRef.current = navigationState;
   const rendererReplayState = JSON.stringify({
     timeline: {
@@ -2437,6 +2482,7 @@ export function App() {
       defaults: navigationDefaults,
       urlOptions: navigationUrlOptions,
       async restore(next, source) {
+        cancelGestureSceneRequests();
         cancelAskMapShow(); // back/forward supersedes an in-flight Ask "Show on map"
         abortInspectorCameraFlight();
         const restoreGeneration = navigationRestoreGenerationRef.current + 1;
@@ -2448,6 +2494,7 @@ export function App() {
         activeLevelRef.current = restoredLevel;
         const restoredBaseDetail = semanticDetails[restoredLevel];
         const restoredScene = query.fixture === 'stress'
+          || (source === 'initialize' && scanFixture && next.rootEntityId === goldenScene.rootEntityId)
           ? goldenScene
           : composeScene(next.rootEntityId, goldenScene, authoringHistoryRef.current.present);
         const validatedLensPath = validateRestoredSemanticLensPath(
@@ -2820,6 +2867,7 @@ export function App() {
 
   function stabilizeSemanticLensForPan(reachedCamera: Camera) {
     scanViewportInteractionRef.current = 'pan';
+    if (levelScenePreparationPending(levelCompileAbortRef.current)) return;
     const current = semanticLensSessionRef.current;
     const plan = semanticPanFocusPlan(
       scene,
@@ -2890,7 +2938,13 @@ export function App() {
     return true;
   }
 
-  function handleSemanticZoom(sample: {
+  function handleSemanticZoom(sample: Parameters<typeof handleSemanticZoomReady>[0]): Camera {
+    scanZoomPointerRef.current = sample.pointer;
+    renderedCameraRef.current = sample.camera;
+    return runLevelSceneGesture(levelCompileAbortRef.current, sample.camera, () => handleSemanticZoomReady(sample));
+  }
+
+  function handleSemanticZoomReady(sample: {
     camera: Camera;
     pointer: LensPoint;
     direction: 'inward' | 'outward' | 'none';
@@ -3299,6 +3353,7 @@ export function App() {
     inspectorIntent: 'auto' | 'source' | 'details' = 'auto',
     inspectorNavigation: 'external' | 'panel' | 'history' | 'preserve' = 'external',
   ) {
+    cancelGestureSceneRequests();
     cancelAskMapShow(); // a user selection supersedes an in-flight Ask "Show on map"
     const liveCamera = abortInspectorCameraFlight();
     setExplicitInspectorSelection(true);
@@ -3478,36 +3533,65 @@ export function App() {
     // CLA-67 cap alone — L3 camera space is not L4 packed layout, so inheriting
     // the previous band's camera would omit the destination's children.
     if (scanFixture) {
-      const windowCamera = scanKeepsResidentL3Landmarks(activeSnapshot, focusEntityId)
-        ? undefined
-        : cameraOverride;
-      const retainedEntityIds = [...new Set([
-        ...(inspectorSelectionRef.current ? [inspectorSelectionRef.current] : []),
-        ...(keepEntityIds ?? []),
-      ])];
-      const residency = {
-        ...(windowCamera ? { worldBounds: expandRectByTileRing(cameraWorldRect(windowCamera, viewport)) } : {}),
-        keepEntityIds: retainedEntityIds.length ? retainedEntityIds : undefined,
-      };
-      const cacheKey = [
-        focusEntityId,
-        activeSnapshot.entities.length,
-        activeSnapshot.relations.length,
-        viewportNeighborhoodCacheKey(focusEntityId, windowCamera, windowCamera ? viewport : undefined),
-        retainedEntityIds.join(','),
-      ].join(':');
-      const cached = neighborhoodScenesRef.current.get(cacheKey);
+      const { residency, cacheKey } = scanSceneRequest(focusEntityId, cameraOverride, keepEntityIds);
+      const cached = readNeighborhoodScene(neighborhoodScenesRef.current, cacheKey);
       if (cached) return cached;
       const compiled = activeCreateScene(focusEntityId, previous, undefined, residency);
-      neighborhoodScenesRef.current.set(cacheKey, cacheableNeighborhoodScene(compiled));
+      retainNeighborhoodScene(neighborhoodScenesRef.current, cacheKey, cacheableNeighborhoodScene(compiled));
       return compiled;
     }
     return activeCreateScene(focusEntityId, previous, authoring);
   }
 
+  function cancelGestureSceneRequests() {
+    gestureSceneRequestRef.current.cancel();
+    viewportSceneRequestRef.current.cancel();
+    viewportRequestedTileRef.current = undefined;
+    zoomHandoffGenerationRef.current++;
+    zoomHandoffInflightRef.current = undefined;
+  }
+
+  function scanSceneRequest(focusEntityId: string, cameraOverride?: Camera, keepEntityIds?: readonly string[]) {
+    const generation = scanFixture!.getSceneGeneration();
+    if (!ownsNeighborhoodSceneCache(neighborhoodSceneGenerationRef.current, scanFixture, generation)) {
+      neighborhoodScenesRef.current.clear();
+      neighborhoodSceneGenerationRef.current = { fixture: scanFixture, generation };
+    }
+    const windowCamera = scanKeepsResidentL3Landmarks(activeSnapshot, focusEntityId) ? undefined : cameraOverride;
+    const retainedEntityIds = [...new Set([
+      ...(inspectorSelectionRef.current ? [inspectorSelectionRef.current] : []),
+      ...(keepEntityIds ?? []),
+    ])];
+    return {
+      residency: {
+        ...(windowCamera ? { worldBounds: expandRectByTileRing(cameraWorldRect(windowCamera, viewport)) } : {}),
+        keepEntityIds: retainedEntityIds.length ? retainedEntityIds : undefined,
+      },
+      cacheKey: [generation, focusEntityId,
+        viewportNeighborhoodCacheKey(focusEntityId, windowCamera, windowCamera ? viewport : undefined),
+        retainedEntityIds.join(','),
+      ].join(':'),
+    };
+  }
+
+  async function composeScanSceneAsync(focusEntityId: string, previous: AtlasScene, signal: AbortSignal, cameraOverride?: Camera, keepEntityIds?: readonly string[]) {
+    const fixture = scanFixture!;
+    return compileCurrentGeneration(() => fixture.getSceneGeneration(), async () => {
+      const { residency, cacheKey } = scanSceneRequest(focusEntityId, cameraOverride, keepEntityIds);
+      const cached = readNeighborhoodScene(neighborhoodScenesRef.current, cacheKey);
+      if (cached) return cached;
+      const generation = fixture.getSceneGeneration();
+      const compiled = await fixture.createSceneAsync(focusEntityId, previous, residency, signal);
+      if (signal.aborted || fixture !== scanFixture) throw new DOMException('Scene request superseded', 'AbortError');
+      if (generation === fixture.getSceneGeneration()) retainNeighborhoodScene(neighborhoodScenesRef.current, cacheKey, cacheableNeighborhoodScene(compiled));
+      return compiled;
+    }, signal, (prepared, generation) => preparedSceneGenerationsRef.current.set(prepared, generation));
+  }
+
   /** Recompile the current C4 neighborhood for the camera tile window. Not a full-graph compile. */
   function refreshViewportNeighborhood(next: Camera) {
-    if (!scanFixture) return;
+    // Foreground band handoffs own selected compilation until publication finishes.
+    if (!scanFixture || levelScenePreparationPending(levelCompileAbortRef.current) || zoomHandoffInflightRef.current) return;
     const containerMorph = scanContainerMorphRef.current;
     // The terminal L3 frame remains an endpoint of the reversible L2↔L3
     // bridge. A camera-tile refresh here can compile only the owner shell and
@@ -3529,16 +3613,34 @@ export function App() {
       currentFocus,
     );
     const compileFocus = handoff?.compileFocus ?? currentFocus;
-    let nextScene = composeScene(compileFocus, sceneRef.current, authoringHistoryRef.current.present, next);
-    if (containerMorph && compileFocus === containerMorph.focusId) {
-      nextScene = retainScanDetailMorphSource(containerMorph.sourceScene, nextScene, containerMorph.sourceDetail);
-    }
-    if (nextScene !== sceneRef.current) {
-      if (scanWindowedCompileDropsPeerGraph(sceneRef.current, nextScene, compileFocus, detail)) return;
-      if (containerMorph && compileFocus === containerMorph.focusId) containerMorph.scene = nextScene;
-      sceneRef.current = nextScene;
-      setScene(nextScene);
-    }
+    const fixture = scanFixture;
+    const sourceScene = sceneRef.current;
+    const sourceSession = semanticLensSessionRef.current;
+    const selection = inspectorSelectionRef.current;
+    const tileKey = scanSceneRequest(compileFocus, next).cacheKey;
+    if (viewportRequestedTileRef.current === tileKey) return;
+    viewportRequestedTileRef.current = tileKey;
+    const request = viewportSceneRequestRef.current.begin();
+    void composeScanSceneAsync(compileFocus, sourceScene, request.signal, next).then(prepared => {
+      if (!request.owns() || !ownsScenePublication(
+        { fixture, scene: sourceScene, session: sourceSession, selection },
+        { fixture: scanFixture, scene: sceneRef.current, session: semanticLensSessionRef.current, selection: inspectorSelectionRef.current },
+      ) || containerMorph !== scanContainerMorphRef.current || viewportRequestedTileRef.current !== tileKey) return;
+      let nextScene = prepared;
+      if (containerMorph && compileFocus === containerMorph.focusId) {
+        nextScene = retainScanDetailMorphSource(containerMorph.sourceScene, nextScene, containerMorph.sourceDetail);
+      }
+      if (nextScene !== sourceScene) {
+        if (scanWindowedCompileDropsPeerGraph(sourceScene, nextScene, compileFocus, detail)) return;
+        if (containerMorph && compileFocus === containerMorph.focusId) containerMorph.scene = nextScene;
+        sceneRef.current = nextScene;
+        setScene(nextScene);
+      }
+    }).catch(error => {
+      if (request.owns() && !(error instanceof DOMException && error.name === 'AbortError')) setLiveMessage('This map view could not be prepared. Try again.');
+    }).finally(() => {
+      if (request.owns()) viewportRequestedTileRef.current = undefined;
+    });
   }
 
   /**
@@ -3552,6 +3654,7 @@ export function App() {
     handoff: { detail: SemanticDetail; compileFocus: string },
     liveCamera: Camera,
     preferredId: string,
+    nextScene: AtlasScene,
   ): Camera {
     const liveScene = sceneRef.current;
     const currentSession = semanticLensSessionRef.current;
@@ -3561,7 +3664,6 @@ export function App() {
       ...currentSession.settled.map(entry => entry.targetId).reverse(),
       navigationIdentityRef.current.rootEntityId,
     ];
-    const nextScene = composeScene(handoff.compileFocus, liveScene, authoringHistoryRef.current.present);
     if ((handoff.detail === 'component' || handoff.detail === 'code')
       && !scanDeeperBandHasPeerCards(nextScene, handoff.compileFocus, handoff.detail)) {
       return liveCamera;
@@ -3639,7 +3741,7 @@ export function App() {
     applyCamera: (next: Camera) => void,
     pointer?: LensPoint,
   ): boolean {
-    if (!scanFixture) return false;
+    if (!scanFixture || levelScenePreparationPending(levelCompileAbortRef.current)) return false;
     const containerMorph = scanContainerMorphRef.current;
     if (containerMorph && containerMorph.scene === sceneRef.current && containerMorph.progress < 1) return false;
     const currentDetail = semanticLensSessionDetail(semanticLensSessionRef.current);
@@ -3669,52 +3771,73 @@ export function App() {
       zoomDetail,
       currentCompileFocus,
     );
-    if (!handoff) return false;
+    if (!handoff) {
+      if (zoomHandoffInflightRef.current) {
+        gestureSceneRequestRef.current.cancel();
+        zoomHandoffGenerationRef.current++;
+        zoomHandoffInflightRef.current = undefined;
+      }
+      return false;
+    }
     const inflight = zoomHandoffInflightRef.current;
     if (inflight && inflight.compileFocus === handoff.compileFocus && inflight.detail === handoff.detail) {
       return true;
     }
+    viewportSceneRequestRef.current.cancel();
+    viewportRequestedTileRef.current = undefined;
+    const request = gestureSceneRequestRef.current.begin();
     const token = ++zoomHandoffGenerationRef.current;
+    const fixture = scanFixture;
+    const sourceScene = sceneRef.current;
+    const sourceSession = semanticLensSessionRef.current;
+    const selection = inspectorSelectionRef.current;
+    const owns = () => request.owns() && token === zoomHandoffGenerationRef.current && ownsScenePublication(
+      { fixture, scene: sourceScene, session: sourceSession, selection },
+      { fixture: scanFixture, scene: sceneRef.current, session: semanticLensSessionRef.current, selection: inspectorSelectionRef.current },
+    );
     zoomHandoffInflightRef.current = handoff;
-    void scanFixture.ensureNeighborhood(handoff.compileFocus).then(() => {
-      if (token !== zoomHandoffGenerationRef.current) return;
-      zoomHandoffInflightRef.current = undefined;
+    void fixture.ensureNeighborhood(handoff.compileFocus).then(async () => {
+      if (!owns()) return;
+      const prepared = await composeScanSceneAsync(handoff.compileFocus, sourceScene, request.signal);
+      if (!owns()) return;
       const liveCamera = renderedCameraRef.current;
       const liveLevel = semanticDetails.indexOf(semanticLensSessionDetail(semanticLensSessionRef.current));
       const liveActive = semanticLensSessionRef.current.active;
       const liveDetail = liveActive.phase !== 'idle' && liveActive.currentDetail === 'container'
         && liveActive.nextDetail === 'component' && liveActive.targetId === preferredId
         ? 'component' : semanticDetails[getLevel(liveCamera.zoom, liveLevel)] ?? 'context';
-      const still = scanZoomCompileHandoff(
-        sceneRef.current,
-        activeSnapshot,
-        preferredId,
-        viewRootId,
-        liveDetail,
-        sceneRef.current.rootEntityId ?? viewRootId,
+      const livePreferredId = scanZoomHandoffPreferredId(
+        sourceScene, activeSnapshot, viewRootId, liveDetail, sourceScene.rootEntityId ?? viewRootId,
+        liveCamera, viewport, scanZoomPointerRef.current, semanticLensSessionDetail(sourceSession),
+        liveActive.phase !== 'idle' && liveActive.currentDetail === 'container' && liveActive.nextDetail === 'component'
+          ? liveActive.targetId! : inspectorSelectionRef.current ?? selected.id,
       );
-      if (!still) return;
-      applyCamera(applyScanZoomHandoff(still, liveCamera, preferredId));
-    }).catch(() => {
+      const still = scanZoomCompileHandoff(sourceScene, activeSnapshot, livePreferredId, viewRootId, liveDetail, sourceScene.rootEntityId ?? viewRootId);
+      if (!still || still.compileFocus !== handoff.compileFocus || still.detail !== handoff.detail) return;
+      applyCamera(applyScanZoomHandoff(still, liveCamera, livePreferredId, prepared));
+    }).catch(error => {
+      if (owns() && !(error instanceof DOMException && error.name === 'AbortError')) setLiveMessage('This detail level could not be prepared. Try again.');
+    }).finally(() => {
       if (token === zoomHandoffGenerationRef.current) zoomHandoffInflightRef.current = undefined;
     });
     return true;
   }
 
-  /** Compile the next-band neighborhood without swapping the visible scene or moving the camera (CLA-11). */
+  /** Fetch the next-band neighborhood without compiling or changing the visible scene (CLA-11). */
   function prefetchCommittedBox(entityId: string | undefined) {
     const fixture = scanFixture;
     if (!fixture || !entityId) return;
-    void fixture.ensureNeighborhood(entityId).then(() => {
+    void fixture.ensureNeighborhood(entityId).then(async () => {
+      if (fixture !== scanFixture) return;
       for (const focusId of scanPrefetchFocusIds(activeSnapshot, [entityId])) {
-        void fixture.ensureNeighborhood(focusId).then(() => {
-          composeScene(focusId, scene, authoringHistoryRef.current.present);
-        });
+        await fixture.ensureNeighborhood(focusId);
+        if (fixture !== scanFixture) return;
       }
-    });
+    }).catch(() => { /* Fetch-only prefetch never competes for selected compile CPU. */ });
   }
 
   function revealOmittedEntity(entity: SceneEntity) {
+    cancelGestureSceneRequests();
     inspectorSelectionRef.current = entity.id;
     if (scanFixture) {
       const compileFocus = scanCompileFocusForBand(
@@ -3898,6 +4021,7 @@ export function App() {
    * no resolvable bounds.
    */
   function frameSelectedRelationFlow(relation: SceneRelation, _fallbackOwner: SceneEntity) {
+    cancelGestureSceneRequests();
     const generation = inspectorReframeGenerationRef.current + 1;
     inspectorReframeGenerationRef.current = generation;
     window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
@@ -4069,8 +4193,18 @@ export function App() {
   }
 
   function selectLevel(index: number) {
+    cancelGestureSceneRequests();
+    levelCompileAbortRef.current?.abort();
+    initialEnrichmentAbortRef.current?.abort();
+    setInitialDetailLoading(false);
     const fixture = scanFixture;
     if (fixture) {
+      const controller = new AbortController();
+      levelCompileAbortRef.current = controller;
+      controller.signal.addEventListener('abort', () => clearLevelScenePreparation(levelCompileAbortRef, controller, setLiveMessage), { once: true });
+      const initialScene = sceneRef.current;
+      const initialSelection = inspectorSelectionRef.current;
+      setLiveMessage(LEVEL_SCENE_PREPARING);
       const detail = semanticDetails[index];
       const preferredId = selected.id;
       const initialFocus = scanCompileFocusForBand(
@@ -4079,21 +4213,34 @@ export function App() {
         detail,
         fixture.navigation.rootEntityId,
       );
-      void fixture.ensureNeighborhood(initialFocus).then(() => {
-        const compileFocus = scanCompileFocusForBand(
-          activeSnapshot,
-          preferredId,
-          detail,
-          fixture.navigation.rootEntityId,
-        );
-        return fixture.ensureNeighborhood(compileFocus);
-      }).then(() => { if (fixture === scanFixture) selectLevelLoaded(index); });
+      void prepareLevelSceneWithDeadline(controller, () => prepareLoadedLevelScene({
+        signal: controller.signal,
+        initialFocus,
+        ensure: focus => fixture.ensureNeighborhood(focus),
+        recomputeFocus: () => scanCompileFocusForBand(activeSnapshot, preferredId, detail, fixture.navigation.rootEntityId),
+        owns: () => fixture === scanFixture && initialScene === sceneRef.current && initialSelection === inspectorSelectionRef.current,
+        compile: async () => {
+          const viewRootId = fixture.navigation.rootEntityId;
+          const currentFocus = initialScene.rootEntityId ?? viewRootId;
+          const handoff = scanZoomCompileHandoff(initialScene, activeSnapshot, initialSelection, viewRootId, detail, currentFocus);
+          const compileFocus = handoff?.compileFocus ?? currentFocus;
+          return composeScanSceneAsync(compileFocus, initialScene, controller.signal, undefined, initialSelection ? [initialSelection] : undefined);
+        },
+        isPreparedCurrent: prepared => preparedSceneGenerationsRef.current.get(prepared) === fixture.getSceneGeneration(),
+        publish: prepared => selectLevelLoaded(index, prepared),
+      }), () => {
+        if (levelCompileAbortRef.current === controller) setLiveMessage('Detail level preparation timed out. Choose a level to try again.');
+      }).catch(() => {
+        if (levelCompileAbortRef.current === controller && !controller.signal.aborted) setLiveMessage('This detail level could not be prepared. Try again.');
+      }).finally(() => {
+        clearLevelScenePreparation(levelCompileAbortRef, controller, setLiveMessage);
+      });
       return;
     }
     selectLevelLoaded(index);
   }
 
-  function selectLevelLoaded(index: number) {
+  function selectLevelLoaded(index: number, preparedScene?: AtlasScene) {
     const liveCamera = abortInspectorCameraFlight();
     const level = levels[index];
     const detail = semanticDetails[index];
@@ -4108,7 +4255,7 @@ export function App() {
     const compileFocus = scanFixture
       ? (handoff?.compileFocus ?? currentFocus)
       : navigationIdentity.rootEntityId;
-    const levelScene = scanFixture ? composeScene(compileFocus, scene, authoringHistoryRef.current.present) : scene;
+    const levelScene = preparedScene ?? (scanFixture ? composeScene(compileFocus, scene, authoringHistoryRef.current.present) : scene);
     if (levelScene !== scene) {
       setScene(levelScene);
       setNavigationIdentity(current => ({ ...current, rootEntityId: compileFocus }));
@@ -4153,6 +4300,7 @@ export function App() {
   }
 
   function openInside(entityId = selected.id, inspectorNavigation: 'external' | 'preserve' = 'external') {
+    cancelGestureSceneRequests();
     if (scanFixture) {
       void scanFixture.ensureNeighborhood(entityId).then(() => openInsideLoaded(entityId, inspectorNavigation));
       return;
@@ -4312,6 +4460,7 @@ export function App() {
   }
 
   function navigateRoot(entityId: string) {
+    cancelGestureSceneRequests();
     if (query.fixture === 'stress' || entityId === navigationIdentity.rootEntityId) return;
     const liveCamera = abortInspectorCameraFlight();
     setInspectorHistory([]);
@@ -4427,6 +4576,7 @@ export function App() {
   }
 
   function setStep(index: number, play = storyPlaying, historyMode: 'push' | 'replace' = 'replace', plan: AppStoryPlan = story) {
+    cancelGestureSceneRequests();
     setActiveStoryId(plan.id);
     const bounded = (index + plan.steps.length) % plan.steps.length;
     const step = plan.steps[bounded];
@@ -5894,6 +6044,7 @@ export function App() {
 
           <div className="map-heading">
             <h1>{scene.title}</h1>
+            {initialDetailLoading && <small role="status">Loading more detail…</small>}
             <nav aria-label="Architecture ancestry" className="semantic-breadcrumb">
               {breadcrumbState.chain.map((entity, index) => <span key={entity.id}>{index > 0 && <ChevronIcon size={9}/>} {entity.id === navigationIdentity.rootEntityId ? <b aria-current="page">{entity.name}</b> : <button onClick={() => navigateRoot(entity.id)}>{entity.name}</button>}</span>)}
               {breadcrumbState.descendant && <span className="selected-descendant"><ChevronIcon size={9}/><em>{breadcrumbState.descendant.name}</em></span>}

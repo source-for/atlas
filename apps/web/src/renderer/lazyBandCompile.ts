@@ -186,8 +186,21 @@ export function scanNextBand(band: C4Band): C4Band | undefined {
  * compile time; replaying it after another neighborhood was shown misses the
  * renderer’s current revision. Full-snapshot load is the safe reuse path.
  */
+const cacheSceneOrigins = new WeakMap<object, object>();
+/** A patch-free cache copy can reference the worker's original retained scene.
+ * Any changed field invalidates the alias; arbitrary edited/morph scenes are cloned. */
+export function workerSceneOrigin<T extends object>(scene: T): T {
+  const original = cacheSceneOrigins.get(scene) as T | undefined;
+  if (!original) return scene;
+  const fields = Object.keys(original).filter(key => key !== 'protocolPatch');
+  const copyFields = Object.keys(scene).filter(key => key !== 'protocolPatch');
+  return fields.length === copyFields.length && fields.every(key =>
+    Object.prototype.hasOwnProperty.call(scene, key) && Reflect.get(scene, key) === Reflect.get(original, key)) ? original : scene;
+}
+
 export function cacheableNeighborhoodScene<T extends object>(scene: T): Omit<T, 'protocolPatch'> {
   if (!('protocolPatch' in scene) || scene.protocolPatch === undefined) return scene as Omit<T, 'protocolPatch'>;
   const { protocolPatch: _protocolPatch, ...rest } = scene as T & { protocolPatch?: unknown };
+  cacheSceneOrigins.set(rest, scene);
   return rest as Omit<T, 'protocolPatch'>;
 }

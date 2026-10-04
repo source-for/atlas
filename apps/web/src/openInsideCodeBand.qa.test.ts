@@ -25,12 +25,20 @@ import { semanticLensSessionDetail } from './semantic/semanticLens';
 const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
 
 describe('CLA-78: Code rail after Open inside a container', () => {
-  it('fetches the L4 neighborhood before the level rail compiles', () => {
+  // Supplementary static wiring guard; executable sequencing tests live in levelScenePreparation.test.ts.
+  it('wires neighborhood preparation before the level rail compiles', () => {
     expect(app).toContain('function selectLevel(');
     expect(app).toContain('function selectLevelLoaded(');
-    expect(app).toContain('void fixture.ensureNeighborhood(initialFocus)');
-    expect(app).toContain('return fixture.ensureNeighborhood(compileFocus)');
-    expect(app).toContain('if (fixture === scanFixture) selectLevelLoaded(index)');
+    expect(app).toContain('void prepareLevelSceneWithDeadline(controller, () => prepareLoadedLevelScene({');
+    expect(app).toContain('ensure: focus => fixture.ensureNeighborhood(focus)');
+    const selectLevel = app.slice(app.indexOf('function selectLevel('), app.indexOf('function selectLevelLoaded('));
+    const neighborhoodReady = selectLevel.indexOf('ensure: focus => fixture.ensureNeighborhood(focus)');
+    const cachedCompile = selectLevel.indexOf('return composeScanSceneAsync(');
+    expect(neighborhoodReady).toBeGreaterThanOrEqual(0);
+    expect(cachedCompile).toBeGreaterThanOrEqual(0);
+    expect(neighborhoodReady).toBeLessThan(cachedCompile);
+    expect(selectLevel).toContain('owns: () => fixture === scanFixture');
+    expect(selectLevel).toContain('selectLevelLoaded(index, prepared)');
   });
 
   it('does not raise the 2000 hang-guard', () => {

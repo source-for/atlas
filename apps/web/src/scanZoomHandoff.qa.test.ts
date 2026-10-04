@@ -57,13 +57,23 @@ const chromeSafeArea = { top: 80, right: 300, bottom: 72, left: 64 };
 
 describe('CLA-104: continuous zoom L2→L3 hands off the focused container graph', () => {
   it('drives wheel/pinch through the Open-inside compile-focus seam, not a hang-guard raise', () => {
+    expect(handleSemanticZoom).toContain('runLevelSceneGesture(levelCompileAbortRef.current, sample.camera, () => handleSemanticZoomReady(sample))');
+    expect(handleSemanticZoom.indexOf('runLevelSceneGesture(')).toBeLessThan(handleSemanticZoom.indexOf('startScanContainerReverseMorph('));
     expect(handleSemanticZoom).toContain('maybeScanZoomHandoff(');
     expect(handleSemanticZoom).toContain('sample.pointer');
     expect(app).toContain('function maybeScanZoomHandoff(');
     expect(maybeScanZoomHandoff).toContain('scanZoomHandoffPreferredId(');
     expect(maybeScanZoomHandoff).toContain('inspectorSelectionRef.current ?? selected.id');
     expect(app).toContain('const liveCamera = renderedCameraRef.current');
-    expect(app).toContain('applyScanZoomHandoff(still, liveCamera, preferredId)');
+    expect(maybeScanZoomHandoff).toContain('await composeScanSceneAsync(handoff.compileFocus, sourceScene, request.signal)');
+    expect(app).toContain('applyScanZoomHandoff(still, liveCamera, livePreferredId, prepared)');
+    expect(maybeScanZoomHandoff).toContain('if (!owns()) return;');
+    expect(refreshViewportNeighborhood).toContain('composeScanSceneAsync(compileFocus, sourceScene, request.signal, next)');
+    expect(refreshViewportNeighborhood).toContain('viewportRequestedTileRef.current !== tileKey');
+    expect(refreshViewportNeighborhood).not.toContain('updateCamera(');
+    expect(refreshViewportNeighborhood).toContain('if (!scanFixture || levelScenePreparationPending(levelCompileAbortRef.current) || zoomHandoffInflightRef.current) return;');
+    expect(maybeScanZoomHandoff).toContain('if (!scanFixture || levelScenePreparationPending(levelCompileAbortRef.current)) return false;');
+    expect(applyScanZoomHandoff).not.toContain('composeScene(');
     expect(settleCamera).toContain('maybeScanZoomHandoff(');
     expect(settleCamera).toContain('scanZoomPointerRef.current');
     expect(app).toContain('function applyScanZoomHandoff(');

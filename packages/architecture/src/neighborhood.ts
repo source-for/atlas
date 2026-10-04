@@ -289,13 +289,16 @@ export function sliceArchitectureNeighborhood(
     relations,
   };
 
+  const viewEntityIds = new Set(view.entityIds);
+  const viewRelationIds = new Set(view.relationIds);
+  const includedRelationIds = new Set(relations.map(relation => relation.id));
   const entityIds = [
     ...view.entityIds.filter(id => included.has(id)),
-    ...[...included].filter(id => !view.entityIds.includes(id)).sort(),
+    ...[...included].filter(id => !viewEntityIds.has(id)).sort(),
   ];
   const relationIds = [
-    ...view.relationIds.filter(id => relations.some(relation => relation.id === id)),
-    ...relations.map(relation => relation.id).filter(id => !view.relationIds.includes(id)).sort(),
+    ...view.relationIds.filter(id => includedRelationIds.has(id)),
+    ...relations.map(relation => relation.id).filter(id => !viewRelationIds.has(id)).sort(),
   ];
   const containment = computeContainmentLayout([
     ...entities.map(entity => ({ id: entity.id, kind: entity.kind, ...(entity.parentId ? { parentId: entity.parentId } : {}) })),

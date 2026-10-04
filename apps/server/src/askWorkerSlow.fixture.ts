@@ -5,7 +5,7 @@ import { handleAskWorkerRequest, type AskWorkerRequest, type AskWorkerSettings }
 // Test-only Ask worker for askWorker.test: the real handler, except a question "busy:<ms>" first blocks this thread for
 // <ms> (a pathological retrieval on a warm index), "slowbuild:<ms>" blocks for <ms> inside a build (after announcing it),
 // "slowafter:<ms>" blocks for <ms> right after a build finished (a slow retrieval on a fresh index), and "crash" exits.
-const block = (ms: number) => { const until = Date.now() + ms; while (Date.now() < until) { /* busy */ } };
+const block = (ms: number) => { const until = performance.now() + ms; while (performance.now() < until) { /* busy */ } };
 const cache = createAskIndexCache(workerData as AskWorkerSettings);
 const failedBuilds = new Set<string>();
 parentPort!.on("message", (request: AskWorkerRequest) => {

@@ -1,5 +1,8 @@
 import { c4CodeChildSlots, sliceArchitectureNeighborhood, type ArchitectureSnapshot, type ArchitectureView } from '@okie/architecture';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { compileScanScene, type ScanSceneInput } from './scanScene';
+import * as scanSceneCompiler from './scanScene';
+import type { SceneCompileRequest } from './sceneCompileProtocol';
 import { semanticInspectorHierarchyPlan } from '../semantic/semanticLensEngine';
 import demoSnapshot from '../../../../fixtures/architecture/demo-snapshot.json';
 import demoView from '../../../../fixtures/architecture/demo-view.json';
@@ -15,6 +18,141 @@ function validTrio() {
 }
 
 describe('scan fixture loader', () => {
+  it('retries optional enrichment after worker failure without compiling large graphs on the UI thread', async () => {
+    const snapshot = structuredClone(demoSnapshot) as unknown as ArchitectureSnapshot;
+    const view = structuredClone(demoView) as unknown as ArchitectureView;
+    const owner = snapshot.entities.find(entity => entity.kind === 'component')!;
+    snapshot.entities.push(...Array.from({ length: 2001 }, (_, i) => ({ id: `code:enrich-${i}`, name: `leaf${i}`, kind: 'code' as const, parentId: owner.id, sourceRefs: [] })));
+    const packet = { ...sliceArchitectureNeighborhood(snapshot, view, { focusEntityId: view.rootEntityId }), snapshot, view };
+    const fixture = compileScanNeighborhoodFixture(packet, demoStory, { loadNeighborhood: async () => packet, loadExcerpts: async () => undefined, loadStory: async () => demoStory });
+    const compiler = vi.spyOn(scanSceneCompiler, 'compileScanScene');
+    vi.stubGlobal('Worker', undefined);
+    try {
+      expect(await fixture.enrichInitialScene()).toBeUndefined();
+      expect(compiler).not.toHaveBeenCalled();
+      let posts = 0;
+      class Worker {
+        onmessage: ((event: MessageEvent) => void) | null = null;
+        terminate() {}
+        postMessage(raw: SceneCompileRequest) {
+          posts++;
+          const request = structuredClone(raw);
+          const scene = compileScanScene({ ...request.input, ...request.graph! });
+          queueMicrotask(() => this.onmessage?.({ data: structuredClone({ id: request.id, generation: request.generation, ok: true, scene }) } as MessageEvent));
+        }
+      }
+      vi.stubGlobal('Worker', Worker);
+      expect(await fixture.enrichInitialScene()).toBeDefined();
+      expect(posts).toBe(1);
+    } finally { fixture.disposeSceneWorker(); compiler.mockRestore(); vi.unstubAllGlobals(); }
+  });
+
+  it('optional enrichment falls back synchronously for small graphs and remains separate from the shallow cache', async () => {
+    const snapshot = structuredClone(demoSnapshot) as unknown as ArchitectureSnapshot;
+    const view = structuredClone(demoView) as unknown as ArchitectureView;
+    const owner = snapshot.entities.find(entity => entity.kind === 'component')!;
+    snapshot.entities.push(...Array.from({ length: 150 }, (_, i) => ({ id: `code:small-enrich-${i}`, name: `leaf${i}`, kind: 'code' as const, parentId: owner.id, sourceRefs: [] })));
+    const packet = { ...sliceArchitectureNeighborhood(snapshot, view, { focusEntityId: view.rootEntityId }), snapshot, view };
+    const fixture = compileScanNeighborhoodFixture(packet, demoStory, { loadNeighborhood: async () => packet, loadExcerpts: async () => undefined, loadStory: async () => demoStory });
+    vi.stubGlobal('Worker', undefined);
+    try {
+      await fixture.prepareInitialScene();
+      const shallow = fixture.createScene(view.rootEntityId);
+      const expected = compileScanScene({ snapshot, view, focusEntityId: view.rootEntityId, boot: 'neighborhood', modeOptions: {}, childCounts: packet.childCounts, unpublishedChildren: packet.unpublishedChildren ?? [] });
+      expect(await fixture.enrichInitialScene()).toEqual(expected);
+      expect(fixture.createScene(view.rootEntityId)).toBe(shallow);
+    } finally { fixture.disposeSceneWorker(); vi.unstubAllGlobals(); }
+  });
+
+  it('retransmits the real graph with attached source excerpts after evidence advances its generation', async () => {
+    const snapshot = structuredClone(demoSnapshot) as unknown as ArchitectureSnapshot;
+    const view = structuredClone(demoView) as unknown as ArchitectureView;
+    const entity = snapshot.entities.find(entity => entity.id === 'code:web-shell:app')!;
+    const excerpts = entity.sourceExcerpts!;
+    expect(excerpts.length).toBeGreaterThan(0);
+    delete entity.sourceExcerpts;
+    const packet = { ...sliceArchitectureNeighborhood(snapshot, view, { focusEntityId: view.rootEntityId }), snapshot, view };
+    const fixture = compileScanNeighborhoodFixture(packet, demoStory, { loadNeighborhood: async () => packet, loadExcerpts: async () => structuredClone(excerpts), loadStory: async () => demoStory });
+    const requests: SceneCompileRequest[] = [];
+    let graph: SceneCompileRequest['graph'];
+    class Worker {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      terminate() {}
+      postMessage(raw: SceneCompileRequest) {
+        const request = structuredClone(raw); requests.push(request);
+        graph = request.graph ?? graph;
+        const scene = compileScanScene({ ...request.input, ...graph! });
+        queueMicrotask(() => this.onmessage?.({ data: structuredClone({ id: request.id, generation: request.generation, ok: true, scene }) } as MessageEvent));
+      }
+    }
+    vi.stubGlobal('Worker', Worker);
+    try {
+      await fixture.createSceneAsync(view.rootEntityId);
+      await fixture.ensureExcerpts(entity.id);
+      const scene = await fixture.createSceneAsync(entity.id);
+      expect(requests).toHaveLength(2);
+      expect(requests[1]!.generation).toBeGreaterThan(requests[0]!.generation);
+      expect(requests[0]!.graph!.snapshot.entities.find(candidate => candidate.id === entity.id)?.sourceExcerpts).toBeUndefined();
+      expect(requests[1]!.graph!.snapshot.entities.find(candidate => candidate.id === entity.id)?.sourceExcerpts).toEqual(excerpts);
+      expect(scene.entities.find(candidate => candidate.id === entity.id)?.sourceExcerpts).toEqual(excerpts);
+    } finally { fixture.disposeSceneWorker(); vi.unstubAllGlobals(); }
+  });
+
+  it('keeps large navigation off the main thread when workers are unsupported or time out', async () => {
+    const trio = validTrio();
+    const snapshot = trio.snapshot as unknown as ArchitectureSnapshot;
+    const owner = snapshot.entities.find(entity => entity.kind === 'component')!;
+    snapshot.entities.push(...Array.from({ length: 2001 }, (_, index) => ({ id: `component:worker-required-${index}`, kind: 'component' as const, parentId: owner.parentId, name: `Worker required ${index}`, sourceRefs: [] })));
+    const fixture = compileScanFixture(trio);
+    const compile = vi.spyOn(scanSceneCompiler, 'compileScanScene');
+    vi.stubGlobal('Worker', undefined);
+    try {
+      await expect(fixture.createSceneAsync(fixture.navigation.rootEntityId)).rejects.toThrow('Background scene preparation');
+      expect(compile).not.toHaveBeenCalled();
+      vi.useFakeTimers();
+      vi.stubGlobal('Worker', class { onmessage = null; onerror = null; postMessage() {} terminate() {} });
+      const result = fixture.createSceneAsync(fixture.navigation.rootEntityId);
+      const rejection = expect(result).rejects.toThrow('Background scene preparation');
+      await vi.advanceTimersByTimeAsync(20_000);
+      await rejection;
+      expect(compile).not.toHaveBeenCalled();
+    } finally { fixture.disposeSceneWorker(); compile.mockRestore(); vi.useRealTimers(); vi.unstubAllGlobals(); }
+  });
+
+  it('retries a real neighborhood merge while the worker is preparing a level', async () => {
+    const packet = sliceArchitectureNeighborhood(structuredClone(demoSnapshot) as unknown as ArchitectureSnapshot, structuredClone(demoView) as unknown as ArchitectureView, { focusEntityId: 'system:okie' });
+    const fixture = compileScanNeighborhoodFixture(packet, demoStory, {
+      loadNeighborhood: async focus => sliceArchitectureNeighborhood(structuredClone(demoSnapshot) as unknown as ArchitectureSnapshot, structuredClone(demoView) as unknown as ArchitectureView, { focusEntityId: focus }),
+      loadExcerpts: async () => [], loadStory: async () => demoStory,
+    });
+    const requests: SceneCompileRequest[] = [];
+    let graph: SceneCompileRequest['graph'];
+    let reply: (() => void) | undefined;
+    class Worker {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror = null;
+      terminate() {}
+      postMessage(raw: SceneCompileRequest) {
+        const request = structuredClone(raw); requests.push(request);
+        if (request.graph) graph = request.graph;
+        const scene = compileScanScene({ ...request.input, ...graph } as ScanSceneInput);
+        const emit = () => this.onmessage?.({ data: structuredClone({ id: request.id, generation: request.generation, ok: true, scene }) } as MessageEvent);
+        if (requests.length === 1) reply = emit; else queueMicrotask(emit);
+      }
+    }
+    vi.stubGlobal('Worker', Worker);
+    try {
+      const prepared = fixture.createSceneAsync('system:okie');
+      await fixture.ensureNeighborhood('container:web-app');
+      reply!();
+      const scene = await prepared;
+      expect(requests).toHaveLength(2);
+      expect(requests[1]!.generation).toBeGreaterThan(requests[0]!.generation);
+      expect(scene.entities.some(entity => entity.id === 'component:web-shell')).toBe(true);
+      expect(fixture.getSceneGeneration()).toBe(1);
+    } finally { fixture.disposeSceneWorker(); vi.unstubAllGlobals(); }
+  });
+
   it('loads a listed declaration outside the component preview before planning its code drill', () => {
     const trio = validTrio();
     const snapshot = trio.snapshot as unknown as ArchitectureSnapshot;
@@ -337,6 +475,18 @@ describe('CLA-73 slim neighborhood boot', () => {
 
     const loaded = await fixture.ensureExcerpts('code:web-shell:app');
     expect(loaded?.[0]?.text).toContain('export function App()');
+
+    const sourceEntity = fixture.snapshot.entities.find(entity => entity.id === 'component:web-shell');
+    expect(sourceEntity).toBeDefined();
+    sourceEntity!.sourceExcerpts = undefined;
+    const generation = fixture.getSceneGeneration();
+    const attached = await fixture.ensureExcerpts('component:web-shell');
+    expect(attached?.[0]?.text).toContain('export function App()');
+    expect(fixture.getSceneGeneration()).toBe(generation + 1);
+    await fixture.ensureExcerpts('component:web-shell');
+    expect(fixture.getSceneGeneration()).toBe(generation + 1);
+    // This fixture shares packet entities with the separate deep-link case below.
+    sourceEntity!.sourceExcerpts = undefined;
 
     const requested: string[] = [];
     const deepHost = {

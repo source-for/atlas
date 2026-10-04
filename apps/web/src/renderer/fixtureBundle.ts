@@ -7,6 +7,7 @@ import type { ScanFixture } from './scanFixture';
 let activeScanFixture: ScanFixture | undefined;
 
 export function setActiveScanFixture(fixture: ScanFixture | undefined): void {
+  if (activeScanFixture !== fixture) activeScanFixture?.disposeSceneWorker();
   activeScanFixture = fixture;
 }
 

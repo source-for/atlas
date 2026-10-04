@@ -478,8 +478,10 @@ function objectForNode(
   node: VisualNode,
   theme: SceneTheme,
   targetAspect?: number,
+  entities = new Map(snapshot.entities.map(entity => [entity.id, entity])),
+  parentsByBand?: ReadonlyMap<C4Band, ReadonlySet<string>>,
 ): SceneObject | undefined {
-  const entity = snapshot.entities.find(candidate => candidate.id === node.entity.logicalId);
+  const entity = entities.get(node.entity.logicalId);
   const appearances: Array<{
     band: C4Band;
     bounds: NodeLayout;
@@ -509,15 +511,14 @@ function objectForNode(
         // to focused compiles restored from a deep link, outside the root
         // morph plane. Keep reservations for layout and minimap calculations.
         const childEntityId = bundle.index.entityIdByVisualNodeId[visualId];
-        const childKind = child?.kind ?? snapshot.entities.find(entity => entity.id === childEntityId)?.kind;
+        const childKind = child?.kind ?? (childEntityId ? entities.get(childEntityId)?.kind : undefined);
         if (childKind === 'component') return false;
         if (child?.parentVisualId) return child.parentVisualId === node.id;
-        return snapshot.entities.some(entity =>
-          entity.id === childEntityId && entity.parentId === node.entity.logicalId);
+        return childEntityId !== undefined && entities.get(childEntityId)?.parentId === node.entity.logicalId;
       })
       .map(([, shellBounds]) => shellBounds);
     const remainder = layout.remainderBadges?.[node.id];
-    const boundary = visibleChildren(projection, bundle).has(node.id) || reservedInside.length > 0;
+    const boundary = (parentsByBand?.get(band) ?? visibleChildren(projection, bundle)).has(node.id) || reservedInside.length > 0;
     // Coverage reveal (opt-in): a child card reveals when its PARENT crosses the coverage
     // target; an owner's boundary shell reveals when ITS OWN box does, at the band where its
     // direct children first appear. Both key off the same owner box → one reveal moment.
@@ -1675,9 +1676,13 @@ export function compileC4Scene(
     options.unpublishedChildren ?? [],
   );
   const theme = options.theme ?? defaultTheme;
+  const entities = new Map(snapshot.entities.map(entity => [entity.id, entity]));
+  const parentsByBand = new Map(C4_BANDS.map(band => [band,
+    visibleChildren(bundle.projectionById[bundle.family.projectionIds[band]]!, bundle),
+  ]));
   const entityObjects = Object.values(bundle.visualNodeById)
     .sort((left, right) => left.id.localeCompare(right.id))
-    .map(node => objectForNode(snapshot, bundle, node, theme, options.targetAspect))
+    .map(node => objectForNode(snapshot, bundle, node, theme, options.targetAspect, entities, parentsByBand))
     .filter((object): object is SceneObject => object !== undefined);
   const paths: ScenePath[] = [];
   const labelObjects: SceneObject[] = [];
