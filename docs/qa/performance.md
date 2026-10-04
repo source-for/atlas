@@ -231,3 +231,6 @@ Corrected PR #182 has been rebased onto the reviewed foreground stack. Both work
 
 
 Browser verification found valid component selection being removed by Back after a story: initial rendered IDs were incorrectly used as canonical published reference IDs, and restoring the root L1 packet omitted the selected component. PR #181 now validates against the live published snapshot and prepares the deepest restored lens/selection scope. PR #182 has been replayed onto that corrected parent; normal regeneration changes only the adapter anchor relative to the parent, with combined evidence pin `2f8027c3`. Final browser verification and refreshed full gates are pending.
+
+
+PR #182 final re-review integration is based on PR #181 `58dea89`, including owned history-restoration cleanup and level deadline cancellation. Both parent and renderer review notes were preserved during rebase. Normal regeneration produced no additional generated changes; relative to the parent, only the adapter source anchor advances one line, preserving excerpt text. The deliberate combined evidence pin is `40270fdb` (from `2f8027c3`). Full corrected-head check/test/Rust/build and browser verification remain pending; previous-head results are not claimed as final-head evidence.
