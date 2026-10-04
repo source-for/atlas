@@ -40,6 +40,23 @@ export function deployBlockedReason(target, readSource) {
 export const ENVIRONMENTS = ['staging', 'production'];
 export const API_TOKEN = 'CLOUDFLARE_API_TOKEN';
 
+/** Keep command progress/errors visible while removing credentials before they reach logs. */
+function redactD1Output(value, secretEnv) {
+  let output = String(value ?? '');
+  // Replace literal and JSON-escaped environment secrets, including the ignored API token.
+  const secrets = Object.entries(secretEnv)
+    .filter(([name, value]) => value && /token|secret|password|credential|authorization|api[_-]?key/i.test(name))
+    .flatMap(([, value]) => [value, JSON.stringify(value).slice(1, -1)])
+    .sort((a, b) => b.length - a.length);
+  // Quoted values may contain escaped quotes or span lines. Consume the whole value first.
+  const credential = /((?:["']?(?:[\w-]*(?:token|secret|password|credential|api[_-]?key)[\w-]*|authorization)["']?)\s*[:=]\s*)("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[^\s,;}]+)/gi;
+  output = output.replace(credential, '$1[REDACTED]');
+  output = output.replace(/(\bauthorization\s*[:=]\s*)[^\r\n]+/gi, '$1[REDACTED]');
+  output = output.replace(/\bBearer\s+[^\s"',;}]+/gi, 'Bearer [REDACTED]');
+  for (const secret of secrets) output = output.split(secret).join('[REDACTED]');
+  return output;
+}
+
 /**
  * Deploy the edge Worker; returns the process exit code. Every side effect goes through `deps`, so a test
  * can prove what runs (and what never runs) for each target and flag.
@@ -82,14 +99,21 @@ export function runDeploy(deps) {
     error('apps/web/dist is missing; run `pnpm build` first');
     return 1;
   }
-  // Capture D1 output only for error classification; never echo credential-bearing output.
+  // Classify raw D1 output internally; emit redacted progress and errors for every attempt.
   const runD1 = (args, label) => {
-    const execute = () => spawn('pnpm', ['exec', 'wrangler', 'd1', ...args, 'USERS_DB', '--env', target, '--remote',
-      ...(label === 'preflight' ? ['--command', 'SELECT 1'] : [])], {
-      cwd: edgeDir,
-      env: { ...env, CI: 'true' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const execute = () => {
+      const result = spawn('pnpm', ['exec', 'wrangler', 'd1', ...args, 'USERS_DB', '--env', target, '--remote',
+        ...(label === 'preflight' ? ['--command', 'SELECT 1'] : [])], {
+        cwd: edgeDir,
+        env: { ...env, CI: 'true' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const stdout = redactD1Output(result.stdout, deps.env);
+      const stderr = redactD1Output(result.stderr, deps.env);
+      if (stdout) log(stdout);
+      if (stderr) error(stderr);
+      return result;
+    };
     let result = execute();
     const output = `${String(result.stdout ?? '')}\n${String(result.stderr ?? '')}`;
     if (result.status !== 0 && /\bcode["']?\s*[:=]?\s*7403\b/i.test(output)) {

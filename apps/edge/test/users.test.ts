@@ -102,7 +102,7 @@ describe('operator users scripts (CLA-316)', () => {
     expect(deployBlockedReason('production', sources('x [pending owner: confirm or drop] y', ''))).toBe(message);
   });
 
-  function fakeDeploy(argv: string[], options: { privacy?: string; terms?: string; dist?: boolean; status?: number; results?: Array<ReturnType<DeploySpawn>> } = {}) {
+  function fakeDeploy(argv: string[], options: { privacy?: string; terms?: string; dist?: boolean; status?: number; env?: Record<string, string>; results?: Array<ReturnType<DeploySpawn>> } = {}) {
     const spawned: Array<{ command: string; args: string[]; env: Record<string, string | undefined> }> = [];
     const out: string[] = [];
     const err: string[] = [];
@@ -114,7 +114,7 @@ describe('operator users scripts (CLA-316)', () => {
     };
     const code = runDeploy({
       argv: ['node', 'deploy.mjs', ...argv],
-      env: { CLOUDFLARE_API_TOKEN: 'secret', HOME: '/home/x' },
+      env: { CLOUDFLARE_API_TOKEN: 'secret', HOME: '/home/x', ...options.env },
       edgeDir: '/repo/apps/edge/',
       repoRoot: '/repo/',
       readFile: path => { reads.push(path); return sources(options.privacy ?? privacySource, options.terms ?? termsSource)(path.replace('/repo/', '')); },
@@ -196,6 +196,48 @@ describe('operator users scripts (CLA-316)', () => {
       expect(result.waits).toEqual([]);
       expect(result.spawned).toHaveLength(prefix.length + 1);
     }
+  });
+
+  it('surfaces non-retryable errors and successful progress with credentials redacted', () => {
+    const diagnostics = `Migration 0001 applied
+Authorization: Bearer auth-value
+Bearer bearer-value
+{
+      "authorization": "quoted\nheader-value",
+      "access_token": "access-value",
+      "refresh_token": "refresh\nvalue",
+      "client_secret": "client\\\"quoted\\\"value"
+    }
+CLOUDFLARE_API_TOKEN=inline-value
+password='multiline
+password-value'
+environment-value`;
+    const result = fakeDeploy(['staging'], {
+      env: { SERVICE_API_KEY: 'environment-value' },
+      results: [{ status: 0, stdout: diagnostics }, { status: 7, stderr: 'SQL syntax error near TABLE [code: 7404]' }],
+    });
+    expect(result.code).toBe(7);
+    expect(result.waits).toEqual([]);
+    const output = [...result.out, ...result.err].join('\n');
+    expect(output).toContain('Migration 0001 applied');
+    expect(output).toContain('SQL syntax error near TABLE [code: 7404]');
+    for (const secret of ['auth-value', 'header-value', 'bearer-value', 'access-value', 'refresh', 'client\\"quoted', 'inline-value', 'password-value', 'environment-value']) {
+      // Credential field names remain useful, so check values rather than their names.
+      if (secret === 'refresh') expect(output).not.toContain('refresh\nvalue');
+      else expect(output).not.toContain(secret);
+    }
+  });
+
+  it('shows redacted diagnostics from the initial and retried D1 attempts', () => {
+    const result = fakeDeploy(['staging'], { results: [
+      { status: 1, stderr: 'Unauthorized [code: 7403] token=initial-value' },
+      { status: 0, stdout: 'SELECT 1 completed token=retry-value' },
+      { status: 0, stdout: 'All migrations applied' },
+    ] });
+    expect(result.code).toBe(0);
+    expect(result.err).toContain('Unauthorized [code: 7403] token=[REDACTED]');
+    expect(result.out).toContain('SELECT 1 completed token=[REDACTED]');
+    expect(result.out).toContain('All migrations applied');
   });
 
   it('dry runs perform no D1 preflight, migration, or wait even with 7403 output', () => {
