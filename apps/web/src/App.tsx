@@ -1,4 +1,5 @@
 import { completeFixturePreparation } from './renderer/fixturePreparation';
+import { inspectorEntityForFraming, resolveInspectorEntity } from './inspector/inspectorEntity';
 import { navigationEntityReference } from './navigation/entityReferences';
 import { prepareLevelSceneWithDeadline, clearLevelScenePreparation, levelScenePreparationPending, runLevelSceneGesture, LEVEL_SCENE_PREPARING } from './renderer/levelScenePreparation';
 import { compileCurrentGeneration } from './renderer/compileCurrentGeneration';
@@ -1753,7 +1754,9 @@ export function App() {
   const semanticRenderTopologyRef = useRef<{ key: string; scene: AtlasScene; projection: ProjectionOverride | undefined } | undefined>(undefined);
   const semanticLens = semanticLensSessionPresentationState(semanticLensSession);
 
-  const selected = useMemo(() => scene.entities.find(entity => entity.id === selectedId) ?? scene.entities[0], [scene.entities, selectedId]);
+  // Canonical selection survives a guarded or paged scene. Read each render: enrichment
+  // merges mutate the published snapshot in place without changing its identity.
+  const selected = resolveInspectorEntity(activeSnapshot, scene.entities, selectedId);
   useEffect(() => {
     if (foregroundRequestStatusRef.current.obsolete()) {
       setLiveMessage('This view changed while navigation was being prepared. Try again.');
@@ -3372,6 +3375,10 @@ export function App() {
   }
 
   function reframeEntityAfterInspectorChange(entity: SceneEntity, force = false) {
+    // Canonical inspector records outside this scene have no drawable geometry.
+    const resident = inspectorEntityForFraming(scene.entities, entity);
+    if (!resident) return;
+    entity = resident;
     const generation = inspectorReframeGenerationRef.current + 1;
     inspectorReframeGenerationRef.current = generation;
     window.requestAnimationFrame(() => window.requestAnimationFrame(() => {

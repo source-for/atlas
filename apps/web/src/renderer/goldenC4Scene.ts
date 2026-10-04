@@ -64,7 +64,7 @@ function detailForKind(kind: EntityKind): SemanticDetail {
   return 'context';
 }
 
-function entityForScene(
+export function entityForScene(
   entity: ArchitectureEntity,
   boundsByBand: Partial<Record<C4Band, { x: number; y: number; width: number; height: number }>>,
 ): SceneEntity {
