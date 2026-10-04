@@ -433,3 +433,86 @@ it.each(['onerror', 'onmessageerror'] as const)('a transient %s resets the worke
   const scene = current.reply(); expect(await retry).toBe(scene);
   session.dispose();
 });
+
+it.each(['timeout', 'onerror', 'onmessageerror'] as const)('caps three consecutive %s faults across disposed sessions without constructing a fourth worker', async fault => {
+  vi.useFakeTimers(); vi.stubGlobal('Worker', WorkerStub);
+  const health = createSceneWorkerHealth();
+  let last: WorkerStub | undefined;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const session = createSceneCompileSession(health);
+    const pending = session.compile(input, { generation: attempt });
+    const worker = WorkerStub.latest;
+    expect(worker).not.toBe(last); last = worker;
+    if (fault === 'timeout') await vi.advanceTimersByTimeAsync(20_000);
+    else worker[fault]?.();
+    expect(await pending).toBeUndefined();
+    expect(session.unavailable()).toBe(attempt === 2);
+    session.dispose();
+  }
+  const blocked = createSceneCompileSession(health);
+  expect(await blocked.compile(input, { generation: 4 })).toBeUndefined();
+  expect(WorkerStub.latest).toBe(last);
+  blocked.dispose();
+});
+it('successful compilation resets a mixed transient failure streak', async () => {
+  vi.stubGlobal('Worker', WorkerStub);
+  const session = createSceneCompileSession(createSceneWorkerHealth());
+  const fail = async (event: 'onerror' | 'onmessageerror') => {
+    const pending = session.compile(input, { generation: 0 });
+    WorkerStub.latest[event]?.(); expect(await pending).toBeUndefined();
+  };
+  await fail('onerror'); await fail('onmessageerror');
+  const successful = session.compile(input, { generation: 0 });
+  const scene = WorkerStub.latest.reply(); expect(await successful).toBe(scene);
+  await fail('onmessageerror'); await fail('onerror');
+  expect(session.unavailable()).toBe(false);
+  const retry = session.compile(input, { generation: 0 });
+  const recovered = WorkerStub.latest.reply(); expect(await retry).toBe(recovered);
+  session.dispose();
+});
+it('an abandoned timeout neither advances a two-failure streak nor reports user failure while newest work runs', async () => {
+  vi.useFakeTimers(); vi.stubGlobal('Worker', WorkerStub);
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  const metrics: string[] = [];
+  const unsubscribe = subscribeLoadTiming(metric => metrics.push(metric));
+  const session = createSceneCompileSession(createSceneWorkerHealth());
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const pending = session.compile(input, { generation: 0 });
+      WorkerStub.latest.onerror?.(); expect(await pending).toBeUndefined();
+    }
+    warning.mockClear(); metrics.length = 0;
+    const controller = new AbortController();
+    const abandoned = session.compile(input, { generation: 0, signal: controller.signal });
+    const rejected = expect(abandoned).rejects.toMatchObject({ name: 'AbortError' });
+    const old = WorkerStub.latest; controller.abort();
+    const latest = session.compile(input, { generation: 0 });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(session.unavailable()).toBe(false);
+    expect(old.terminate).toHaveBeenCalledOnce();
+    expect(WorkerStub.latest).not.toBe(old);
+    expect(warning).not.toHaveBeenCalled(); expect(metrics).not.toContain('atlas-worker-timeout');
+    const scene = WorkerStub.latest.reply(); expect(await latest).toBe(scene); await rejected;
+  } finally { unsubscribe(); session.dispose(); }
+});
+it('a successful bootstrap resets prior transient faults before a mixed third-failure cap', async () => {
+  vi.useFakeTimers(); vi.stubGlobal('Worker', WorkerStub);
+  const health = createSceneWorkerHealth();
+  const session = createSceneCompileSession(health);
+  const eventFault = async (event: 'onerror' | 'onmessageerror') => {
+    const pending = session.compile(input, { generation: 0 });
+    WorkerStub.latest[event]?.(); expect(await pending).toBeUndefined();
+  };
+  await eventFault('onerror'); await eventFault('onmessageerror');
+  const bootstrap = session.initializeNeighborhood(packet, {}, { generation: 2 });
+  replyInitialization(WorkerStub.latest); expect(await bootstrap).toMatchObject({ status: 'ready' });
+  for (const event of ['onerror', 'onmessageerror'] as const) {
+    const pending = session.compile(input, { generation: 2 });
+    WorkerStub.latest[event]?.(); expect(await pending).toBeUndefined();
+  }
+  expect(session.unavailable()).toBe(false);
+  const timed = session.compile(input, { generation: 2 });
+  await vi.advanceTimersByTimeAsync(20_000); expect(await timed).toBeUndefined();
+  expect(session.unavailable()).toBe(true);
+  session.dispose();
+});

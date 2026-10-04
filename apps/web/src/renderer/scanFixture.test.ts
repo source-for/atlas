@@ -490,6 +490,20 @@ describe('CLA-73 slim neighborhood boot', () => {
     for (const url of calls.slice(1)) expect(new URL(url, 'http://fixture.test').searchParams.get('version')).toBe('publication-old');
   });
 
+  it.each(['versionId', 'artifactRevisionId'] as const)('rejects publication %s changes before merging enrichment', async identity => {
+    const packet = { ...sliceArchitectureNeighborhood(
+      structuredClone(demoSnapshot) as unknown as ArchitectureSnapshot,
+      structuredClone(demoView) as unknown as ArchitectureView,
+      { focusEntityId: 'system:okie' },
+    ), publication: { versionId: 'publication-old', artifactRevisionId: 'artifact-old' } };
+    let calls = 0;
+    const host = fetchScanNeighborhoodHost('thiss__okie', async () => new Response(JSON.stringify({
+      ...packet, publication: calls++ ? { ...packet.publication, [identity]: 'changed' } : packet.publication,
+    })));
+    await host.loadNeighborhood('system:okie');
+    await expect(host.loadNeighborhood('container:web-app')).rejects.toThrow('changed version');
+  });
+
   it('compiles an L1 neighborhood without L4 excerpts and still lazy-loads Source', async () => {
     const packet = sliceArchitectureNeighborhood(
       structuredClone(demoSnapshot) as unknown as ArchitectureSnapshot,
@@ -589,6 +603,51 @@ describe('CLA-73 slim neighborhood boot', () => {
       expect(actual.protocolSnapshot).toEqual(expected.protocolSnapshot);
       expect(actual.scanGuardRefusal).toEqual(expected.scanGuardRefusal);
     }
+  });
+
+  it('deep restoration without selection retains overview enrichment through partial neighborhood merges', async () => {
+    const snapshot = structuredClone(demoSnapshot) as unknown as ArchitectureSnapshot;
+    const view = structuredClone(demoView) as unknown as ArchitectureView;
+    const web = snapshot.entities.find(entity => entity.id === 'container:web-app')!;
+    web.responsibility = 'Hosts the interactive atlas, guided stories and inspector.';
+    const host = {
+      loadNeighborhood: async (focus: string) => {
+        const packet = structuredClone(sliceArchitectureNeighborhood(snapshot, view, { focusEntityId: focus || view.rootEntityId }));
+        if (focus) {
+          for (const entity of packet.snapshot.entities) delete entity.responsibility;
+        }
+        return packet;
+      },
+      loadExcerpts: async () => undefined,
+      loadStory: async () => demoStory,
+    };
+    const restored = await loadScanNeighborhoodFixtureFromSearch(host,
+      '?root=container:web-app&detail=context&lens=system:okie');
+    try {
+      expect(restored.snapshot.entities.find(entity => entity.id === web.id)?.responsibility).toBe(web.responsibility);
+      const scene = restored.createScene(web.id);
+      expect(scene.entities.find(entity => entity.id === web.id)?.responsibility).toBe(web.responsibility);
+    } finally { restored.disposeSceneWorker(); }
+  });
+
+  it('rejects a different snapshot without invalidating the current scene generation', async () => {
+    const snapshot = structuredClone(demoSnapshot) as unknown as ArchitectureSnapshot;
+    const view = structuredClone(demoView) as unknown as ArchitectureView;
+    const root = sliceArchitectureNeighborhood(snapshot, view, { focusEntityId: view.rootEntityId });
+    const fixture = compileScanNeighborhoodFixture(root, demoStory, {
+      loadNeighborhood: async focus => {
+        const packet = structuredClone(sliceArchitectureNeighborhood(snapshot, view, { focusEntityId: focus }));
+        packet.snapshot.id = 'snapshot:other'; packet.view.snapshotId = packet.snapshot.id;
+        return packet;
+      }, loadExcerpts: async () => undefined, loadStory: async () => demoStory,
+    });
+    try {
+      const before = structuredClone(fixture.snapshot);
+      const generation = fixture.getSceneGeneration();
+      await expect(fixture.ensureNeighborhood('component:web-shell')).rejects.toThrow('different snapshots');
+      expect(fixture.getSceneGeneration()).toBe(generation);
+      expect(fixture.snapshot).toEqual(before);
+    } finally { fixture.disposeSceneWorker(); }
   });
 
   it('CLA-94: rail step-out re-fetches the view-root neighborhood after a nested merge', async () => {

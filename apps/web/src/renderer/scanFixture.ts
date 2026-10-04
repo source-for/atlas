@@ -329,10 +329,10 @@ function buildLiveScanFixture(
       if (lifetime !== sceneWorkerLifetime) throw new DOMException('Fixture preparation cancelled', 'AbortError');
       const packetIssues = measureAtlasPhase('atlas-validate', () => validateNeighborhoodPacket(packet));
       if (packetIssues.length) throw new ScanFixtureError(packetIssues);
+      assignNeighborhoodSnapshot(snapshot, packet.snapshot);
       snapshotGeneration++;
       enrichment = undefined;
       initialScene = undefined;
-      assignNeighborhoodSnapshot(snapshot, packet.snapshot);
       for (const id of packet.view.entityIds) {
         if (!view.entityIds.includes(id)) view.entityIds.push(id);
       }
@@ -770,7 +770,7 @@ export function fetchScanNeighborhoodHost(slug?: string, fetchImpl: typeof fetch
       }
       const candidate = (raw as { publication?: unknown }).publication;
       if (isRecord(candidate) && typeof candidate.versionId === 'string' && typeof candidate.artifactRevisionId === 'string') {
-        if (publication && publication.versionId !== candidate.versionId) throw new ScanFixtureError([{ path: 'neighborhood', message: 'Published neighborhood changed version during this atlas session.' }]);
+        if (publication && (publication.versionId !== candidate.versionId || publication.artifactRevisionId !== candidate.artifactRevisionId)) throw new ScanFixtureError([{ path: 'neighborhood', message: 'Published neighborhood changed version during this atlas session.' }]);
         publication = { versionId: candidate.versionId, artifactRevisionId: candidate.artifactRevisionId };
       }
       return raw;

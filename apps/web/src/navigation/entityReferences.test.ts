@@ -35,5 +35,21 @@ it('preserves golden, imported and stress reference policies independently of pu
   expect(navigationEntityReference({ rendered })('missing')).toBe(false);
   const imported = navigationEntityReference({ rendered, published, imported: { entities: [{ id: 'imported' }] } });
   expect(imported('golden')).toBe(true); expect(imported('imported')).toBe(true); expect(imported('published')).toBe(false);
-  expect(navigationEntityReference({ rendered, published, stress: true })('arbitrary-stress-id')).toBe(true);
+  expect(navigationEntityReference({ rendered, published, stress: true })('arbitrary-stress-id')).toBe(false);
+  expect(navigationEntityReference({ rendered, published, stress: true })('golden')).toBe(true);
 });
+
+ it.each(['golden', 'imported', 'stress'] as const)('decodes unknown URL IDs according to the %s policy', mode => {
+   const rendered = { entities: [{ id: root }] };
+   const graph = { entities: [{ id: root }, { id: container }, { id: component }] };
+   const hasEntity = navigationEntityReference({ rendered: mode === 'stress' ? graph : rendered, published: graph, ...(mode === 'imported' ? { imported: graph } : {}), stress: mode === 'stress' });
+   const decoded = navigationStateFromUrl('https://example.test/?root=unknown-root&sel=unknown-selected&lens=unknown-lens', defaults, { references: { hasEntity } });
+   {
+     expect(decoded.state).toMatchObject({ rootEntityId: root, selectedId: root });
+     expect(decoded.state.lensPath).toBeUndefined();
+     expect(decoded.warnings).toHaveLength(3);
+     const deep = navigationStateFromUrl(`https://example.test/?root=${container}&sel=${component}`, defaults, { references: { hasEntity } });
+     expect(deep.state).toMatchObject({ rootEntityId: container, selectedId: component });
+     expect(deep.warnings).toEqual([]);
+   }
+ });

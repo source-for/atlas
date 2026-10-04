@@ -10,7 +10,8 @@ export function navigationEntityReference(input: {
 }): (id: string) => boolean {
   const renderedIds = new Set(input.rendered.entities.map(entity => entity.id));
   return id => Boolean(input.stress
-    || (input.published && !input.imported
+    ? input.rendered.entities.some(entity => entity.id === id)
+    : (input.published && !input.imported
       ? input.published.entities.some(entity => entity.id === id)
       : renderedIds.has(id) || input.imported?.entities.some(entity => entity.id === id)));
 }
