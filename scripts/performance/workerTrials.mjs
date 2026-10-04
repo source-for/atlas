@@ -79,7 +79,7 @@ async function trial(page,url,expected,measure=true){
   await page.waitForFunction(()=>{
    const player=document.querySelector('[data-playback-state="paused"]');
    const app=document.querySelector('[data-testid="atlas-app"]');
-   return player?.querySelector('.story-copy small')?.textContent.includes('STEP 3 OF')&&window.__okieBenchmark.inspectorEntityId()===app?.dataset.selectedEntityId;
+   return player?.dataset.storyPreparing==='false'&&player?.getAttribute('aria-busy')==='false'&&player?.querySelector('.story-copy small')?.textContent.includes('STEP 3 OF')&&window.__okieBenchmark.inspectorEntityId()===app?.dataset.selectedEntityId;
   },null,{timeout});
   row.metrics.storyPausedMs=await page.evaluate(start=>performance.now()-start,storyStart);
   row.afterStory=await page.evaluate(timingReport);

@@ -83,7 +83,12 @@ export async function createNativeWorkerTrialSession({tab,cdp,origin,runs=20,out
   scriptId=(await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:script})).identifier;
   report.environment.browser=await cdp.send('Browser.getVersion',{}).then(value=>({product:value.product,jsVersion:value.jsVersion,protocolVersion:value.protocolVersion})).catch(()=>({unavailable:true}));
   await drain();
- }catch(error){if(scriptId)await cdp.send('Page.removeScriptToEvaluateOnNewDocument',{identifier:scriptId}).catch(()=>{});throw error;}
+ }catch(error){
+  if(scriptId)await cdp.send('Page.removeScriptToEvaluateOnNewDocument',{identifier:scriptId}).catch(()=>{});
+  await cdp.send('Network.setBlockedURLs',{urls:[]}).catch(()=>{});
+  await cdp.send('Network.setCacheDisabled',{cacheDisabled:false}).catch(()=>{});
+  throw error;
+ }
  const runOne=async({scenario,cache,repetition,prime=false})=>{
   if(finished||busy)throw new Error('Session finished or another journey is running');
   if(!['web','app'].includes(scenario)||!['cold','warm'].includes(cache)||!Number.isInteger(repetition)||repetition<1||repetition>runs||prime&&cache!=='warm')throw new Error('Invalid journey configuration');
@@ -92,7 +97,21 @@ export async function createNativeWorkerTrialSession({tab,cdp,origin,runs=20,out
   const remaining=()=>{const left=deadline-Date.now();if(left<=0)throw new Error('Journey deadline exceeded');return left;};
   const read=expression=>evaluate(expression,Math.min(3000,remaining()));
   const poll=async(expression)=>{while(true){const result=await read(expression);if(result?.failure==='deep-history-preparation')throw new Error('Deep history preparation failed');if(result)return result;await drain({row,waitMs:Math.min(250,remaining())});}};
-  const click=async(locator)=>{while(true){try{await bounded(locator.click(),Math.min(3000,remaining()));return;}catch(error){remaining();await drain({row,waitMs:Math.min(250,remaining())});}}};
+  const click=async(locator)=>{
+   // Only readiness waits retry. An action error may have dispatched a real click, so never retry it.
+   while(true){
+    let actionable=false;
+    try{
+     await locator.waitFor({state:'visible',timeoutMs:Math.min(3000,remaining())});
+     const disabled=await locator.getAttribute('disabled');
+     const ariaDisabled=await locator.getAttribute('aria-disabled');
+     actionable=disabled==null&&ariaDisabled!=='true';
+    }catch{remaining();}
+    if(actionable)break;
+    await drain({row,waitMs:Math.min(250,remaining())});
+   }
+   await locator.click({timeoutMs:Math.min(3000,remaining())});
+  };
   try{
    await drain();
    if(cache==='cold'){primed.clear();await cdp.send('Network.clearBrowserCache',{});}
