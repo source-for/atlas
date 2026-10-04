@@ -43,7 +43,9 @@ export const API_TOKEN = 'CLOUDFLARE_API_TOKEN';
 /** Keep command progress/errors visible while removing credentials before they reach logs. */
 function redactD1Output(value, secretEnv, depth = 0) {
   let output = String(value ?? '');
-  // Replace literal and JSON-escaped environment secrets, including the ignored API token.
+  // Replace literal and JSON-escaped env secrets of at least 8 characters, including the ignored API token.
+  // Bare values of 1–7 characters may remain to avoid mangling ordinary output;
+  // labeled credential fields and Bearer values are still redacted at any length.
   const secrets = Object.entries(secretEnv)
     .filter(([name, value]) => value && value.length >= 8 && /token|secret|password|credential|authorization|api[_-]?key/i.test(name))
     .flatMap(([, value]) => [value, JSON.stringify(value).slice(1, -1)])

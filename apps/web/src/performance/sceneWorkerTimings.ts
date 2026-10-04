@@ -24,7 +24,11 @@ export type SceneWorkerJobTiming = {
 const listeners = new Set<(job: SceneWorkerJobTiming) => void>();
 export const sceneWorkerTimingEnabled = () => listeners.size > 0;
 export function subscribeSceneWorkerTiming(listener: (job: SceneWorkerJobTiming) => void): () => void { listeners.add(listener); return () => { listeners.delete(listener); }; }
-export function recordSceneWorkerJob(job: SceneWorkerJobTiming): void { for (const listener of listeners) listener(job); }
+export function recordSceneWorkerJob(job: SceneWorkerJobTiming): void {
+  for (const listener of listeners) {
+    try { listener(job); } catch { /* Diagnostics cannot change worker outcomes or prevent other observers. */ }
+  }
+}
 /** Both window/worker use monotonic time plus their explicit epoch origin. Precision is browser-dependent. */
 export const sceneWorkerClock = () => performance.timeOrigin + performance.now();
 export function safeWorkerClocks(value: WorkerClocks, scope: 'all' | 'worker' = 'all'): WorkerClocks {

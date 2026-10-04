@@ -563,3 +563,20 @@ it('retains queued cancellation and active timeout clocks without changing job b
     expect(traces[1].clocks.mainSendBefore).toBeUndefined();
   } finally {session.dispose();stop();}
 });
+
+it('a throwing diagnostics observer cannot strand success, failure, or the next worker request',async()=>{
+  const {subscribeSceneWorkerTiming}=await import('../performance/sceneWorkerTimings');
+  const stop=subscribeSceneWorkerTiming(()=>{throw new Error('observer failure');});
+  vi.stubGlobal('Worker',WorkerStub);
+  const session=createSceneCompileSession(createSceneWorkerHealth());
+  try {
+    const first=session.compile(input,{generation:0});
+    const firstScene=WorkerStub.latest.reply();expect(await first).toBe(firstScene);
+    const failed=session.compile(input,{generation:0});
+    expect(()=>WorkerStub.latest.onerror?.()).not.toThrow();
+    expect(await failed).toBeUndefined();
+    const retry=session.compile(input,{generation:0});
+    const retryScene=WorkerStub.latest.reply();expect(await retry).toBe(retryScene);
+    expect(session.unavailable()).toBe(false);
+  } finally {session.dispose();stop();}
+});

@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { createPerformanceRecorder } from './recorder';
-import { WORKER_JOB_LIMIT, type SceneWorkerJobTiming } from './sceneWorkerTimings';
+import { WORKER_JOB_LIMIT, recordSceneWorkerJob, subscribeSceneWorkerTiming, type SceneWorkerJobTiming } from './sceneWorkerTimings';
 const job = (correlationId:number):SceneWorkerJobTiming => ({correlationId,sessionId:1,jobId:correlationId,generation:0,operation:'compile',priority:'selected',outcome:'pending',abandoned:false,graphSent:false,workerFresh:false,clocks:{mainQueued:10},phases:{}});
 it('keeps bounded job snapshots independent of metric-ring eviction, without resurrecting late ACKs',()=>{
   const recorder=createPerformanceRecorder(1);
@@ -42,4 +42,15 @@ it('exports only independent safe integer graph cardinalities, not graph data or
   }
   expect(recorder.report().workerJobs.slice(1).every(value=>value.graphSize===undefined)).toBe(true);
   expect(JSON.stringify(recorder.report())).not.toContain('private');
+});
+
+it('isolates throwing timing observers and still delivers every event to later observers',()=>{
+  const seen: number[]=[];
+  const stopBroken=subscribeSceneWorkerTiming(()=>{throw new Error('observer failure');});
+  const stopHealthy=subscribeSceneWorkerTiming(value=>seen.push(value.correlationId));
+  try {
+    expect(()=>recordSceneWorkerJob(job(1))).not.toThrow();
+    expect(()=>recordSceneWorkerJob(job(2))).not.toThrow();
+    expect(seen).toEqual([1,2]);
+  } finally {stopBroken();stopHealthy();}
 });

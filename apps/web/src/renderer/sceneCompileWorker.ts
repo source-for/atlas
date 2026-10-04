@@ -64,8 +64,8 @@ worker.onmessage = event => {
     const previous = request.previousId === undefined ? request.input.previous : scenes.get(request.previousId);
     if (request.previousId !== undefined && !previous) throw new Error('Missing previous scene');
     const start = performance.now();
-    progress('compiling');
     mark('workerCompileStart');
+    progress('compiling');
     const scene = compileScanScene({ ...request.input, ...graph, previous }, progress);
     mark('workerCompileEnd');
     progress('compiled');

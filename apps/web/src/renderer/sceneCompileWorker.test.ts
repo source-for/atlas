@@ -55,7 +55,7 @@ it('initialization retains the full graph while compiling a temporary bootstrap 
   expect((worker.postMessage.mock.lastCall![0] as SceneCompileResponse).ok).toBe(false);
 });
 
-it('opt-in clocks separate compiler work from progress and result post costs', async () => {
+it('compiling progress publishes its start clock before compiler work and result posting', async () => {
   let now = 0;
   vi.spyOn(performance, 'now').mockImplementation(() => now);
   const worker = { onmessage:null as ((event:{data:SceneWorkerRequest})=>void)|null,
@@ -68,7 +68,11 @@ it('opt-in clocks separate compiler work from progress and result post costs', a
   const result = messages.find(message=>!('operation' in message))!;
   const ack = messages.at(-1)!;
   expect('operation' in ack && ack.operation).toBe('timing');
-  expect(result.clocks!.workerCompileEnd! - result.clocks!.workerCompileStart!).toBe(7);
+  const compiling = messages.find(message=>'operation' in message && message.operation==='progress' && message.phase==='compiling')!;
+  expect(compiling.clocks!.workerCompileStart).toBeDefined();
+  expect(compiling.clocks!.workerCompileStart).toBe(result.clocks!.workerCompileStart);
+  // The interval includes the initial progress post (5ms) and compiler work (7ms).
+  expect(result.clocks!.workerCompileEnd! - result.clocks!.workerCompileStart!).toBe(12);
   expect(ack.clocks!.workerResultPostAfter! - ack.clocks!.workerResultPostBefore!).toBe(5);
   expect(result.clocks!.workerGraphInstalled).toBeGreaterThanOrEqual(result.clocks!.workerReceived!);
   expect(messages[0]).toMatchObject({operation:'progress', phase:'received', clocks:{workerModuleReady:expect.any(Number),workerTimeOrigin:performance.timeOrigin}});

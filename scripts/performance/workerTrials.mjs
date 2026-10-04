@@ -40,18 +40,19 @@ const report={schemaVersion:1,smoke,startedAt:new Date().toISOString(),environme
  nativeBackgroundPolicy:'Playwright default flags disabling background timers/occluded-window and renderer backgrounding explicitly omitted; normal Chrome visibility scheduling retained',
  usableMetric:'DOM polling observes matching populated inspector, positive projection, canvas dimensions and positive renderer-visible entities when available; older deployed builds use partitionDrawn>0 residency surrogate (row labeled; contracts not directly comparable)',
  order:'Alternating web/App deep links by repetition; cold then warm; full story step-3 paused check after each load',
- },rows:[]};
+ },rows:[],primingFailures:[]};
 const save=async()=>{await mkdir(dirname(output),{recursive:true});await writeFile(output,`${JSON.stringify(report,null,2)}\n`);};
 async function trial(page,url,expected,measure=true){
  const warnings=[];
  const onConsole=message=>{if(message.type()==='warning'&&message.text().startsWith('Atlas worker preparation failed'))warnings.push({atMs:Date.now(),text:message.text()});};
  page.on('console',onConsole);
- const start=Date.now();const row={expected,metrics:{},warnings};
+ const start=Date.now();const row={expected,prime:!measure,stage:'navigate',metrics:{},warnings};
  try{
   await page.bringToFront();
   await page.goto(url,{waitUntil:'domcontentloaded',timeout});
   if(new URL(page.url()).origin!==origin)throw new Error('App origin redirected to an access gate; use the authenticated native-profile adapter without copying credentials');
   await page.bringToFront();
+  row.stage='deep-ready';
   const ready=await page.waitForFunction(expected=>{
    const app=document.querySelector('[data-testid="atlas-app"]');
    let replay;try{replay=JSON.parse(app?.dataset.rendererReplayState??'{}');}catch{return false;}
@@ -71,11 +72,13 @@ async function trial(page,url,expected,measure=true){
   row.usableContract=await page.evaluate(()=>document.querySelector('[data-testid="atlas-app"]')?.hasAttribute('data-renderer-visible-entities')?'visible-entities':'residency-surrogate');
   row.deepSelection=await page.evaluate(()=>{const query=new URLSearchParams(location.search);const overview=document.querySelector('[data-contextual-overview]');const prose=overview?.querySelector('.overview-description,.overview-lead,[data-block-type="markdown"],[data-block-type="observed_text"]');return {selected:document.querySelector('[data-testid="atlas-app"]')?.dataset.selectedEntityId,lensDepth:query.getAll('lens').length,heading:overview?.querySelector('.overview-title')?.textContent,kind:overview?.querySelector('.overview-chip')?.textContent,descriptionPresent:Boolean(prose?.textContent?.trim())&&!overview?.textContent.includes('No description has been captured yet.')};});
   if(expected==='component:apps-web-src-app-tsx'&&row.deepSelection.lensDepth!==3)throw new Error('Deep App lens path was rewritten');
+  row.stage='story-launch';
   const menu=page.locator('.story-catalog-menu > summary');if(await menu.count())await menu.click();
   const storyStart=await page.evaluate(()=>performance.now());
   await page.locator('[data-testid="story-launch-overview"]').click();
   const jump=page.getByRole('button',{name:/^Go to story step 3:/});
   await jump.click();
+  row.stage='story-paused';
   await page.waitForFunction(()=>{
    const player=document.querySelector('[data-playback-state="paused"]');
    const app=document.querySelector('[data-testid="atlas-app"]');
@@ -83,6 +86,7 @@ async function trial(page,url,expected,measure=true){
   },null,{timeout});
   row.metrics.storyPausedMs=await page.evaluate(start=>performance.now()-start,storyStart);
   row.afterStory=await page.evaluate(timingReport);
+  row.stage='complete';
  }catch(error){row.error=error.message;row.lastDiagnostics=await page.evaluate(timingReport).catch(()=>null);}
  finally{
   row.elapsedMs=Date.now()-start;
@@ -97,8 +101,7 @@ async function trial(page,url,expected,measure=true){
   page.off('console',onConsole);
  }
  if(row.probe?.longTasksDropped)row.error='Long-task buffer overflow; evidence incomplete';
- if(measure)return row;
- if(row.error||warnings.length)throw new Error(`Warm prime failed: ${row.error??'worker warning'}`);
+ return row;
 }
 try{
  for(let repetition=1;repetition<=runs;repetition++){
@@ -122,8 +125,20 @@ try{
     let row;
     try{
      if(cache==='cold'){await cdp.send('Network.clearBrowserCache');await cdp.send('Network.setCacheDisabled',{cacheDisabled:true});}
-     else{await cdp.send('Network.setCacheDisabled',{cacheDisabled:false});await trial(page,url,expected,false);cacheEvents.length=0;}
-     row=await trial(page,url,expected);
+     else{
+      await cdp.send('Network.setCacheDisabled',{cacheDisabled:false});
+      const prime=await trial(page,url,expected,false);
+      prime.unexpectedRequests=[...denied];
+      prime.cacheResponses={total:cacheEvents.length,disk:cacheEvents.filter(event=>event.disk).length,serviceWorker:cacheEvents.filter(event=>event.serviceWorker).length};
+      cacheEvents.length=0;
+      if(denied.length)prime.error='Unexpected non-read application request';
+      if(prime.error||prime.warnings.length){
+       report.primingFailures.push({scenario,cache,repetition,...prime,error:prime.error??'Worker warning during warm prime'});
+       // This call did not navigate: do not attach the prime's diagnostics to a measured row.
+       row={stage:'cache-policy',metrics:{},warnings:[],error:'Measured warm journey requires a successful explicit prime'};
+      }
+     }
+     if(!row)row=await trial(page,url,expected);
     }catch(error){row={error:error.message};}
     row.unexpectedRequests=[...denied];
     row.cacheResponses={total:cacheEvents.length,disk:cacheEvents.filter(event=>event.disk).length,serviceWorker:cacheEvents.filter(event=>event.serviceWorker).length};cacheEvents.length=0;
