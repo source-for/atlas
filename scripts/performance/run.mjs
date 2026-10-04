@@ -64,23 +64,25 @@ async function journey(page,dataset,url,measure=true) {
  const startup=await page.evaluate(timingReport);
  const firstDraw=startup.samples.find(sample=>sample.metric==='atlas-first-frame');
  if(!firstDraw)throw new Error(`First draw timing absent (dropped ${startup.droppedSamples} safe samples); refusing a fabricated startup number.`);
- const probe=await page.evaluate(()=>({ready:window.__okieBenchmark.inspectorReadyMs,supported:window.__okieBenchmark.longTaskSupported,longTasks:window.__okieBenchmark.longTasks,dropped:window.__okieBenchmark.longTasksDropped}));
+ const probe=await page.evaluate(()=>({ready:window.__okieBenchmark.inspectorReadyMs,supported:window.__okieBenchmark.longTaskSupported,longTasks:window.__okieBenchmark.longTasks,dropped:window.__okieBenchmark.longTasksDropped,visibleEntities:window.__okieBenchmark.visibleEntities,visibleRelations:window.__okieBenchmark.visibleRelations}));
  if(probe.dropped)throw new Error('Pre-document longtask buffer overflow; startup metric would be incomplete.');
  row.metrics.firstDrawMs={status:'ok',durationMs:firstDraw.startMs};
  row.metrics.usableAtlasMs={status:'ok',durationMs:Math.max(firstDraw.startMs,probe.ready)};
  row.metrics.maxLongTaskBeforeDrawMs=probe.supported?{status:'ok',durationMs:Math.max(0,...probe.longTasks.filter(task=>task.startMs<firstDraw.startMs).map(task=>task.durationMs))}:unsupported('longtask PerformanceObserver unavailable');
- row.startupTimings=startup; row.preDrawLongTasks=probe.longTasks.filter(task=>task.startMs<firstDraw.startMs);
- if(dataset==='stress') { row.metrics.levelMs=unsupported('Renderer-only fixture has no architecture level navigation contract');row.metrics.childMs=unsupported('Synthetic leaves have no inspector children'); }
- else {
-  await page.getByRole('tab',{name:'Details',exact:true}).click();
+ row.startupVisible={entities:probe.visibleEntities,relations:probe.visibleRelations}; row.startupTimings=startup; row.preDrawLongTasks=probe.longTasks.filter(task=>task.startMs<firstDraw.startMs);
+ await page.getByRole('tab',{name:'Details',exact:true}).click();
+ const targetDetail=dataset==='stress'?'code':'container';
+ row.levelTarget=targetDetail;
   await step('levelMs',async()=>{
    const epoch=await page.locator(selectors.app).getAttribute('data-camera-settled-epoch');
-   const button=page.getByRole('button',{name:'Containers level',exact:true});
-   return timedAction(page,button,'click',()=>button.click(),epoch=>{
+   const button=page.getByRole('button',{name:dataset==='stress'?'Code level':'Containers level',exact:true});
+   return timedAction(page,button,'click',()=>button.click(),({epoch,targetDetail})=>{
     const app=document.querySelector('[data-testid="atlas-app"]');
-    return app?.dataset.detail==='container' && app.dataset.cameraSettledEpoch!==epoch && window.__okieBenchmark.inspectorEntityId()===app.dataset.selectedEntityId && performance.now();
-   },epoch);
+    return app?.dataset.detail===targetDetail && window.__okieBenchmark.visibleEntities>0 && app.dataset.cameraSettledEpoch!==epoch && window.__okieBenchmark.inspectorEntityId()===app.dataset.selectedEntityId && performance.now();
+   },{epoch,targetDetail});
   });
+ if(dataset==='stress')row.metrics.childMs=unsupported('Synthetic leaves have no inspector children');
+ else {
   await step('childMs',async()=>{
    const child=page.locator('.children-section button[data-inspector-entity-id]').first();
    const id=await child.getAttribute('data-inspector-entity-id');
@@ -135,7 +137,7 @@ try {
   page.on('request',request=>{const url=request.url();if(/^https?:/.test(url)&&!url.startsWith(`${server.origin}/`))external.push(url);});
   const cdp=await context.newCDPSession(page);
   await cdp.send('Network.enable');await cdp.send('Emulation.setCPUThrottlingRate',{rate});
-  const route=dataset==='published'?'/r/source-for/atlas':`/?fixture=${dataset==='golden'?'okie':'stress'}`;
+  const route=dataset==='published'?'/r/source-for/atlas':dataset==='stress'?'/?fixture=stress&cx=59&cy=44&z=5.27&detail=component': '/?fixture=okie';
   const url=`${server.origin}${route}${route.includes('?')?'&':'?'}perf=1&backend=${requestedBackend}`;
   for(const cache of ['cold','warm']) {
    const row={dataset,cache,repetition};const violationsBefore=server.violations.length;

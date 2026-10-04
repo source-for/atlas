@@ -48,9 +48,10 @@ test('warm prime rejects invalid traffic, step failures, and incomplete observat
 
 test('warm prime accepts only explicitly supported unsupported cases', () => {
   const stress = row({ dataset: 'stress' });
-  for (const name of ['levelMs', 'childMs', 'storyStartMs', 'storyStep3Ms', 'maxLongTaskBeforeDrawMs']) stress.metrics[name] = { status: 'unsupported' };
+  for (const name of ['childMs', 'storyStartMs', 'storyStep3Ms', 'maxLongTaskBeforeDrawMs']) stress.metrics[name] = { status: 'unsupported' };
   assert.doesNotThrow(() => assertWarmPrime(stress));
   assert.doesNotThrow(() => assertWarmPrime(row({ metrics: { ...row().metrics, maxLongTaskBeforeDrawMs: { status: 'unsupported' } } })));
   assert.throws(() => assertWarmPrime(row({ metrics: { ...row().metrics, levelMs: { status: 'unsupported' } } })), /levelMs/);
+  assert.throws(() => assertWarmPrime({ ...stress, metrics: { ...stress.metrics, levelMs: { status: 'unsupported' } } }), /levelMs/);
   assert.throws(() => assertWarmPrime({ ...stress, metrics: { ...stress.metrics, searchMs: { status: 'unsupported' } } }), /searchMs/);
 });

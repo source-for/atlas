@@ -19,7 +19,7 @@ export async function readPin() {
   return { pin, responses };
 }
 export const PERFORMANCE_METRICS = ['firstDrawMs','usableAtlasMs','maxLongTaskBeforeDrawMs','levelMs','childMs','storyStartMs','storyStep3Ms','searchMs'];
-const stressOnlyUnsupported = new Set(['levelMs','childMs','storyStartMs','storyStep3Ms']);
+const stressOnlyUnsupported = new Set(['childMs','storyStartMs','storyStep3Ms']);
 const validMetric = metric => metric?.status === 'ok' && Number.isFinite(metric.durationMs) && metric.durationMs >= 0;
 export function assertWarmPrime(row) {
   if (row.error || row.failures?.length) throw new Error(`Warm priming failed: ${row.error ?? row.failures.join(', ')}`);
