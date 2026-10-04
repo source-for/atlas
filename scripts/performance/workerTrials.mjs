@@ -50,15 +50,20 @@ async function trial(page,url,expected,measure=true){
  try{
   await page.bringToFront();
   await page.goto(url,{waitUntil:'domcontentloaded',timeout});
+  if(new URL(page.url()).origin!==origin)throw new Error('App origin redirected to an access gate; use the authenticated native-profile adapter without copying credentials');
   await page.bringToFront();
   const ready=await page.waitForFunction(expected=>{
    const app=document.querySelector('[data-testid="atlas-app"]');
    let replay;try{replay=JSON.parse(app?.dataset.rendererReplayState??'{}');}catch{return false;}
+   let navigation;try{navigation=JSON.parse(app?.dataset.navigationState??'{}');}catch{return false;}
+   const loading=Boolean(document.querySelector('.map-heading [role="status"]'));
    const canvas=document.querySelector('[data-testid="atlas-canvas"] canvas');
    const drawn=app?.hasAttribute('data-renderer-visible-entities')?Number(app.dataset.rendererVisibleEntities)>0:replay.residency?.partitionDrawn>0;
-   return app?.dataset.selectedEntityId===expected&&window.__okieBenchmark?.inspectorEntityId()===expected&&Number(app.dataset.projectionEntityCount)>0&&drawn&&canvas?.width>0&&canvas?.height>0&&performance.now();
+   return !loading&&navigation?.selectedId===expected&&navigation?.rootEntityId==='container:apps-web'&&Number(app?.dataset.cameraSettledEpoch)>0&&app?.dataset.selectedEntityId===expected&&window.__okieBenchmark?.inspectorEntityId()===expected&&Number(app.dataset.projectionEntityCount)>0&&drawn&&canvas?.width>0&&canvas?.height>0&&performance.now();
   },expected,{timeout});
   row.metrics.usableMs=await ready.jsonValue();await ready.dispose();
+  const deepFailed=await page.evaluate(()=>Array.from(document.querySelectorAll('[role="status"]')).some(node=>/This history entry could not|Background scene preparation is unavailable|Reload this page/.test(node.textContent??'')));
+  if(deepFailed)throw new Error('Deep history preparation failed');
   row.backend=await page.locator('[data-testid="renderer-status"]').getAttribute('data-active-backend');
   if(row.backend!==backend)throw new Error(`Requested ${backend}, got ${row.backend}`);
   row.beforeStory=await page.evaluate(timingReport);
@@ -85,7 +90,7 @@ async function trial(page,url,expected,measure=true){
   row.state=await page.evaluate(()=>{
    const app=document.querySelector('[data-testid="atlas-app"]');const overview=document.querySelector('[data-contextual-overview]');
    let navigation;try{navigation=JSON.parse(app?.dataset.navigationState??'{}');}catch{}
-   return {root:app?.dataset.rootEntityId,selected:app?.dataset.selectedEntityId,snapshotId:navigation?.snapshotId,viewId:navigation?.viewId,scanBoot:app?.dataset.scanBoot,overviewTitle:overview?.querySelector('.overview-title')?.textContent,storyState:document.querySelector('[data-playback-state]')?.dataset.playbackState};
+   return {root:app?.dataset.rootEntityId,selected:app?.dataset.selectedEntityId,snapshotId:navigation?.snapshotId,viewId:navigation?.viewId,scanBoot:app?.dataset.scanBoot,overviewTitle:overview?.querySelector('.overview-title')?.textContent,storyState:document.querySelector('[data-playback-state]')?.dataset.playbackState,finalBackend:document.querySelector('[data-testid="renderer-status"]')?.dataset.activeBackend};
   }).catch(()=>null);
   // Fixed asset fingerprints identify deployed builds without exporting arbitrary resource URLs.
   row.build=await page.evaluate(()=>performance.getEntriesByType('resource').filter(e=>/\/assets\/(?:index|sceneCompileWorker)-[\w-]+\.js(?:$|\?)/.test(e.name)).map(e=>({asset:e.name.match(/\/assets\/([^?]+)/)[1],startMs:e.startTime,durationMs:e.duration,transferBytes:e.transferSize,encodedBytes:e.encodedBodySize})) ).catch(()=>[]);
