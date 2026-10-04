@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve, dirname, sep } from 'node:path';
 import { cpus, freemem, totalmem, platform, release, arch } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { repoRoot, arg, sha256, summarizeRows, assertWarmPrime } from './common.mjs';
+import { repoRoot, arg, sha256, summarizeRows, assertWarmPrime, actionDuration } from './common.mjs';
 import { serveBuild } from './server.mjs';
 import { installProbe, timingReport } from './probe.mjs';
 const runs=Number(arg('runs','10'));
@@ -31,8 +31,9 @@ const report={schemaVersion:1,smoke,startedAt:new Date().toISOString(),environme
  commit:execFileSync('git',['rev-parse','HEAD'],{cwd:repoRoot,encoding:'utf8'}).trim(),dirty:execFileSync('git',['status','--porcelain'],{cwd:repoRoot,encoding:'utf8'}).trim(),
  node:process.version,playwright:JSON.parse(await readFile(resolve(repoRoot,'node_modules/playwright/package.json'),'utf8')).version,
  browser:browser.version(),channel,headless,os:`${platform()} ${release()} ${arch()}`,cpu:cpus()[0].model,logicalCpus:cpus().length,memoryBytes:totalmem(),freeMemoryBytes:freemem(),
+ devMode:true,order:'Dataset blocks golden→stress→published by default; cold before warm per repetition; thermal/background drift not balanced',levelMetric:'Committed level state with matching populated inspector; camera snaps, no flight; does not assert a new draw',
  cpuThrottleRate:rate,network:'unthrottled loopback; no remote browser traffic',viewport:{width:1440,height:1000},deviceScaleFactor:1,requestedBackend,
- cache:'cold: fresh context, CDP clear+disabled HTTP cache; warm: same context, cache enabled, unmeasured complete journey then fresh document. Workers/indexes fresh on reload; server bodies preloaded for both.',
+ cache:'cold: fresh context, CDP clear+disabled HTTP cache throughout whole journey (repeated-fetch upper-bound condition); warm: same context, cache enabled, unmeasured complete journey then fresh document. Workers/indexes fresh on reload; server bodies preloaded for both.',
  instrumentation:'perf=1 safe app timing recorder (panel hidden), pre-document scalar longtask PerformanceObserver, DOM observer; no DevTools trace',
  buildIndexSha256:sha256(await readFile(resolve(repoRoot,'apps/web/dist/index.html'))),
  publishedPin:server.pin,
@@ -50,11 +51,12 @@ async function checkReady(page) {
  return state;
 }
 async function timedAction(page,locator,event,action,condition,arg) {
+ await page.evaluate(()=>{window.__okieBenchmark.actionStart=null;});
  await locator.evaluate((element,event)=>{element.addEventListener(event,()=>{window.__okieBenchmark.actionStart=performance.now();}, {once:true,capture:true});},event);
  await action();
  const completed=await page.waitForFunction(condition,arg,{timeout});
  const endMs=await completed.jsonValue();await completed.dispose();
- return {status:'ok',durationMs:endMs-await page.evaluate(()=>window.__okieBenchmark.actionStart)};
+ return {status:'ok',durationMs:actionDuration(await page.evaluate(()=>window.__okieBenchmark.actionStart),endMs)};
 }
 async function journey(page,dataset,url,measure=true) {
  const row={dataset,metrics:{},failures:[]};

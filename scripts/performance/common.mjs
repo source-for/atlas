@@ -40,3 +40,10 @@ export function summarizeRows(rows, datasets) {
   }
   return summary;
 }
+
+/** Reject a missing action event instead of coercing null or reusing another action's clock. */
+export function actionDuration(startMs, endMs) {
+  if (typeof startMs !== 'number' || !Number.isFinite(startMs) || startMs < 0) throw new Error('Action start event timestamp missing or invalid.');
+  if (typeof endMs !== 'number' || !Number.isFinite(endMs) || endMs < startMs) throw new Error('Action completion timestamp invalid.');
+  return endMs - startMs;
+}

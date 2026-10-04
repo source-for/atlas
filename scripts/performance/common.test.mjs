@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PERFORMANCE_METRICS, assertWarmPrime, summarizeRows } from './common.mjs';
+import { PERFORMANCE_METRICS, assertWarmPrime, summarizeRows, actionDuration } from './common.mjs';
 
 const metric = durationMs => ({ status: 'ok', durationMs });
 const row = (overrides = {}) => ({ dataset: 'golden', cache: 'cold', failures: [], metrics: Object.fromEntries(PERFORMANCE_METRICS.map(name => [name, metric(10)])), ...overrides });
@@ -54,4 +54,11 @@ test('warm prime accepts only explicitly supported unsupported cases', () => {
   assert.throws(() => assertWarmPrime(row({ metrics: { ...row().metrics, levelMs: { status: 'unsupported' } } })), /levelMs/);
   assert.throws(() => assertWarmPrime({ ...stress, metrics: { ...stress.metrics, levelMs: { status: 'unsupported' } } }), /levelMs/);
   assert.throws(() => assertWarmPrime({ ...stress, metrics: { ...stress.metrics, searchMs: { status: 'unsupported' } } }), /searchMs/);
+});
+
+test('action timing rejects absent or coerced event clocks rather than returning plausible durations', () => {
+  assert.equal(actionDuration(125.5, 150), 24.5);
+  assert.equal(actionDuration(0, 0), 0);
+  for (const start of [null, undefined, '125.5', NaN, Infinity, -1]) assert.throws(() => actionDuration(start, 150), /start event timestamp/);
+  for (const end of [null, undefined, '150', NaN, Infinity, 124]) assert.throws(() => actionDuration(125, end), /completion timestamp/);
 });
