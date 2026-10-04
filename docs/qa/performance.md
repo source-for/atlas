@@ -302,3 +302,45 @@ Recording is enabled before navigation with `perf=1`; the performance diagnostic
 The fixed journey is load → unmeasured switch to the Details tab (to expose the same inspector child control) → Containers → first inspector child → overview launch → jump to step 3 → first nonblank search. Control timings start from captured browser click/input events and finish at the first successful browser readiness poll, with animation-frame polling granularity. Stress is a renderer-only synthetic scene: child/story operations are reported unsupported instead of borrowing golden data or inventing zero latencies. Stress enters at `cx=59&cy=44&z=5.27&detail=component`, around Node 0, then measures the Code level control. The default Context/Fit camera culls all cards on this fixture in the current renderer and would fail usable readiness; this limitation remains unchanged. Its explicit arrival is a fixture benchmark, not default-route latency. Level targets and synthetic compile costs are comparable only within the same fixture. Its startup, level and search are measured normally. A failed step is retained with its failure reason; later steps are attempted and missing requests invalidate the run. Warm priming must succeed before a warm measurement.
 
 The summary reports successful N separately from failures and unsupported operations. Median and p95 use nearest-rank percentiles on successful samples, without discarding failed runs from the failure count. With ten successful runs, p95 is the observed maximum; this is a small-sample descriptive baseline, not a tail guarantee. Compare only matching environments and fixture/build pins. Smoke output is not a baseline or an improvement claim.
+
+## Recorded baseline: 4 October 2026
+
+Measured 2026-10-04T10:55:55.953Z through 2026-10-04T11:00:38.794Z, using clean application/harness commit `573a396cd55f53dd465143e7916aa89d3a7faac3`. The tables below are a documentation-only addition after measurement; they identify the measured source, not this report's later commit. Production build index SHA-256: `1de9c7da8c9b8fad7873600b64e5dafb678c45cf466e25f6c54da99fa9c27911`. All four required gates passed before this run; explicit fixture regeneration and golden QA passed with evidence pin `851b05d8`, and the five manual harness regression tests passed.
+
+The serial matrix completed 60 measured journeys: ten cold and ten warm loads for each of three datasets, plus 30 unmeasured full-journey warm primes. Every applicable metric has successful N=10 per dataset/cache group, zero failures, and no external browser HTTP(S) requests or uncaptured local requests. Stress child/story metrics are unsupported because its synthetic leaves have no children or story. No failed runs were discarded.
+
+| Environment | Recorded value |
+| --- | --- |
+| Hardware / OS | Apple M1 Pro, 10 logical CPUs, 32 GiB RAM; macOS Darwin 25.3.0 arm64 |
+| Memory snapshot | 2.36 GiB free at run start; not a controlled memory-pressure experiment |
+| Browser | Installed Chrome 154.0.8037.95, headed, isolated temporary profile; Playwright 1.58.2; Node v22.23.1 |
+| GPU / backend | Apple M1 Pro, ANGLE Metal, Apple driver 26.3; WebGPU enabled and actual backend `webgpu` on all 60 loads |
+| Viewport / throttling | 1440 × 1000 CSS pixels, DPR 1; CDP CPU rate 1 (no slowdown); unthrottled loopback |
+| Cache | Cold: fresh context, HTTP cache cleared and disabled. Warm: complete journey prime, enabled HTTP cache, fresh document and fresh workers/search index. Server response bodies preloaded in both. |
+| Concurrent work | Agent-owned builds, tests, browser QA and deployments stopped before measurement; unrelated user/background processes were not controlled. |
+
+Values are **median / p95 in milliseconds**, nearest rank. With N=10, p95 is the maximum observed value.
+
+| Dataset | Cache | First draw submission | Usable atlas | Max long task before draw |
+| --- | --- | ---: | ---: | ---: |
+| golden | cold | 498.1 / 546.4 | 738.8 / 772.7 | 160.0 / 178.0 |
+| golden | warm | 369.8 / 399.9 | 655.6 / 665.8 | 151.0 / 164.0 |
+| stress | cold | 766.5 / 814.2 | 769.9 / 823.9 | 413.0 / 452.0 |
+| stress | warm | 622.8 / 646.7 | 675.8 / 681.5 | 356.0 / 382.0 |
+| published | cold | 755.5 / 843.0 | 1014.4 / 1041.0 | 93.0 / 97.0 |
+| published | warm | 687.8 / 824.2 | 916.3 / 999.5 | 69.0 / 117.0 |
+
+| Dataset | Cache | Level change | Child navigation | Story start | Story step 3 paused | Search |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| golden | cold | 12.1 / 13.7 | 463.8 / 464.4 | 19.9 / 35.0 | 937.7 / 1094.7 | 9.2 / 11.9 |
+| golden | warm | 10.2 / 11.2 | 464.3 / 468.1 | 13.9 / 27.6 | 938.3 / 947.1 | 3.1 / 9.4 |
+| stress | cold | 12.2 / 13.8 | unsupported | unsupported | unsupported | 64.4 / 71.9 |
+| stress | warm | 10.9 / 17.8 | unsupported | unsupported | unsupported | 64.9 / 72.9 |
+| published | cold | 1019.3 / 1096.6 | 506.0 / 507.9 | 946.6 / 995.0 | 1750.6 / 1852.8 | 82.9 / 85.2 |
+| published | warm | 1005.4 / 1092.8 | 506.1 / 507.2 | 939.7 / 976.6 | 1747.8 / 1820.9 | 79.4 / 84.5 |
+
+At startup readiness the actual post-draw visible counts were consistently golden **7 entities / 3 relations**, stress **4 / 0**, and published **3 / 2**. These are the rendered arrival views, not the full graph counts. Golden/published level change targets Containers; stress targets Code from its explicit component camera around Node 0. The stress fixture contains 5,000 nodes and 15,000 paths, but its default Context/Fit route currently culls all cards. That unchanged renderer limitation is excluded by using the disclosed explicit component arrival; this stress result must not be presented as default-route usability or proof that all 5,000 cards/15,000 paths are visible.
+
+The published source pin is the immutable publication/artifact/snapshot listed above, with full neighborhood SHA-256 `2358ae566ce2ba169a1b387a9eb670220f666029b4ec6ceb47caf6c362d5574c` and complete snapshot SHA-256 `6a61c813c8d49b12c6e13ff7d37464e0abf61dc3cecb4be0741a48c0e895e54c`. Golden snapshot SHA-256: `bf516e57a50c813037f8f5e9734b8036c6a89fff7c903d2190cf3b1585b992c5`; stress fixture SHA-256: `20db51bef2d523bbe38426ba38e1050e735007e46b1ad969b776c91df8345e16`. These pins and the complete response manifest distinguish a repeat from fresh production data.
+
+The usable timestamp requires first draw submission, a populated matching inspector, nonempty projection, positive-size canvas and actual renderer visible-entity count above zero. It does not measure GPU completion or verify every pixel. Story-start completion permits playing/flight; step-3 completion requires paused arrival. Search begins at the first input after opening the overlay and may include remaining index startup; it does not measure the entire first-open interaction. All search runs used the module worker backend and returned nonempty results. These local descriptive measurements establish a baseline only: they do not reproduce production network latency, prove the earlier 20-second failure resolved, impose a budget, or claim an improvement. Raw reports remain local at `/tmp/cla357-baseline.json` and `/tmp/cla357-baseline.md`; no traces, screenshots or raw dumps were committed.
