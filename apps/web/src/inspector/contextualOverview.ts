@@ -12,6 +12,20 @@ export interface ContextualOverview {
   implementationFiles?: Array<{ path: string; code: ContextualOverviewLink[] }>;
 }
 
+/** A tour's logical selection owns its overview even when a guarded scene's
+ * semantic lens can represent only the root. Idle exploration follows context.
+ */
+export function contextualOverviewEntityId(input: {
+  selectedId: string;
+  storyStep: number;
+  explicitSelection: boolean;
+  lensEntityId?: string;
+  rootEntityId: string;
+}): string {
+  return input.storyStep >= 0 || input.explicitSelection
+    ? input.selectedId : input.lensEntityId ?? input.rootEntityId;
+}
+
 export function buildContextualOverview(snapshot: ArchitectureSnapshot, entityId: string): ContextualOverview | undefined {
   const entity = snapshot.entities.find((candidate) => candidate.id === entityId);
   if (!entity) return undefined;

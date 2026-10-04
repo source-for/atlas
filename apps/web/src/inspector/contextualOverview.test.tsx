@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { goldenSnapshot } from '@okie/scene-compiler';
-import { buildContextualOverview } from './contextualOverview';
+import { buildContextualOverview, contextualOverviewEntityId } from './contextualOverview';
 import { ContextualOverviewView, overviewScrollHost, resetOverviewScroll } from './ContextualOverviewView';
 
 describe('contextual overview contract', () => {
@@ -113,4 +113,32 @@ describe('overview scroll reset on entity change', () => {
     expect(overviewScrollHost(null)).toBeUndefined();
     expect(() => resetOverviewScroll(undefined)).not.toThrow();
   });
+});
+
+function storyOverviewSnapshot() {
+  return { ...goldenSnapshot, entities: [
+    { id: 'system:okie', kind: 'softwareSystem' as const, name: 'okie', sourceRefs: [] },
+    { id: 'container:apps-web', parentId: 'system:okie', kind: 'container' as const, name: '@okie/web', responsibility: 'Renders the architecture atlas.', sourceRefs: [] },
+    { id: 'component:app', parentId: 'container:apps-web', kind: 'component' as const, name: 'App', sourceRefs: [] },
+  ], relations: [] };
+}
+
+it.each([0, 2])('uses the logical story selection for overview at step %i when rendered lens remains on system root', storyStep => {
+  const snapshot = storyOverviewSnapshot();
+  const id = contextualOverviewEntityId({ selectedId: 'container:apps-web', storyStep, explicitSelection: false, lensEntityId: 'system:okie', rootEntityId: 'system:okie' });
+  const overview = buildContextualOverview(snapshot, id)!;
+  expect(overview.entity).toMatchObject({ id: 'container:apps-web', name: '@okie/web', kind: 'container', summary: 'Renders the architecture atlas.' });
+  expect(overview.children.map(child => child.id)).toEqual(['component:app']);
+  const markup = renderToStaticMarkup(<ContextualOverviewView overview={overview} onOpenEntity={() => undefined}/>);
+  expect(markup).toContain('@okie/web');
+  expect(markup).toContain('Renders the architecture atlas.');
+});
+
+it('preserves idle contextual lens/root flow and explicit selection, including an interrupted story selection', () => {
+  const snapshot = storyOverviewSnapshot();
+  const input = { selectedId: 'component:app', storyStep: -1, explicitSelection: false, lensEntityId: 'container:apps-web', rootEntityId: 'system:okie' };
+  expect(buildContextualOverview(snapshot, contextualOverviewEntityId(input))?.entity.id).toBe('container:apps-web');
+  expect(buildContextualOverview(snapshot, contextualOverviewEntityId({ ...input, lensEntityId: undefined }))?.entity.id).toBe('system:okie');
+  expect(buildContextualOverview(snapshot, contextualOverviewEntityId({ ...input, explicitSelection: true }))?.entity.id).toBe('component:app');
+  expect(buildContextualOverview(snapshot, contextualOverviewEntityId({ ...input, storyStep: 2 }))?.entity.id).toBe('component:app');
 });

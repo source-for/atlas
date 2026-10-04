@@ -31,14 +31,14 @@ export function isSceneRequestAbort(error: unknown): boolean {
 /** Publication and errors share the same ownership fence, including late worker
  * replies. Finishing an old request must never clear a newer pending request. */
 export async function completeForegroundSceneRequest<T>(
-  request: { owns(): boolean; finish(): void },
+  request: { owns(): boolean; finish(): void; beginPublication?(): void },
   prepare: () => Promise<T>,
   publish: (result: T) => void,
   onFailure: (error: unknown) => void,
 ): Promise<void> {
   try {
     const result = await prepare();
-    if (request.owns()) publish(result);
+    if (request.owns()) { request.beginPublication?.(); publish(result); }
   } catch (error) {
     if (request.owns() && !isSceneRequestAbort(error)) onFailure(error);
   } finally { request.finish(); }
@@ -50,12 +50,16 @@ export async function prepareForegroundWithRetry<T>(request: {
   current(): boolean;
   owns(): boolean;
   generationFence: { owns(): boolean; allowChanges(): void };
+  beginPublication?(): void;
 }, prepare: () => Promise<T>, maxAttempts = 3, publish?: (result: T) => void): Promise<T> {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (!request.current()) throw new DOMException('Navigation superseded', 'AbortError');
     try {
       const result = await prepare();
-      if (request.owns()) { publish?.(result); return result; }
+      if (request.owns()) {
+        if (publish) { request.beginPublication?.(); publish(result); }
+        return result;
+      }
       throw new DOMException('Navigation superseded', 'AbortError');
     } catch (error) {
       if (!request.current()) throw error;
@@ -96,18 +100,29 @@ export function createPreparedSceneGenerations<T extends object>(readGeneration:
 /** Tracks visible preparation independently of delayed React effect cleanup. */
 export function createForegroundRequestStatus(onPending: (pending: boolean) => void) {
   let active: { owns(): boolean; current?(): boolean } | undefined;
+  let publishing: typeof active;
   return {
-    track<T extends { owns(): boolean; finish(): void }>(request: T): T {
+    track<T extends { owns(): boolean; finish(): void; beginPublication?(): void }>(request: T) {
       active = request;
+      publishing = undefined;
       onPending(true);
-      return { ...request, finish: () => {
+      return { ...request, beginPublication: () => {
+        // Nested story/foreground trackers share the publication boundary.
+        request.beginPublication?.();
+        if (active === request) publishing = request;
+      }, finish: () => {
         request.finish();
-        if (active === request) { active = undefined; onPending(false); }
+        if (active === request) { active = undefined; publishing = undefined; onPending(false); }
       } };
     },
-    cancel() { active = undefined; onPending(false); },
-    obsolete: () => Boolean(active && !(active.current?.() ?? active.owns())),
+    cancel() { active = undefined; publishing = undefined; onPending(false); },
+    obsolete: () => Boolean(active && publishing !== active && !(active.current?.() ?? active.owns())),
   };
+}
+
+/** A queued old flight arrival must not write history during newer preparation. */
+export function storyArrivalCanPublish(preparing: boolean, expected: object, current: object | undefined): boolean {
+  return !preparing && expected === current;
 }
 /** Story-owned preparation and history restoration must never masquerade as
  * an external story interruption (which also writes the old URL). */

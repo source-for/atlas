@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { completeForegroundSceneRequest, createForegroundSceneRequestOwner, createSceneGenerationFence, preparedSceneEntity, createForegroundRequestStatus, prepareForegroundWithRetry, beginForegroundPlaybackPreparation, beginForegroundCameraIntent } from './foregroundSceneRequest';
+import { completeForegroundSceneRequest, createForegroundSceneRequestOwner, createSceneGenerationFence, preparedSceneEntity, createForegroundRequestStatus, prepareForegroundWithRetry, beginForegroundPlaybackPreparation, beginForegroundCameraIntent, storyArrivalCanPublish } from './foregroundSceneRequest';
 import { runLevelSceneGesture, clearLevelScenePreparation } from './levelScenePreparation';
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
@@ -168,4 +168,58 @@ it('current genuine failure is reported once and releases foreground compilation
   const error = new Error('unavailable map'); const failure = vi.fn();
   await completeForegroundSceneRequest(request, async () => { throw error; }, vi.fn(), failure);
   expect(failure).toHaveBeenCalledWith(error); expect(owner.pending()).toBe(false);
+});
+
+it('nested preparation trackers permit owned React-like publication mutations until final cleanup', async () => {
+  const owner = createForegroundSceneRequestOwner();
+  const foreground = createForegroundRequestStatus(vi.fn());
+  const story = createForegroundRequestStatus(vi.fn());
+  const token = owner.begin();
+  let scene = 'old';
+  const generationFence = createSceneGenerationFence(() => 1);
+  const observations: Array<{ pending: boolean; foregroundObsolete: boolean; storyObsolete: boolean }> = [];
+  const request = story.track(foreground.track({ ...token, tokenCurrent: token.owns, generationFence,
+    current: () => token.owns() && scene === 'old', owns: () => token.owns() && scene === 'old' && generationFence.owns() }));
+  await completeForegroundSceneRequest({ ...request, owns: request.tokenCurrent },
+    () => prepareForegroundWithRetry(request, async () => 'new', 3, result => {
+      scene = result;
+      expect(request.current()).toBe(false); // Exact ownership fence is unchanged.
+      expect(foreground.obsolete()).toBe(false);
+      expect(story.obsolete()).toBe(false);
+      queueMicrotask(() => observations.push({ pending: owner.pending(), foregroundObsolete: foreground.obsolete(), storyObsolete: story.obsolete() }));
+    }), () => {}, error => { throw error; });
+  expect(observations).toEqual([{ pending: true, foregroundObsolete: false, storyObsolete: false }]);
+  expect(owner.pending()).toBe(false);
+  expect(foreground.obsolete()).toBe(false); expect(story.obsolete()).toBe(false);
+});
+
+it('publication status belongs only to its token and cannot shield a newer request from invalidation', () => {
+  const owner = createForegroundSceneRequestOwner(); const status = createForegroundRequestStatus(vi.fn());
+  let scene = 'old';
+  const token = owner.begin(); const old = status.track({ ...token, current: () => token.owns() && scene === 'old' });
+  old.beginPublication();
+  const nextToken = owner.begin(); const next = status.track({ ...nextToken, current: () => nextToken.owns() && scene === 'old' });
+  old.beginPublication(); scene = 'new';
+  expect(status.obsolete()).toBe(true);
+  old.finish(); expect(nextToken.owns()).toBe(true); expect(status.obsolete()).toBe(true);
+  next.finish(); expect(status.obsolete()).toBe(false);
+});
+
+it('publication callback failures retain token-owned failure reporting and release both trackers', async () => {
+  const owner = createForegroundSceneRequestOwner(); const foreground = createForegroundRequestStatus(vi.fn()); const story = createForegroundRequestStatus(vi.fn());
+  const token = owner.begin(); let scene = 'old';
+  const request = story.track(foreground.track({ ...token, tokenCurrent: token.owns, generationFence: createSceneGenerationFence(() => 1), current: () => token.owns() && scene === 'old' }));
+  const failure = vi.fn();
+  await completeForegroundSceneRequest({ ...request, owns: request.tokenCurrent },
+    () => prepareForegroundWithRetry(request, async () => 'prepared', 3, () => { scene = 'new'; throw new Error('bad publication'); }), () => {}, failure);
+  expect(failure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: 'bad publication' }));
+  expect(owner.pending()).toBe(false); expect(foreground.obsolete()).toBe(false); expect(story.obsolete()).toBe(false);
+});
+
+it('fences an old queued arrival during preparation or after flight replacement', () => {
+  const oldFlight = {}; const newFlight = {};
+  expect(storyArrivalCanPublish(true, oldFlight, oldFlight)).toBe(false);
+  expect(storyArrivalCanPublish(false, oldFlight, newFlight)).toBe(false);
+  expect(storyArrivalCanPublish(false, oldFlight, undefined)).toBe(false);
+  expect(storyArrivalCanPublish(false, oldFlight, oldFlight)).toBe(true);
 });

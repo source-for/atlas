@@ -55,7 +55,7 @@ import {
 } from './diagram/diagramWorkspace';
 import { ArchitectureBriefView } from './inspector/ArchitectureBriefView';
 import { ComponentImplementation, ContextualOverviewView } from './inspector/ContextualOverviewView';
-import { buildContextualOverview } from './inspector/contextualOverview';
+import { buildContextualOverview, contextualOverviewEntityId } from './inspector/contextualOverview';
 import { canonicalRelationshipGroupsForEntity } from './relations/canonicalRelationshipInventory';
 import { SemanticDiagramSurface } from './diagram/SemanticDiagramSurface';
 import { ImportMermaidDialog } from './diagram/ImportMermaidDialog';
@@ -71,7 +71,7 @@ import {
   type SemanticDetail,
 } from './navigation/navigationState';
 import { createGoldenC4Scene, goldenAppStory, scanDeeperBandHasPeerCards, scanDrillDeeperDetail, scanWindowedCompileDropsPeerGraph, scanZoomCompileHandoff, scanZoomEntityUnderPointer, scanZoomHandoffPreferredId, semanticBounds, type AppStoryPlan, type AppStoryPlanStep } from './renderer/goldenC4Scene';
-import { completeForegroundSceneRequest, createForegroundSceneRequestOwner, isSceneRequestAbort, createSceneGenerationFence, preparedSceneEntity, createPreparedSceneGenerations, createForegroundRequestStatus, prepareForegroundWithRetry, beginForegroundPlaybackPreparation, beginForegroundCameraIntent } from './renderer/foregroundSceneRequest';
+import { completeForegroundSceneRequest, createForegroundSceneRequestOwner, isSceneRequestAbort, createSceneGenerationFence, preparedSceneEntity, createPreparedSceneGenerations, createForegroundRequestStatus, prepareForegroundWithRetry, beginForegroundPlaybackPreparation, beginForegroundCameraIntent, storyArrivalCanPublish } from './renderer/foregroundSceneRequest';
 import { createSceneRequestOwner, ownsNeighborhoodSceneCache, ownsScenePublication, readNeighborhoodScene, retainNeighborhoodScene } from './renderer/sceneRequestOwner';
 import { cacheableNeighborhoodScene, scanCompileFocusForBand, scanEntityHasChildren, scanNextBand, scanPrefetchFocusIds } from './renderer/lazyBandCompile';
 import { getActiveScanFixture, scanKeepsResidentL3Landmarks } from './renderer/fixtureBundle';
@@ -1953,8 +1953,8 @@ export function App() {
   }), [activeSnapshot.entities, activeSnapshot.relations,
     scanFixture?.childCounts]);
   const contextualOverview = useMemo(
-    () => buildContextualOverview(activeSnapshot, explicitInspectorSelection ? selected.id : semanticLensCanonicalPathIds(semanticLensSession).at(-1) ?? navigationIdentity.rootEntityId),
-    [activeSnapshot.entities, activeSnapshot.relations, selected.id, explicitInspectorSelection, semanticLensSession, navigationIdentity.rootEntityId],
+    () => buildContextualOverview(activeSnapshot, contextualOverviewEntityId({ selectedId: selected.id, storyStep, explicitSelection: explicitInspectorSelection, lensEntityId: semanticLensCanonicalPathIds(semanticLensSession).at(-1), rootEntityId: navigationIdentity.rootEntityId })),
+    [activeSnapshot.entities, activeSnapshot.relations, selected.id, storyStep, explicitInspectorSelection, semanticLensSession, navigationIdentity.rootEntityId],
   );
   const activeDetail = semanticDetails[activeLevel];
   const activeDerivedScopeId = activeDiagramSurface.kind === 'main'
@@ -2592,6 +2592,7 @@ export function App() {
         }
         let restoredNavigation = next;
         try {
+          request?.beginPublication();
           activeLevelRef.current = restoredLevel;
           const validatedLensPath = validateRestoredSemanticLensPath(
             restoredScene,
@@ -5243,6 +5244,7 @@ export function App() {
       // The exact target camera and destination focus/filter/trace state must
       // commit in a rendered frame before the 150 ms arrival barrier starts.
       arrivalFrame = window.requestAnimationFrame(arrivalNow => {
+        if (!storyArrivalCanPublish(storyPreparationActiveRef.current, active, storyFlightRef.current)) return;
         arrivalStartedAtRef.current = arrivalNow;
         arrivalPlayAfterRef.current = active.playAfterArrival;
         pausedStoryPhaseRef.current = 'arrival';
