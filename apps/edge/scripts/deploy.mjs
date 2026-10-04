@@ -26,6 +26,7 @@ process.exit(runDeploy({
   readFile: path => readFileSync(path, 'utf8'),
   exists: existsSync,
   spawn: spawnSync,
+  sleep: milliseconds => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds),
   log: message => console.log(message),
   error: message => console.error(message),
 }));

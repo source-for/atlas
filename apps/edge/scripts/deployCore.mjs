@@ -40,6 +40,23 @@ export function deployBlockedReason(target, readSource) {
 export const ENVIRONMENTS = ['staging', 'production'];
 export const API_TOKEN = 'CLOUDFLARE_API_TOKEN';
 
+/** Keep command progress/errors visible while removing credentials before they reach logs. */
+function redactD1Output(value, secretEnv) {
+  let output = String(value ?? '');
+  // Replace literal and JSON-escaped environment secrets, including the ignored API token.
+  const secrets = Object.entries(secretEnv)
+    .filter(([name, value]) => value && /token|secret|password|credential|authorization|api[_-]?key/i.test(name))
+    .flatMap(([, value]) => [value, JSON.stringify(value).slice(1, -1)])
+    .sort((a, b) => b.length - a.length);
+  // Quoted values may contain escaped quotes or span lines. Consume the whole value first.
+  const credential = /((?:["']?(?:[\w-]*(?:token|secret|password|credential|api[_-]?key)[\w-]*|authorization)["']?)\s*[:=]\s*)("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[^\s,;}]+)/gi;
+  output = output.replace(credential, '$1[REDACTED]');
+  output = output.replace(/(\bauthorization\s*[:=]\s*)[^\r\n]+/gi, '$1[REDACTED]');
+  output = output.replace(/\bBearer\s+[^\s"',;}]+/gi, 'Bearer [REDACTED]');
+  for (const secret of secrets) output = output.split(secret).join('[REDACTED]');
+  return output;
+}
+
 /**
  * Deploy the edge Worker; returns the process exit code. Every side effect goes through `deps`, so a test
  * can prove what runs (and what never runs) for each target and flag.
@@ -50,7 +67,8 @@ export const API_TOKEN = 'CLOUDFLARE_API_TOKEN';
  *   repoRoot: string,
  *   readFile: (path: string) => string,
  *   exists: (path: string) => boolean,
- *   spawn: (command: string, args: string[], options: { cwd: string, env: Record<string, string | undefined>, stdio: unknown }) => { status: number | null },
+ *   spawn: (command: string, args: string[], options: { cwd: string, env: Record<string, string | undefined>, stdio: unknown }) => { status: number | null, stdout?: unknown, stderr?: unknown },
+ *   sleep: (milliseconds: number) => void,
  *   log: (message: string) => void,
  *   error: (message: string) => void,
  * }} deps  argv is process.argv (target at [2], extra wrangler args after it)
@@ -81,18 +99,44 @@ export function runDeploy(deps) {
     error('apps/web/dist is missing; run `pnpm build` first');
     return 1;
   }
-  // Accounts schema first (CLA-316): the new Worker must never run against an older USERS_DB schema.
-  // Already-applied migrations are skipped; any failure stops the deploy before `wrangler deploy`.
-  if (dryRun) log('--dry-run: skipping the remote USERS_DB migrations');
-  else log(`applying USERS_DB migrations to ${target} (remote D1)`);
-  const migrations = dryRun ? { status: 0 } : spawn('pnpm', ['exec', 'wrangler', 'd1', 'migrations', 'apply', 'USERS_DB', '--env', target, '--remote'], {
-    cwd: edgeDir,
-    env: { ...env, CI: 'true' },
-    stdio: ['ignore', 'inherit', 'inherit'],
-  });
-  if (migrations.status !== 0) {
-    error('USERS_DB migrations failed; not deploying. See docs/deploy/cloudflare-runbook.md (Sign-in).');
-    return migrations.status ?? 1;
+  // Classify raw D1 output internally; emit redacted progress and errors for every attempt.
+  const runD1 = (args, label) => {
+    const execute = () => {
+      const result = spawn('pnpm', ['exec', 'wrangler', 'd1', ...args, 'USERS_DB', '--env', target, '--remote',
+        ...(label === 'preflight' ? ['--command', 'SELECT 1'] : [])], {
+        cwd: edgeDir,
+        env: { ...env, CI: 'true' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const stdout = redactD1Output(result.stdout, deps.env);
+      const stderr = redactD1Output(result.stderr, deps.env);
+      if (stdout) log(stdout);
+      if (stderr) error(stderr);
+      return result;
+    };
+    let result = execute();
+    const output = `${String(result.stdout ?? '')}\n${String(result.stderr ?? '')}`;
+    if (result.status !== 0 && /\bcode["']?\s*[:=]?\s*7403\b/i.test(output)) {
+      log(`USERS_DB ${label} returned code 7403; waiting 5 seconds before one retry (OAuth refresh).`);
+      deps.sleep(5000);
+      result = execute();
+    }
+    return result.status ?? 1;
+  };
+  if (dryRun) log('--dry-run: skipping the remote USERS_DB preflight and migrations');
+  else {
+    log(`checking USERS_DB access on ${target} (remote D1; OAuth refresh)`);
+    const preflight = runD1(['execute'], 'preflight');
+    if (preflight !== 0) {
+      error('USERS_DB preflight failed; not deploying. Check your `wrangler login` session.');
+      return preflight;
+    }
+    log(`applying USERS_DB migrations to ${target} (remote D1)`);
+    const migrations = runD1(['migrations', 'apply'], 'migrations');
+    if (migrations !== 0) {
+      error('USERS_DB migrations failed; not deploying. See docs/deploy/cloudflare-runbook.md (Sign-in).');
+      return migrations;
+    }
   }
   log(`deploying sourcefor-atlas to ${target} (Worker + sleeping Node container; OAuth login, account from wrangler.jsonc)`);
   const result = spawn('pnpm', ['exec', 'wrangler', 'deploy', '--env', target, ...extraArgs], {

@@ -9,7 +9,7 @@ export type DeploySpawn = (
   command: string,
   args: string[],
   options: { cwd: string; env: Record<string, string | undefined>; stdio: unknown },
-) => { status: number | null };
+) => { status: number | null; stdout?: unknown; stderr?: unknown };
 export declare function runDeploy(deps: {
   argv: string[];
   env: Record<string, string | undefined>;
@@ -18,6 +18,7 @@ export declare function runDeploy(deps: {
   readFile: (path: string) => string;
   exists: (path: string) => boolean;
   spawn: DeploySpawn;
+  sleep: (milliseconds: number) => void;
   log: (message: string) => void;
   error: (message: string) => void;
 }): number;
