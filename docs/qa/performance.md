@@ -240,3 +240,6 @@ PR #182 has been replayed onto PR #181 `d91cfb6`, which keeps canonical inspecto
 
 
 PR #182 final story integration is based on PR #181 `1cb23ce`, preserving logical story selection for Overview content, token-owned publication status, and the nested arrival callback fence. Renderer attribution behavior is unchanged. Regeneration produces no additional generated changes; the adapter anchor advances one line relative to the parent without changing excerpt text. Deliberate combined evidence pin is `9636323e` (from `9d79f772`). Refreshed full gates and final browser checks remain pending; source and head are frozen while verification runs.
+
+
+PR #182 is replayed onto the combined lifecycle and round-two foreground review at `6cb5dac`. Renderer attribution code is unchanged from the preceding PR #182 head. Normal fixture regeneration retains only the adapter source anchor shift relative to the new parent and derives evidence pin `3f2196ac`. Refreshed full gates and final browser verification remain pending.
