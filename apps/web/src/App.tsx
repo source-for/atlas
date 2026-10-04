@@ -65,6 +65,7 @@ import { importMermaidToAtlas, type ImportedMermaidAtlas } from './diagram/impor
 import { createNavigationHistoryController, type NavigationHistoryController } from './navigation/historyController';
 import {
   canonicalNavigationState,
+  canonicalNavigationUrl,
   navigationStateFromUrl,
   serializeNavigationState,
   type NavigationDefaults,
@@ -2563,6 +2564,7 @@ export function App() {
     const controller = createNavigationHistoryController({
       get defaults() { return navigationDefaultsRef.current; },
       urlOptions: navigationUrlOptions,
+      deferEntityValidationOnRestore: scanFixture?.boot === 'neighborhood' && !importedAtlasRef.current,
       async restore(next, source) {
         const navigationDefaults = navigationDefaultsRef.current;
         const request = scanFixture && !importedAtlasRef.current
@@ -2578,18 +2580,24 @@ export function App() {
           : getLevel(next.camera.zoom);
         const restoredBaseDetail = semanticDetails[restoredLevel];
         let restoredScene: AtlasScene;
+        // Keep the bounded candidate intact across retries; residency is not entity validity.
+        const requestedNavigation = next;
         try {
           if (query.fixture === 'stress') {
             restoredScene = sceneRef.current;
-          } else if ((source === 'initialize' && scanFixture && next.rootEntityId === goldenScene.rootEntityId)) {
+          } else if (source === 'initialize' && scanFixture && next.rootEntityId === goldenScene.rootEntityId
+            && [next.rootEntityId, next.selectedId, ...(next.lensPath ?? [])].every(navigationUrlOptions.references.hasEntity)) {
             restoredScene = goldenScene;
           } else if (request) {
             restoredScene = await prepareForegroundWithRetry(request, async () => {
-              for (const id of new Set([next.rootEntityId, next.selectedId, ...(next.lensPath ?? [])])) {
+              for (const id of new Set([requestedNavigation.rootEntityId, requestedNavigation.selectedId, ...(requestedNavigation.lensPath ?? [])])) {
                 request.generationFence.allowChanges();
                 await request.fixture.ensureNeighborhood(id, request.signal);
                 requireForegroundSceneRequest(request);
               }
+              // Entity references read the live published array, including the neighborhoods above.
+              next = navigationStateFromUrl(canonicalNavigationUrl(requestedNavigation, window.location.href, navigationUrlOptions),
+                navigationDefaults, navigationUrlOptions).state;
               const compileFocus = next.lensPath?.at(-1) ?? next.selectedId ?? next.rootEntityId;
               const prepared = await composeScanSceneAsync(compileFocus, request.sourceScene, request.signal, undefined, [next.selectedId], request.generationFence);
               requireForegroundSceneRequest(request);

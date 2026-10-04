@@ -543,19 +543,19 @@ export const GOLDEN_SOURCE_EXCERPTS = {
     "path": "apps/web/src/navigation/historyController.ts",
     "symbol": "createNavigationHistoryController",
     "language": "typescript",
-    "startLine": 97,
-    "endLine": 102,
-    "highlightLine": 97,
+    "startLine": 100,
+    "endLine": 105,
+    "highlightLine": 100,
     "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
     "lines": [
       "export function createNavigationHistoryController(options: NavigationHistoryOptions): NavigationHistoryController {",
       "  const adapter = options.adapter ?? browserAdapter();",
-      "  void options.cameraCoalesceMs;",
-      "  let state = canonicalNavigationState({}, options.defaults);",
-      "  let settledEpoch = 0;",
-      "  let restoreGeneration = 0;"
+      "  const restoreUrlOptions = options.deferEntityValidationOnRestore",
+      "    ? { ...options.urlOptions, references: { ...options.urlOptions?.references, hasEntity: undefined } }",
+      "    : options.urlOptions;",
+      "  void options.cameraCoalesceMs;"
     ],
-    "text": "export function createNavigationHistoryController(options: NavigationHistoryOptions): NavigationHistoryController {\n  const adapter = options.adapter ?? browserAdapter();\n  void options.cameraCoalesceMs;\n  let state = canonicalNavigationState({}, options.defaults);\n  let settledEpoch = 0;\n  let restoreGeneration = 0;"
+    "text": "export function createNavigationHistoryController(options: NavigationHistoryOptions): NavigationHistoryController {\n  const adapter = options.adapter ?? browserAdapter();\n  const restoreUrlOptions = options.deferEntityValidationOnRestore\n    ? { ...options.urlOptions, references: { ...options.urlOptions?.references, hasEntity: undefined } }\n    : options.urlOptions;\n  void options.cameraCoalesceMs;"
   },
   "code:web-navigation:navigation-state": {
     "path": "apps/web/src/navigation/navigationState.ts",
@@ -651,9 +651,9 @@ export const GOLDEN_SOURCE_EXCERPTS = {
     "path": "apps/web/src/App.tsx",
     "symbol": "App",
     "language": "tsx",
-    "startLine": 1451,
-    "endLine": 1456,
-    "highlightLine": 1451,
+    "startLine": 1452,
+    "endLine": 1457,
+    "highlightLine": 1452,
     "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
     "lines": [
       "export function App() {",
@@ -669,9 +669,9 @@ export const GOLDEN_SOURCE_EXCERPTS = {
     "path": "apps/web/src/App.tsx",
     "symbol": "CanvasViewport",
     "language": "tsx",
-    "startLine": 6371,
-    "endLine": 6376,
-    "highlightLine": 6371,
+    "startLine": 6379,
+    "endLine": 6384,
+    "highlightLine": 6379,
     "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
     "lines": [
       "          <CanvasViewport",
