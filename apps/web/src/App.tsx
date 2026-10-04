@@ -1,6 +1,6 @@
 import { completeFixturePreparation } from './renderer/fixturePreparation';
 import { navigationEntityReference } from './navigation/entityReferences';
-import { prepareLoadedLevelScene, prepareLevelSceneWithDeadline, clearLevelScenePreparation, levelScenePreparationPending, runLevelSceneGesture, LEVEL_SCENE_PREPARING } from './renderer/levelScenePreparation';
+import { prepareLevelSceneWithDeadline, clearLevelScenePreparation, levelScenePreparationPending, runLevelSceneGesture, LEVEL_SCENE_PREPARING } from './renderer/levelScenePreparation';
 import { compileCurrentGeneration } from './renderer/compileCurrentGeneration';
 import { navigateResidentInspectorChild } from './inspector/residentInspectorChild';
 import { initialSceneBandsMatch } from './renderer/initialSceneCompatibility';
@@ -2584,6 +2584,7 @@ export function App() {
         }
         if (request && !request.owns()) {
           if (request.tokenCurrent()) { controller.cancelRestore(); setLiveMessage('This history entry changed while it was being prepared.'); }
+          if (navigationRestoreGenerationRef.current === restoreGeneration) restoringNavigationRef.current = false;
           request.finish(); return;
         }
         let restoredNavigation = next;
