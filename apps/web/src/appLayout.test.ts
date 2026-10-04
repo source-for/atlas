@@ -141,7 +141,11 @@ describe('view and edit interaction modes', () => {
     const viewportEnd = app.indexOf('function App()', viewportStart);
     const viewport = app.slice(viewportStart, viewportEnd);
 
-    expect(app).toContain('onCameraFlightCancel={cancelInspectorCameraFlight}');
+    expect(app).toContain('onCameraFlightCancel={handleDirectCameraInput}');
+    const directInput = app.slice(app.indexOf('function handleDirectCameraInput'), app.indexOf('function handleMapInteractionStart'));
+    expect(directInput).toContain('beginUserCameraIntent();');
+    expect(directInput).toContain('return cancelInspectorCameraFlight();');
+    expect(directInput).not.toContain('interruptStory');
     expect(app).toContain('const liveCamera = { ...renderedCameraRef.current };');
     expect(app).toContain('updateCamera(liveCamera);');
     expect(viewport.match(/onCameraFlightCancelRef\.current\(\)/g)).toHaveLength(3);

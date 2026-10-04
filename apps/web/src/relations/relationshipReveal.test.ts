@@ -1,8 +1,9 @@
 import { expect, it } from 'vitest';
 import type { AtlasScene, SceneEntity } from '../renderer/types';
 import { idleSemanticLensSession } from '../semantic/semanticLens';
-import { canonicalRelationForInspection, resolveRelationshipReveal } from './relationshipReveal';
+import { canonicalRelationForInspection, resolveRelationshipReveal, resolveRelationshipRevealAsync } from './relationshipReveal';
 import { canonicalRelationshipGroupsForEntity } from './canonicalRelationshipInventory';
+import { createPreparedSceneGenerations, createSceneGenerationFence } from '../renderer/foregroundSceneRequest';
 
 const snapshot = { entities: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }], relations: [{ id: 'r', from: 'a', to: 'b', kind: 'calls', evidence: [{ explanation: 'captured' }] }] } as never;
 const entity = (id: string, x: number): SceneEntity => ({ id, name: id, responsibility: '', kind: 'component', detail: 'component', x, y: 0, width: 100, height: 80 });
@@ -43,4 +44,58 @@ it('keeps calls and generic uses directional, recursive once, and deduplicates i
   const groups = canonicalRelationshipGroupsForEntity({ entities: [], relations } as never, scene, new Set(), 'a');
   expect(groups.map(group => group.label)).toEqual(['Calls', 'Used by', 'Recursive relationships']);
   expect(groups.flatMap(group => group.rows).map(row => row.direction)).toEqual(['outbound', 'inbound', 'recursive']);
+});
+
+it('async scope search preserves synchronous ordering and individual-over-aggregate preference', async () => {
+  const nestedSnapshot = { entities: [{ id: 'a', parentId: 'parent' }, { id: 'b', parentId: 'parent' }, { id: 'parent' }], relations: [{ id: 'r', from: 'a', to: 'b', kind: 'calls', evidence: [] }] } as never;
+  const aggregate = { ...scene, entities: [entity('ownerA', 0), entity('ownerB', 200)], relations: [{ ...scene.relations[0]!, id: 'aggregate', from: 'ownerA', to: 'ownerB', semanticIds: ['r'] }] };
+  const empty = { ...scene, relations: [], entities: [] };
+  const calls: string[] = [];
+  let active = 0;
+  const result = await resolveRelationshipRevealAsync({ ...input, snapshot: nestedSnapshot, scene: empty,
+    compileScope: async scope => {
+      expect(active++).toBe(0);
+      calls.push(scope); await Promise.resolve(); active--;
+      return scope === 'parent' ? scene : aggregate;
+    },
+  });
+  expect(calls).toEqual(['a', 'parent']);
+  const sync = resolveRelationshipReveal({ ...input, snapshot: nestedSnapshot, scene: empty, compileScope: scope => scope === 'parent' ? scene : aggregate });
+  expect(result).toEqual(sync);
+  expect(result).toMatchObject({ status: 'ready', representation: 'individual' });
+  const fallback = await resolveRelationshipRevealAsync({ ...input, snapshot: nestedSnapshot, scene: empty, compileScope: async () => aggregate });
+  expect(fallback).toMatchObject({ status: 'ready', representation: 'aggregate' });
+});
+it('aborts async scope search before inspecting a late compile or dispatching another scope', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  await expect(resolveRelationshipRevealAsync({ ...input, scene: { ...scene, relations: [] }, signal: controller.signal,
+    compileScope: async () => { calls++; controller.abort(); return scene; },
+  })).rejects.toMatchObject({ name: 'AbortError' });
+  expect(calls).toBe(1);
+});
+it('rejects an early aggregate fallback after later scope merges advance its snapshot', async () => {
+  let generation = 1;
+  const fence = createSceneGenerationFence(() => generation);
+  const candidates = createPreparedSceneGenerations<AtlasScene>(() => generation);
+  const aggregate = { ...scene, entities: [entity('ownerA', 0), entity('ownerB', 200)], relations: [{ ...scene.relations[0]!, id: 'aggregate', from: 'ownerA', to: 'ownerB', semanticIds: ['r'] }] };
+  candidates.record(aggregate);
+  const calls: string[] = [];
+  const prepared = await resolveRelationshipRevealAsync({ ...input, scene: aggregate,
+    compileScope: async scope => {
+      calls.push(scope);
+      generation++;
+      const empty = { ...scene, relations: [] };
+      candidates.record(empty);
+      fence.capture(generation);
+      return empty;
+    },
+  });
+  expect(calls).toEqual(['a', 'b']);
+  expect(prepared).toMatchObject({ status: 'ready', representation: 'aggregate' });
+  if (prepared.status !== 'ready') throw new Error('Expected aggregate fallback');
+  expect(prepared.scene).toBe(aggregate);
+  expect(fence.owns()).toBe(true); // Last compile alone would incorrectly permit publication.
+  fence.capture(candidates.generationOf(prepared.scene)!);
+  expect(fence.owns()).toBe(false);
 });

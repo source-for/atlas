@@ -1,6 +1,8 @@
+import { navigationEntityReference } from './entityReferences';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createNavigationHistoryController, type NavigationHistoryAdapter } from './historyController';
 import { canonicalNavigationState, canonicalNavigationUrl, type NavigationDefaults, type NavigationState } from './navigationState';
+import { beginForegroundPlaybackPreparation, createForegroundSceneRequestOwner } from '../renderer/foregroundSceneRequest';
 
 const defaults: NavigationDefaults = {
   repositoryId: 'repo:atlas',
@@ -201,4 +203,104 @@ describe('navigation history camera URL coalescing (CLA-326)', () => {
     expect(adapter.href).toContain('sel=entity%3Aorders');
     controller.dispose();
   });
+});
+
+it('cancelRestore prevents a late async restore from replacing the URL or committing state', async () => {
+  const adapter = fakeHistory('https://atlas.example/map?root=container%3Aapi&cx=200&cy=300&z=2');
+  let finish!: () => void;
+  const pending = new Promise<void>(resolve => { finish = resolve; });
+  const controller = createNavigationHistoryController({ defaults, adapter, restore: () => pending });
+  const startup = controller.start();
+  controller.cancelRestore();
+  finish(); await startup;
+  expect(adapter.replacements).toHaveLength(0);
+  expect(controller.current().rootEntityId).toBe(defaults.rootEntityId);
+  expect(adapter.href).toContain('root=container%3Aapi');
+  controller.dispose();
+});
+it('history restore pauses an active story without writing the old entry and commits corrected applied state', async () => {
+  const adapter = fakeHistory('https://atlas.example/map?root=container%3Aapi&sel=component%3Afile&lens=system%3Aatlas&lens=missing');
+  const commits = vi.fn(); let playing = true;
+  const controller = createNavigationHistoryController({ defaults, adapter, onCommit: commits,
+    restore: async next => {
+      beginForegroundPlaybackPreparation('restore', {
+        interrupt: () => controller.replace(state({})),
+        pauseWithoutHistory: () => { playing = false; }, preserveStory: () => {},
+      });
+      expect(adapter.replacements).toHaveLength(0);
+      await Promise.resolve();
+      return { ...next, lensPath: ['system:atlas'] };
+    },
+  });
+  await controller.start();
+  expect(playing).toBe(false);
+  expect(controller.current().rootEntityId).toBe('container:api');
+  expect(controller.current().lensPath).toEqual(['system:atlas']);
+  expect(adapter.href).not.toContain('missing'); expect(commits).toHaveBeenCalledOnce();
+  controller.dispose();
+});
+it('cancels an unapplied restore by token while an older restore cannot cancel a newer popstate', async () => {
+  const adapter = fakeHistory('https://atlas.example/map?root=container%3Afirst');
+  const owner = createForegroundSceneRequestOwner();
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const controller = createNavigationHistoryController({ defaults, adapter, restore: async () => {
+    const request = owner.begin();
+    await blocked;
+    if (request.owns()) controller.cancelRestore(); // Current token, even when full scene ownership was lost.
+    request.finish();
+  } });
+  const first = controller.start();
+  adapter.pop('https://atlas.example/map?root=container%3Asecond');
+  release(); await first; await Promise.resolve();
+  expect(controller.current().rootEntityId).toBe(defaults.rootEntityId);
+  expect(adapter.replacements).toHaveLength(0);
+  controller.dispose();
+});
+it('an obsolete restore never cancels the newer popstate that has already published', async () => {
+  const adapter = fakeHistory('https://atlas.example/map?root=container%3Afirst');
+  const owner = createForegroundSceneRequestOwner();
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  const controller = createNavigationHistoryController({ defaults, adapter, restore: async next => {
+    const token = owner.begin();
+    if (++calls === 1) {
+      await blocked;
+      if (token.owns()) controller.cancelRestore();
+    }
+    token.finish();
+    return next;
+  } });
+  const first = controller.start();
+  adapter.pop('https://atlas.example/map?root=container%3Asecond');
+  await Promise.resolve(); await Promise.resolve();
+  expect(controller.current().rootEntityId).toBe('container:second');
+  release(); await first;
+  expect(controller.current().rootEntityId).toBe('container:second');
+  expect(adapter.replacements).toHaveLength(1);
+  controller.dispose();
+});
+
+it('Back restores canonical published selection outside initial residency and sees later snapshot merges', async () => {
+  const root = 'system:atlas'; const component = 'component:apps-web-src-app-tsx';
+  const published = { entities: [{ id: root }, { id: component }] };
+  const hasEntity = navigationEntityReference({ rendered: { entities: [{ id: root }] }, published });
+  const adapter = fakeHistory('https://atlas.example/map?root=system%3Aatlas');
+  const restored: string[] = [];
+  const controller = createNavigationHistoryController({ defaults, adapter, urlOptions: { references: { hasEntity } },
+    restore: async next => { restored.push(next.selectedId); await Promise.resolve(); },
+  });
+  await controller.start();
+  adapter.pop(`https://atlas.example/map?root=${root}&sel=${component}&lens=${root}&lens=${component}`);
+  await Promise.resolve(); await Promise.resolve();
+  expect(restored.at(-1)).toBe(component);
+  expect(controller.current().selectedId).toBe(component);
+  expect(new URL(adapter.href).searchParams.get('sel')).toBe(component);
+  const merged = 'component:lazy-child'; published.entities.push({ id: merged });
+  adapter.pop(`https://atlas.example/map?root=${root}&sel=${merged}`);
+  await Promise.resolve(); await Promise.resolve();
+  expect(controller.current().selectedId).toBe(merged);
+  expect(new URL(adapter.href).searchParams.get('sel')).toBe(merged);
+  controller.dispose();
 });

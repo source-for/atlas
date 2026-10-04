@@ -34,6 +34,8 @@ export type NavigationHistoryController = {
   flush(state: NavigationState): void;
   /** Writes any deferred camera URL now (e.g. before reading location.href to share it). */
   flushUrl(): void;
+  /** Cancel a pending async restore without changing the current URL/state. */
+  cancelRestore(): void;
   dispose(): void;
 };
 
@@ -41,7 +43,7 @@ export type NavigationHistoryOptions = {
   defaults: NavigationDefaults;
   adapter?: NavigationHistoryAdapter;
   urlOptions?: NavigationUrlOptions;
-  restore(state: NavigationState, source: 'initialize' | 'popstate'): void | Promise<void>;
+  restore(state: NavigationState, source: 'initialize' | 'popstate'): NavigationState | void | Promise<NavigationState | void>;
   onCommit?(commit: NavigationCommit): void;
   cameraCoalesceMs?: number;
   /** Minimum spacing of camera-only URL replacements (default 200 ms); see `write`. */
@@ -193,11 +195,12 @@ export function createNavigationHistoryController(options: NavigationHistoryOpti
     // The pending camera URL belonged to the entry the user just left.
     cancelPendingReplace();
     const decoded = navigationStateFromUrl(adapter.getHref(), options.defaults, options.urlOptions);
-    await options.restore(decoded.state, source);
+    const restored = await options.restore(decoded.state, source);
     if (generation !== restoreGeneration) return state;
-    state = decoded.state;
-    adapter.replaceState(historyData(), decoded.canonicalUrl);
-    notify(source, decoded.canonicalUrl);
+    state = restored ?? decoded.state;
+    const canonicalUrl = canonicalNavigationUrl(state, adapter.getHref(), options.urlOptions);
+    adapter.replaceState(historyData(), canonicalUrl);
+    notify(source, canonicalUrl);
     return state;
   };
 
@@ -218,6 +221,7 @@ export function createNavigationHistoryController(options: NavigationHistoryOpti
       return state;
     },
     current: () => state,
+    cancelRestore() { restoreGeneration += 1; },
     push(next) {
       state = canonicalNavigationState(next, options.defaults);
       write('push', 'push');

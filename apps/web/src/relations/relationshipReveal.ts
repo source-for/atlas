@@ -27,9 +27,10 @@ export type RelationshipRevealResult = { status: 'ready'; scene: AtlasScene; ses
 /** Resolve a real retained route, trying guarded scoped compilation before reporting failure.
  * This plan contains no entity selection, inspector tab, expansion, or navigation mutation.
  */
-export function resolveRelationshipReveal(input: RevealInput): RelationshipRevealResult {
+function relationshipRevealSearch(input: Omit<RevealInput, 'compileScope'>) {
   const canonical = canonicalRelationForInspection(input.snapshot, input.relationId);
-  if (!canonical) return { status: 'unavailable', reason: 'This relationship was not captured in the snapshot.' };
+  if (!canonical) return { inspect: (_scene: AtlasScene) => undefined as Extract<RelationshipRevealResult, { status: 'ready' }> | undefined,
+    scopes: [] as string[], finish: (): RelationshipRevealResult => ({ status: 'unavailable', reason: 'This relationship was not captured in the snapshot.' }) };
   const details: SemanticDetail[] = ['code', 'component', 'container', 'context'];
   let aggregate: Extract<RelationshipRevealResult, { status: 'ready' }> | undefined;
   function inspect(scene: AtlasScene): Extract<RelationshipRevealResult, { status: 'ready' }> | undefined {
@@ -59,24 +60,55 @@ export function resolveRelationshipReveal(input: RevealInput): RelationshipRevea
     }
     return undefined;
   }
-  const resident = inspect(input.scene);
+  const byId = new Map(input.snapshot.entities.map(entity => [entity.id, entity]));
+  const scopes = new Set<string>();
+  for (const endpoint of [canonical.from, canonical.to]) {
+    let entity = byId.get(endpoint);
+    const visited = new Set<string>();
+    while (entity && !visited.has(entity.id)) {
+      visited.add(entity.id);
+      scopes.add(entity.id);
+      entity = entity.parentId ? byId.get(entity.parentId) : undefined;
+    }
+  }
+  return { inspect, scopes: [...scopes], finish: (): RelationshipRevealResult => aggregate
+    ?? { status: 'unavailable', reason: 'This relationship is captured, but no supported connecting route is available in its scoped maps. Its evidence remains available.' } };
+}
+
+export function resolveRelationshipReveal(input: RevealInput): RelationshipRevealResult {
+  const search = relationshipRevealSearch(input);
+  const resident = search.inspect(input.scene);
   if (resident) return resident;
   if (input.compileScope) {
-    const byId = new Map(input.snapshot.entities.map(entity => [entity.id, entity]));
-    const scopes = new Set<string>();
-    for (const endpoint of [canonical.from, canonical.to]) {
-      let entity = byId.get(endpoint);
-      const visited = new Set<string>();
-      while (entity && !visited.has(entity.id)) {
-        visited.add(entity.id);
-        scopes.add(entity.id);
-        entity = entity.parentId ? byId.get(entity.parentId) : undefined;
-      }
-    }
-    for (const scope of scopes) {
-      const result = inspect(input.compileScope(scope));
+    for (const scope of search.scopes) {
+      const result = search.inspect(input.compileScope(scope));
       if (result) return result;
     }
   }
-  return aggregate ?? { status: 'unavailable', reason: 'This relationship is captured, but no supported connecting route is available in its scoped maps. Its evidence remains available.' };
+  return search.finish();
+}
+
+/** Same deterministic scope search and aggregate fallback, with one bounded
+ * compile at a time. Callers retain publication ownership across each await. */
+export async function resolveRelationshipRevealAsync(input: Omit<RevealInput, 'compileScope'> & {
+  compileScope?: (focusId: string) => Promise<AtlasScene>;
+  signal?: AbortSignal;
+}): Promise<RelationshipRevealResult> {
+  const checkAbort = () => {
+    if (input.signal?.aborted) throw input.signal.reason ?? new DOMException('Aborted', 'AbortError');
+  };
+  checkAbort();
+  const search = relationshipRevealSearch(input);
+  const resident = search.inspect(input.scene);
+  if (resident) return resident;
+  if (input.compileScope) {
+    for (const scope of search.scopes) {
+      checkAbort();
+      const scene = await input.compileScope(scope);
+      checkAbort();
+      const result = search.inspect(scene);
+      if (result) return result;
+    }
+  }
+  return search.finish();
 }
