@@ -1462,9 +1462,10 @@ export function App() {
   const [importMermaidSource, setImportMermaidSource] = useState('');
   const [importMermaidError, setImportMermaidError] = useState<string>();
   const goldenScene = useMemo(() => activeCreateScene(scanFixture?.navigation.rootEntityId ?? 'system:okie'), []);
+  const [stressDefaultEntityId, setStressDefaultEntityId] = useState('stress-loading');
   const navigationDefaults = useMemo<NavigationDefaults>(() => {
     const identity = query.fixture === 'stress'
-      ? { repositoryId: 'repo:renderer-stress', snapshotId: `snapshot:stress:${query.seed}`, viewId: 'view:stress:overview', rootEntityId: 'stress-loading' }
+      ? { repositoryId: 'repo:renderer-stress', snapshotId: `snapshot:stress:${query.seed}`, viewId: 'view:stress:overview', rootEntityId: stressDefaultEntityId }
       : scanFixture?.navigation ?? { repositoryId: 'repo:okie-golden', snapshotId: 'snapshot:okie-golden-worktree-v1', viewId: 'view:okie-golden-hierarchy', rootEntityId: 'system:okie' };
     return {
       ...identity,
@@ -1474,9 +1475,12 @@ export function App() {
       minZoom: ATLAS_CAMERA_BOUNDS.minZoom,
       maxZoom: ATLAS_CAMERA_BOUNDS.maxZoom,
     };
-  }, [goldenScene, query.fixture, query.seed]);
+  }, [goldenScene, query.fixture, query.seed, stressDefaultEntityId]);
+  const stressNavigationSourceRef = useRef({ entities: [{ id: 'stress-loading' }] });
+  const initialNavigationHrefRef = useRef(window.location.href);
+  const stressBootNavigationSupersededRef = useRef(false);
   const navigationUrlOptions = useMemo(() => {
-    const hasEntity = navigationEntityReference({ rendered: goldenScene, published: scanFixture?.snapshot,
+    const hasEntity = navigationEntityReference({ rendered: query.fixture === 'stress' ? stressNavigationSourceRef.current : goldenScene, published: activeSnapshot,
       imported: importedAtlas?.snapshot, stress: query.fixture === 'stress' });
     return {
       preserveParams: preservedNavigationParams,
@@ -1488,7 +1492,7 @@ export function App() {
         hasRelationKind: isKnownRelationKind,
       },
     };
-  }, [goldenScene.entities, scanFixture, importedAtlas, navigationDefaults, query.fixture]);
+  }, [goldenScene.entities, activeSnapshot, scanFixture, importedAtlas, navigationDefaults, query.fixture]);
   const initialNavigation = useMemo(() => navigationStateFromUrl(
     window.location.href,
     navigationDefaults,
@@ -1586,7 +1590,7 @@ export function App() {
     previousReactCameraRef.current,
   );
   previousReactCameraRef.current = camera;
-  const [explicitInspectorSelection, setExplicitInspectorSelection] = useState(initialNavigation.selectedId !== initialNavigation.rootEntityId);
+  const [explicitInspectorSelection, setExplicitInspectorSelection] = useState(initialNavigation.selectedId !== initialNavigation.rootEntityId || initialNavigation.rootEntityId !== navigationDefaults.rootEntityId);
   const [selectedId, setSelectedId] = useState(initialNavigation.selectedId);
   const [pathDraft, setPathDraft] = useState<PathDraft | undefined>(() => pathDraftFromNavigation(initialNavigation.path));
   const pathDraftRef = useRef(pathDraft);
@@ -1761,9 +1765,15 @@ export function App() {
   const semanticRenderTopologyRef = useRef<{ key: string; scene: AtlasScene; projection: ProjectionOverride | undefined } | undefined>(undefined);
   const semanticLens = semanticLensSessionPresentationState(semanticLensSession);
 
-  // Canonical selection survives a guarded or paged scene. Read each render: enrichment
-  // merges mutate the published snapshot in place without changing its identity.
-  const selected = resolveInspectorEntity(activeSnapshot, scene.entities, selectedId);
+  // Keep published presentation stable during camera renders, while graph generations
+  // invalidate enrichment merged into the same canonical snapshot identity.
+  const selectedCanonical = activeSnapshot.entities.find(entity => entity.id === selectedId);
+  const selectedResident = scene.entities.find(entity => entity.id === selectedId)
+    ?? (selectedCanonical ? undefined : scene.entities[0]);
+  const publishedInspector = Boolean(scanFixture && !importedAtlas);
+  const selectedSceneGeneration = scanFixture?.getSceneGeneration();
+  const selected = useMemo(() => resolveInspectorEntity(activeSnapshot, scene.entities, selectedId, publishedInspector),
+    [selectedCanonical, selectedResident, selectedId, publishedInspector, selectedSceneGeneration]);
   useEffect(() => {
     if (foregroundRequestStatusRef.current.obsolete()) {
       setLiveMessage('This view changed while navigation was being prepared. Try again.');
@@ -2565,7 +2575,9 @@ export function App() {
         const restoredBaseDetail = semanticDetails[restoredLevel];
         let restoredScene: AtlasScene;
         try {
-          if (query.fixture === 'stress' || (source === 'initialize' && scanFixture && next.rootEntityId === goldenScene.rootEntityId)) {
+          if (query.fixture === 'stress') {
+            restoredScene = sceneRef.current;
+          } else if ((source === 'initialize' && scanFixture && next.rootEntityId === goldenScene.rootEntityId)) {
             restoredScene = goldenScene;
           } else if (request) {
             restoredScene = await prepareForegroundWithRetry(request, async () => {
@@ -2631,6 +2643,7 @@ export function App() {
           });
           if (query.fixture !== 'stress') { sceneRef.current = restoredScene; setScene(restoredScene); }
           setInspectorHistory([]);
+          setExplicitInspectorSelection(next.selectedId !== next.rootEntityId || next.rootEntityId !== navigationDefaults.rootEntityId);
           inspectorSelectionRef.current = next.selectedId;
           setSelectedId(next.selectedId);
           restorePathDraft(next, source);
@@ -2726,6 +2739,8 @@ export function App() {
       },
       onRestoreError(error) { setLiveMessage(scenePreparationFailureMessage(error, 'This history entry could not be applied.')); },
       onCommit(commit) {
+        if (query.fixture === 'stress' && stressNavigationSourceRef.current.entities[0]?.id === 'stress-loading'
+          && (commit.source === 'push' || commit.source === 'replace' || commit.source === 'popstate')) stressBootNavigationSupersededRef.current = true;
         setSettledNavigation(commit.state);
         setCameraSettledEpoch(commit.settledEpoch);
       },
@@ -2768,19 +2783,21 @@ export function App() {
     void loadStressFixture().then(stressScene => {
       if (!current) return;
       setScene(stressScene);
-      const requestedId = navigationRef.current.selectedId;
-      const nextSelectedId = stressScene.entities.some(entity => entity.id === requestedId)
-        ? requestedId
-        : stressScene.entities[0]?.id ?? 'stress-loading';
-      setSelectedId(nextSelectedId);
-      if (nextSelectedId !== requestedId) {
-        commitNavigation(canonicalNavigationState({
-          ...navigationRef.current,
-          selectedId: nextSelectedId,
-          rootEntityId: nextSelectedId,
-        }, navigationDefaults), 'replace');
-        setNavigationIdentity(current => ({ ...current, rootEntityId: nextSelectedId }));
-      }
+      stressNavigationSourceRef.current.entities = stressScene.entities;
+      const defaultId = stressScene.entities[0]?.id ?? 'stress-loading';
+      const loadedDefaults = { ...navigationDefaults, rootEntityId: defaultId, selectedId: defaultId };
+      setStressDefaultEntityId(defaultId);
+      const decoded = navigationStateFromUrl(stressBootNavigationSupersededRef.current ? window.location.href : initialNavigationHrefRef.current,
+        loadedDefaults, navigationUrlOptions).state;
+      const restoredBaseDetail = decoded.detail ?? semanticDetails[getLevel(decoded.camera.zoom)];
+      const validated = validateRestoredSemanticLensPath(stressScene, restoredBaseDetail, decoded.lensPath ?? [], decoded.camera.zoom);
+      const restored = canonicalNavigationState({ ...decoded, lensPath: validated.entries.map(entry => entry.targetId) }, loadedDefaults);
+      installSemanticSession({ baseDetail: restoredBaseDetail, settled: validated.entries, active: idleSemanticLens() });
+      updateCamera(restored.camera);
+      setSelectedId(restored.selectedId);
+      inspectorSelectionRef.current = restored.selectedId;
+      commitNavigation(restored, 'replace');
+      setNavigationIdentity(current => ({ ...current, rootEntityId: restored.rootEntityId }));
       setFixtureError(undefined);
       setLiveMessage('Deterministic 5,000 node and 15,000 relation stress fixture loaded.');
     }).catch(error => {

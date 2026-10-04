@@ -35,7 +35,13 @@ const snapshotFor = (payload: JobInput) => payload.kind === 'compile' ? payload.
  * Proven worker unavailability stays latched until reload; disposal never clears health. */
 export function createSceneWorkerHealth() {
   let broken = false;
-  return { unavailable: () => broken, markBroken: () => { broken = true; } };
+  let consecutiveFailures = 0;
+  return {
+    unavailable: () => broken,
+    markBroken: () => { broken = true; },
+    transientFailure: () => { if (++consecutiveFailures >= 3) broken = true; },
+    succeeded: () => { consecutiveFailures = 0; },
+  };
 }
 const browserSceneWorkerHealth = createSceneWorkerHealth();
 export function createSceneCompileSession(health = browserSceneWorkerHealth): SceneCompileSession {
@@ -77,12 +83,16 @@ export function createSceneCompileSession(health = browserSceneWorkerHealth): Sc
     let lastPhase: SceneWorkerProgress['phase'] | 'queued' = 'queued';
     const fail = (reason: SceneWorkerDiagnosticMetric = 'atlas-worker-response-error') => {
       if (active !== job) return;
-      // A slow or abandoned job is not evidence that the browser cannot run workers.
-      // Runtime/message faults may be transient; reset them and allow a fresh attempt.
+      // Response rejection can depend on the requested scene/scope rather than platform health.
+      // Reset that worker, but reserve the session retry cap for transport/runtime stalls.
       if (reason === 'atlas-worker-unavailable' || reason === 'atlas-worker-post-message-error') health.markBroken();
-      recordSceneWorkerDiagnostic(reason, startedAt);
-      // Fixed reason/phase and scalar elapsed time survive performance-ring eviction.
-      console.warn('Atlas worker preparation failed', { reason, phase: lastPhase, elapsedMs: Math.round(performance.now() - startedAt) });
+      else if (!job.abandoned && (reason === 'atlas-worker-timeout' || reason === 'atlas-worker-runtime-error' || reason === 'atlas-worker-message-error')) health.transientFailure();
+      // Abandoned work has no waiting user intent; its deadline only frees the worker.
+      if (!job.abandoned) {
+        recordSceneWorkerDiagnostic(reason, startedAt);
+        // Fixed reason/phase and scalar elapsed time survive performance-ring eviction.
+        console.warn('Atlas worker preparation failed', { reason, phase: lastPhase, elapsedMs: Math.round(performance.now() - startedAt) });
+      }
       clearTimeout(job.timer); active = undefined; reset(); settle(job); pump();
     };
     if (!worker) {
@@ -103,7 +113,7 @@ export function createSceneCompileSession(health = browserSceneWorkerHealth): Sc
       // The caller is gone, but worker retention still advances. Do not validate
       // an older guarded result against a snapshot that has since been merged.
       if (job.abandoned) {
-        if (!('operation' in result) && result.ok && result.scene) retainScene(job, result.scene);
+        if (!('operation' in result) && result.ok && result.scene) { health.succeeded(); retainScene(job, result.scene); }
         clearTimeout(job.timer); active = undefined; pump(); return;
       }
       if (job.payload.kind === 'initialize') {
@@ -118,6 +128,7 @@ export function createSceneCompileSession(health = browserSceneWorkerHealth): Sc
         // The worker retained the full validated snapshot, not its temporary L1 slice.
         workerGeneration = job.options.generation;
         workerSnapshot = job.payload.packet.snapshot;
+        health.succeeded();
         scenes.clear(); retainScene(job, result.scene);
         active = undefined; settle(job, { status: 'ready', scene: result.scene }); pump(); return;
       }
@@ -135,6 +146,7 @@ export function createSceneCompileSession(health = browserSceneWorkerHealth): Sc
       }
       if (!result.ok || !result.scene || !validScope) { fail(); return; }
       if (typeof result.durationMs === 'number') recordAtlasWorkerCompile(result.durationMs);
+      health.succeeded();
       retainScene(job, result.scene);
       clearTimeout(job.timer);
       active = undefined; settle(job, result.scene); pump();

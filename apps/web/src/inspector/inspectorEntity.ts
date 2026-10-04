@@ -5,10 +5,12 @@ import type { SceneEntity } from '../renderer/types';
 /** Inspection follows logical selection, independently of compiled residency.
  * Canonical presentation is never inserted into renderer geometry/projections.
  */
-export function resolveInspectorEntity(snapshot: ArchitectureSnapshot, residents: readonly SceneEntity[], selectedId: string): SceneEntity {
+export function resolveInspectorEntity(snapshot: ArchitectureSnapshot, residents: readonly SceneEntity[], selectedId: string, published = false): SceneEntity {
   const resident = residents.find(entity => entity.id === selectedId);
-  if (resident) return resident;
   const canonical = snapshot.entities.find(entity => entity.id === selectedId);
+  if (resident) return published && canonical
+    ? { ...entityForScene(canonical, {}), x: resident.x, y: resident.y, width: resident.width, height: resident.height }
+    : resident;
   return canonical ? entityForScene(canonical, {}) : residents[0]!;
 }
 

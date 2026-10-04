@@ -5,9 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import snapshot from '../../../../fixtures/architecture/demo-snapshot.json';
 import view from '../../../../fixtures/architecture/demo-view.json';
 import story from '../../../../fixtures/architecture/demo-story.json';
-import { compileScanFixture, type ScanFixture } from '../renderer/scanFixture';
+import { compileScanFixture, compileScanNeighborhoodFixture, type ScanFixture } from '../renderer/scanFixture';
 import { setActiveScanFixture } from '../renderer/fixtureBundle';
 import type { NavigationHistoryController } from './historyController';
+import { sliceArchitectureNeighborhood, type ArchitectureSnapshot, type ArchitectureView } from '@okie/architecture';
 import { canonicalNavigationUrl } from './navigationState';
 
 const captured = vi.hoisted(() => ({ controller: undefined as NavigationHistoryController | undefined }));
@@ -164,3 +165,99 @@ describe('mounted App story history restoration', () => {
     expect(captured.controller!.current().story?.step).toBe(1);
   });
 });
+
+ it('restores a golden container deep link without sel to its populated inspector', async () => {
+   await act(async () => root.unmount());
+   setActiveScanFixture(undefined);
+   const module = await import('../App'); module.refreshAppScanFixture();
+   window.history.replaceState(null, '', '/?fixture=okie&backend=canvas2d&root=container%3Aweb-app&detail=context&lens=system%3Aokie');
+   root = createRoot(host);
+   await act(async () => { root.render(<App/>); }); await settle();
+   expect(captured.controller!.current()).toMatchObject({ rootEntityId: 'container:web-app', selectedId: 'container:web-app' });
+   expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-selected-entity-id')).toBe('container:web-app');
+   expect(host.querySelector('#architecture-inspector h2')!.textContent).toContain('Atlas web app');
+   await act(async () => { host.querySelector<HTMLButtonElement>('#overview-tab')!.click(); });
+   expect(host.querySelector('[data-testid="inspector-overview"]')!.textContent!.length).toBeGreaterThan(40);
+ });
+
+ it('restores a published neighborhood container root without sel to its own overview', async () => {
+   await act(async () => root.unmount());
+   const graph = JSON.parse(JSON.stringify(snapshot).replaceAll('container:web-app', 'container:apps-web').replaceAll('Atlas web app', '@okie/web')) as ArchitectureSnapshot;
+   const graphView = structuredClone(view) as ArchitectureView;
+   const packet = structuredClone(sliceArchitectureNeighborhood(graph, graphView, { focusEntityId: graphView.rootEntityId }));
+   const container = graph.entities.find(entity => entity.id === 'container:apps-web')!;
+   const description = container.responsibility!;
+   expect(description).toBeTruthy();
+   const loadNeighborhood = vi.fn(async (focus: string) => {
+     const deepPacket = structuredClone(sliceArchitectureNeighborhood(graph, graphView, { focusEntityId: focus }));
+     // Partial deep packets omit prose already captured in the boot neighborhood.
+     delete deepPacket.snapshot.entities.find(entity => entity.id === container.id)!.responsibility;
+     return deepPacket;
+   });
+   const renamedStory = JSON.parse(JSON.stringify(story).replaceAll('container:web-app', 'container:apps-web'));
+   fixture = compileScanNeighborhoodFixture(packet, renamedStory, { loadNeighborhood, loadStory: async () => renamedStory, loadExcerpts: async () => undefined });
+   setActiveScanFixture(fixture);
+   const module = await import('../App'); module.refreshAppScanFixture();
+   window.history.replaceState(null, '', '/?fixture=scan&backend=canvas2d&root=container%3Aapps-web&detail=context&lens=system%3Aokie&z=7.95');
+   root = createRoot(host);
+   await act(async () => { root.render(<App/>); }); await settle();
+   await act(async () => { host.querySelector<HTMLButtonElement>('#overview-tab')!.click(); });
+   expect(captured.controller!.current()).toMatchObject({ rootEntityId: 'container:apps-web', selectedId: 'container:apps-web' });
+   expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-selected-entity-id')).toBe('container:apps-web');
+   expect(loadNeighborhood).toHaveBeenCalledWith('container:apps-web', expect.anything());
+   const overview = host.querySelector('[data-testid="inspector-overview"]')!;
+   expect(overview.querySelector('[data-contextual-overview]')!.getAttribute('data-contextual-overview')).toBe('container:apps-web');
+   expect(overview.querySelector('.overview-title')!.textContent).toBe('@okie/web');
+   expect(overview.querySelector('.overview-identity-meta .overview-chip')!.textContent).toBe('Container');
+   expect(overview.textContent).toContain(description);
+ });
+
+ it.each([false, true])('validates %s stress deep-link IDs against the loaded fixture', async unknown => {
+   await act(async () => root.unmount()); setActiveScanFixture(undefined);
+   const module = await import('../App'); module.refreshAppScanFixture();
+   const { loadStressFixture } = await import('../renderer/stressFixture');
+   const loaded = await loadStressFixture();
+   const rootId = loaded.entities[2]!.id;
+   const selectedId = loaded.entities[3]!.id;
+   const requestedRoot = unknown ? 'unknown-root' : rootId;
+   const requestedSelected = unknown ? 'unknown-selected' : selectedId;
+   window.history.replaceState(null, '', `/?fixture=stress&backend=canvas2d&root=${requestedRoot}&sel=${requestedSelected}&lens=${unknown ? 'unknown-lens' : rootId}`);
+   root = createRoot(host);
+   await act(async () => { root.render(<App/>); }); await settle();
+   const current = captured.controller!.current();
+   expect(current.rootEntityId).toBe(unknown ? loaded.entities[0]!.id : rootId);
+   expect(current.selectedId).toBe(unknown ? loaded.entities[0]!.id : selectedId);
+   expect(current.lensPath).toBeUndefined();
+   expect(window.location.search).not.toContain('unknown');
+ }, 15000);
+
+ it('does not replay the incoming stress link after newer navigation during loading', async () => {
+   await act(async () => root.unmount()); setActiveScanFixture(undefined);
+   const module = await import('../App'); module.refreshAppScanFixture();
+   const stress = await import('../renderer/stressFixture');
+   const loaded = await stress.loadStressFixture();
+   let release!: (scene: typeof loaded) => void;
+   vi.spyOn(stress, 'loadStressFixture').mockReturnValue(new Promise(done => { release = done; }));
+   window.history.replaceState(null, '', `/?fixture=stress&backend=canvas2d&root=${loaded.entities[2]!.id}&sel=${loaded.entities[3]!.id}`);
+   root = createRoot(host);
+   await act(async () => { root.render(<App/>); }); await settle();
+   await act(async () => { captured.controller!.push({ ...captured.controller!.current(), rootEntityId: 'stress-loading', selectedId: 'stress-loading' }); });
+   await act(async () => { release(loaded); }); await settle();
+   expect(captured.controller!.current().selectedId).toBe(loaded.entities[0]!.id);
+   expect(captured.controller!.current().selectedId).not.toBe(loaded.entities[3]!.id);
+ }, 15000);
+
+ it('uses loaded stress defaults for unknown and missing later history entries', async () => {
+   await act(async () => root.unmount()); setActiveScanFixture(undefined);
+   const module = await import('../App'); module.refreshAppScanFixture();
+   const stress = await import('../renderer/stressFixture'); const loaded = await stress.loadStressFixture();
+   window.history.replaceState(null, '', '/?fixture=stress&backend=canvas2d');
+   root = createRoot(host); await act(async () => { root.render(<App/>); }); await settle();
+   for (const query of ['', '&root=unknown-root&sel=unknown-selected&lens=unknown-lens']) {
+     await act(async () => { window.history.pushState(null, '', `/?fixture=stress&backend=canvas2d${query}`); window.dispatchEvent(new PopStateEvent('popstate')); }); await settle();
+     expect(captured.controller!.current()).toMatchObject({ rootEntityId: loaded.entities[0]!.id, selectedId: loaded.entities[0]!.id });
+     expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-selected-entity-id')).toBe(loaded.entities[0]!.id);
+     expect(window.location.search).not.toContain('stress-loading');
+     expect(window.location.search).not.toContain('unknown');
+   }
+ }, 15000);

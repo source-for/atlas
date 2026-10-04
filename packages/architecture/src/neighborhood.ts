@@ -353,20 +353,27 @@ export function excerptPacketForEntity(
 }
 
 function preferEntity(existing: ArchitectureEntity, incoming: ArchitectureEntity): ArchitectureEntity {
+  // Neighborhoods are partial records from the same pinned snapshot. Omitted
+  // enrichment is not a deletion; retain it while accepting fields supplied by
+  // the newer packet (including explicit empty arrays).
+  const merged = { ...existing, ...Object.fromEntries(Object.entries(incoming).filter(([, value]) => value !== undefined)) } as ArchitectureEntity;
   if (existing.sourceExcerpts?.length && !incoming.sourceExcerpts?.length) {
-    return { ...incoming, sourceExcerpts: existing.sourceExcerpts };
+    return { ...merged, sourceExcerpts: existing.sourceExcerpts };
   }
-  return incoming;
+  return merged;
 }
 
 /**
- * Union two neighborhood snapshots. Existing excerpts win when the incoming
- * packet stripped them. Order: base entities, then new ids in incoming order.
+ * Union partial neighborhoods of one pinned snapshot, retaining omitted
+ * enrichment and stripped excerpts. Order: base entities, then new incoming ids.
  */
 export function mergeArchitectureNeighborhoods(
   base: ArchitectureSnapshot,
   incoming: ArchitectureSnapshot,
 ): ArchitectureSnapshot {
+  if (base.id !== incoming.id || base.repositoryId !== incoming.repositoryId || base.commitSha !== incoming.commitSha) {
+    throw new Error("Cannot merge neighborhoods from different snapshots.");
+  }
   const entities = new Map<string, ArchitectureEntity>();
   for (const entity of base.entities) entities.set(entity.id, entity);
   for (const entity of incoming.entities) {

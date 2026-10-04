@@ -66,3 +66,19 @@ it('relationship scope changes retain only the actual authored resident and do n
   expect(next.entities).toHaveLength(1);
   expect(retainResidentInspectorEntity(retained, residents, inspected)).toBe(retained);
 });
+
+ it('reads canonical published enrichment while retaining resident geometry', () => {
+   const { snapshot, container, residents } = fixture();
+   const resident = { ...entityForScene(container, {}), x: 100, y: 200, width: 800, height: 500, responsibility: 'Old shallow prose', owners: ['old-owner'] };
+   residents.push(resident);
+   container.responsibility = 'Current accepted published prose';
+   container.owners = ['published-owner'];
+   const selected = resolveInspectorEntity(snapshot, residents, container.id, true);
+   expect(selected.responsibility).toBe('Current accepted published prose');
+   expect(selected.owners).toEqual(['published-owner']);
+   expect(selected).toMatchObject({ x: 100, y: 200, width: 800, height: 500 });
+   expect(inspectorEntityForFraming(residents, selected)).toBe(resident);
+   expect(resolveInspectorEntity(snapshot, residents, container.id)).toBe(resident);
+   container.owners = [];
+   expect(resolveInspectorEntity(snapshot, residents, container.id, true).owners).toBeUndefined();
+ });

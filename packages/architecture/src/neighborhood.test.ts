@@ -213,6 +213,33 @@ test("merge keeps already-loaded excerpts when the incoming packet stripped them
   assert.ok(again.entities.some(item => item.id === "container:c0"));
 });
 
+test("partial deep neighborhoods retain enriched overview fields and accept supplied updates", () => {
+  const snapshot = fatSnapshot();
+  const web = snapshot.entities.find(item => item.id === "container:c0")!;
+  web.responsibility = "Hosts the interactive atlas and its inspector.";
+  web.technology = ["React"];
+  web.owners = ["@atlas-ui"];
+  const partial = { ...snapshot, entities: [entity(web.id, web.kind, web.parentId)] };
+  const restored = mergeArchitectureNeighborhoods(snapshot, partial);
+  assert.equal(restored.entities.find(item => item.id === web.id)?.responsibility, web.responsibility);
+  assert.deepEqual(restored.entities.find(item => item.id === web.id)?.technology, ["React"]);
+  assert.deepEqual(restored.entities.find(item => item.id === web.id)?.owners, ["@atlas-ui"]);
+  const updated = mergeArchitectureNeighborhoods(restored, {
+    ...partial, entities: [{ ...partial.entities[0]!, responsibility: "Updated overview", technology: [] }],
+  });
+  assert.equal(updated.entities.find(item => item.id === web.id)?.responsibility, "Updated overview");
+  assert.deepEqual(updated.entities.find(item => item.id === web.id)?.technology, []);
+  assert.equal(web.responsibility, "Hosts the interactive atlas and its inspector.");
+});
+
+test("neighborhood enrichment cannot leak across snapshot identities", () => {
+  const base = fatSnapshot();
+  for (const identity of ["id", "repositoryId", "commitSha"] as const) {
+    assert.throws(() => mergeArchitectureNeighborhoods(base, { ...base, [identity]: "other" }),
+      /different snapshots/);
+  }
+});
+
 test("golden L1 neighborhood stays a handful and validates", async () => {
   const snapshot = await readJson<ArchitectureSnapshot>("architecture/demo-snapshot.json");
   const view = await readJson<ArchitectureView>("architecture/demo-view.json");
