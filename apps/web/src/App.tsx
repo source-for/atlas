@@ -1607,6 +1607,7 @@ export function App() {
   const storyStepRef = useRef(-1);
   const freezeStoryPlaybackRef = useRef<(camera: Camera) => { canonicalPhase: StoryCanonicalPhase; elapsed: number } | undefined>(() => undefined);
   const storyPreparationActiveRef = useRef(false);
+  const foregroundPreparationKindRef = useRef<'story-step' | 'history-restore' | 'navigation'>('navigation');
   const storyPreparationStatusRef = useRef(createForegroundRequestStatus(pending => { storyPreparationActiveRef.current = pending; setStoryPreparing(pending); }));
   const foregroundRequestStatusRef = useRef(createForegroundRequestStatus(setForegroundViewLoading));
   const foregroundSceneRequestRef = useRef(createForegroundSceneRequestOwner());
@@ -3720,7 +3721,7 @@ export function App() {
       interrupt: () => interruptStory(reason, reachedCamera),
       pauseWithoutHistory: () => {
         // Editing supersedes a prepared story destination without adopting camera intent.
-        if (storyPreparationActiveRef.current) cancelForegroundSceneRequest();
+        if (storyPreparationActiveRef.current && foregroundPreparationKindRef.current === 'story-step') cancelForegroundSceneRequest();
         pauseStoryWithoutHistory(reachedCamera);
         setStoryInterruption(reason);
       },
@@ -3730,6 +3731,7 @@ export function App() {
   function beginForegroundScanNavigation(reason: string, historyRestore = false, storyPreparation = false) {
     cancelGestureSceneRequests();
     cancelForegroundSceneRequest(!historyRestore);
+    foregroundPreparationKindRef.current = historyRestore ? 'history-restore' : storyPreparation ? 'story-step' : 'navigation';
     initialEnrichmentAbortRef.current?.abort();
     setInitialDetailLoading(false);
     inspectorNeighborhoodRequest.current.cancel();

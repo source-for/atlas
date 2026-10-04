@@ -152,9 +152,9 @@ it('an abandoned active selected job keeps its timeout and cannot starve the new
   expect(old.terminate).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(20_000);
   expect(old.terminate).toHaveBeenCalledOnce();
-  expect(WorkerStub.latest).toBe(old);
-  old.reply();
-  expect(await latest).toBeUndefined(); await rejection; session.dispose();
+  expect(WorkerStub.latest).not.toBe(old);
+  old.reply(); const scene = WorkerStub.latest.reply();
+  expect(await latest).toBe(scene); await rejection; session.dispose();
 });
 
 it('accepts the real compiler guard fallback above 2000 entities across structured clones', async () => {
@@ -367,14 +367,14 @@ it('records worker progress and timeout without settling early or exposing paylo
   } finally { unsubscribe(); session.dispose(); }
 });
 
-it('latches actual worker failure across sessions and disposal sharing browser health', async () => {
-  vi.stubGlobal('Worker', WorkerStub);
+it('latches a postMessage platform failure across sessions and disposal sharing browser health', async () => {
+  class BrokenWorker extends WorkerStub { postMessage = vi.fn(() => { throw new Error('transport unavailable'); }); }
+  vi.stubGlobal('Worker', BrokenWorker);
   const health = createSceneWorkerHealth();
   const first = createSceneCompileSession(health);
   expect(first.unavailable()).toBe(false);
   const pending = first.compile(input, { generation: 0 });
   const worker = WorkerStub.latest;
-  worker.onerror?.();
   expect(await pending).toBeUndefined(); first.dispose();
   const next = createSceneCompileSession(health);
   expect(first.unavailable()).toBe(true);
@@ -396,4 +396,40 @@ it('request-specific rejected scope does not disable later worker sessions', asy
   const current = next.compile(input, { generation: 0 });
   const scene = WorkerStub.latest.reply();
   expect(await current).toBe(scene); next.dispose();
+});
+
+it('a non-abandoned timeout permits a successful retry on a fresh worker across session disposal', async () => {
+  vi.useFakeTimers(); vi.stubGlobal('Worker', WorkerStub);
+  const health = createSceneWorkerHealth();
+  const first = createSceneCompileSession(health);
+  const pending = first.compile(input, { generation: 0 });
+  const old = WorkerStub.latest;
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(await pending).toBeUndefined();
+  expect(old.terminate).toHaveBeenCalledOnce();
+  expect(first.unavailable()).toBe(false);
+  first.dispose();
+  const next = createSceneCompileSession(health);
+  const retry = next.compile(input, { generation: 4 });
+  const current = WorkerStub.latest;
+  expect(current).not.toBe(old);
+  expect(current.postMessage.mock.lastCall![0].graph).toBeDefined();
+  old.reply(); const scene = current.reply();
+  expect(await retry).toBe(scene);
+  next.dispose();
+});
+it.each(['onerror', 'onmessageerror'] as const)('a transient %s resets the worker without disabling a fresh attempt', async event => {
+  vi.stubGlobal('Worker', WorkerStub);
+  const health = createSceneWorkerHealth();
+  const session = createSceneCompileSession(health);
+  const first = session.compile(input, { generation: 0 });
+  const old = WorkerStub.latest;
+  old[event]?.();
+  expect(await first).toBeUndefined();
+  expect(session.unavailable()).toBe(false);
+  const retry = session.compile(input, { generation: 0 });
+  const current = WorkerStub.latest;
+  expect(current).not.toBe(old);
+  const scene = current.reply(); expect(await retry).toBe(scene);
+  session.dispose();
 });

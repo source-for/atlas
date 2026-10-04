@@ -32,7 +32,7 @@ const snapshotFor = (payload: JobInput) => payload.kind === 'compile' ? payload.
  * undefined requests the caller's existing fallback. Superseded work rejects AbortError.
  */
 /** One browser module lifetime, shared by every fixture and compatibility session.
- * A failed worker stays unavailable until reload; disposal never clears health. */
+ * Proven worker unavailability stays latched until reload; disposal never clears health. */
 export function createSceneWorkerHealth() {
   let broken = false;
   return { unavailable: () => broken, markBroken: () => { broken = true; } };
@@ -77,7 +77,9 @@ export function createSceneCompileSession(health = browserSceneWorkerHealth): Sc
     let lastPhase: SceneWorkerProgress['phase'] | 'queued' = 'queued';
     const fail = (reason: SceneWorkerDiagnosticMetric = 'atlas-worker-response-error') => {
       if (active !== job) return;
-      if (reason !== 'atlas-worker-response-error') health.markBroken();
+      // A slow or abandoned job is not evidence that the browser cannot run workers.
+      // Runtime/message faults may be transient; reset them and allow a fresh attempt.
+      if (reason === 'atlas-worker-unavailable' || reason === 'atlas-worker-post-message-error') health.markBroken();
       recordSceneWorkerDiagnostic(reason, startedAt);
       // Fixed reason/phase and scalar elapsed time survive performance-ring eviction.
       console.warn('Atlas worker preparation failed', { reason, phase: lastPhase, elapsedMs: Math.round(performance.now() - startedAt) });

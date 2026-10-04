@@ -135,7 +135,7 @@ describe('scan fixture loader', () => {
       vi.stubGlobal('Worker', class { onmessage = null; onerror = null; postMessage() {} terminate() {} });
       const timedFixture = compileScanFixture(trio);
       const result = timedFixture.createSceneAsync(timedFixture.navigation.rootEntityId);
-      const rejection = expect(result).rejects.toThrow('Reload this page');
+      const rejection = expect(result).rejects.toThrow('Keep the current view and try again.');
       await vi.advanceTimersByTimeAsync(20_000);
       await rejection;
       timedFixture.disposeSceneWorker();

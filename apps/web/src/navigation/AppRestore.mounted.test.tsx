@@ -38,6 +38,7 @@ async function restore(step: number, positionMs = 0) {
 }
 function player() { return host.querySelector('[data-playback-state]')!; }
 beforeEach(async () => {
+  localStorage.clear();
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ mode: 'public', ask: false, connected: false }), { headers: { 'content-type': 'application/json' } }))); 
   // Frames are explicit: no elapsed story playback races during restore assertions.
@@ -107,6 +108,30 @@ describe('mounted App story history restoration', () => {
     expect(player().getAttribute('data-playback-state')).toBe('paused');
     expect(player().textContent).toContain('STEP 1 OF');
     expect(window.location.href).toBe(href);
+  });
+  it('lets a pending history restore publish after a relationship connection gesture starts', async () => {
+    await restore(0, 100000); await settle();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'D', code: 'KeyD', shiftKey: true, altKey: true, bubbles: true })); });
+    await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="interaction-mode-edit"]')!.click(); });
+    await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="authoring-tool-connect"]')!.click(); });
+    const port = host.querySelector<SVGCircleElement>('.authoring-connection-port')!;
+    expect(port).not.toBeNull();
+    let resolve!: () => void;
+    vi.spyOn(fixture, 'ensureNeighborhood').mockReturnValue(new Promise<void>(done => { resolve = done; }));
+    await restore(1);
+    const href = window.location.href;
+    expect(player().getAttribute('data-playback-state')).toBe('preparing');
+    const canvas = host.querySelector<HTMLElement>('[data-testid="atlas-canvas"]')!;
+    canvas.setPointerCapture = vi.fn();
+    await act(async () => { canvas.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, pointerType: 'mouse', clientX: Number(port.getAttribute('cx')), clientY: Number(port.getAttribute('cy')), bubbles: true })); });
+    expect(player().textContent).toContain('Created a relationship');
+    expect(player().getAttribute('data-playback-state')).toBe('preparing');
+    expect(window.location.href).toBe(href);
+    await act(async () => { resolve(); }); await settle();
+    expect(player().getAttribute('data-playback-state')).toBe('paused');
+    expect(player().textContent).toContain('STEP 2 OF');
+    expect(window.location.href).toBe(href);
+    expect(captured.controller!.current().story?.step).toBe(1);
   });
   it('does not publish an abandoned restore after a newer history entry settles', async () => {
     let resolve!: () => void;
