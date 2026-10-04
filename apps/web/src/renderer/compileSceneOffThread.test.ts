@@ -527,11 +527,12 @@ it('correlates worker clocks, main receipt/handling and post ACK after a job has
     const pending=session.compile(input,{generation:7});const worker=WorkerStub.latest;
     const request=worker.postMessage.mock.lastCall![0] as SceneCompileRequest;
     expect(request.diagnostics).toBe(true);
-    worker.onmessage!({data:{operation:'progress',id:request.id,generation:7,phase:'received',workerPhaseAt:100,clocks:{workerReceived:100,workerModuleReady:90,workerTimeOrigin:0,mainSendBefore:0}}});
+    worker.onmessage!({data:{operation:'progress',id:request.id,generation:7,phase:'received',workerPhaseAt:100,graphSize:{entities:5507,relations:13003,entityNames:['private']},clocks:{workerReceived:100,workerModuleReady:90,workerTimeOrigin:0,mainSendBefore:0}}});
     worker.reply();await pending;
     worker.onmessage!({data:{operation:'timing',id:request.id,generation:7,clocks:{workerResultPostBefore:200,workerResultPostAfter:220}}});
     const trace=recorder.report().workerJobs[0];
     expect(trace).toMatchObject({jobId:request.id,generation:7,outcome:'success',graphSent:true,workerFresh:true});
+    expect(trace.graphSize).toEqual({entities:5507,relations:13003});
     expect(trace.clocks.workerResultPostAfter).toBe(220);
     expect(trace.clocks.mainSendBefore).toBeGreaterThan(0);
     expect(trace.clocks.mainHandleEnd).toBeGreaterThanOrEqual(trace.clocks.mainResultHandled!);

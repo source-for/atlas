@@ -28,3 +28,18 @@ it('copies only fixed scalar job clocks and phase fields into exports',()=>{
   expect(recorder.report().workerJobs[0].phases).toEqual({received:{worker:10,mainReceive:20,mainHandleEnd:21}});
   expect(JSON.stringify(recorder.report())).not.toMatch(/private|secret|entityId|source|query/);
 });
+
+it('exports only independent safe integer graph cardinalities, not graph data or malformed counts',()=>{
+  const recorder=createPerformanceRecorder();const value=job(1);
+  Object.assign(value,{graphSize:{entities:5507,relations:13003,entityNames:['private']}});
+  recorder.recordWorkerJob(value);
+  expect(recorder.report().workerJobs[0].graphSize).toEqual({entities:5507,relations:13003});
+  value.graphSize!.entities=1;
+  const exported=recorder.report();exported.workerJobs[0].graphSize!.relations=1;
+  expect(recorder.report().workerJobs[0].graphSize).toEqual({entities:5507,relations:13003});
+  for(const [index,invalid]of [{entities:-1,relations:1},{entities:1.5,relations:1},{entities:NaN,relations:1},{entities:1,relations:Infinity},{entities:'1',relations:1},{entities:1},null].entries()){
+    const malformed=job(index+2);Object.assign(malformed,{graphSize:invalid});recorder.recordWorkerJob(malformed);
+  }
+  expect(recorder.report().workerJobs.slice(1).every(value=>value.graphSize===undefined)).toBe(true);
+  expect(JSON.stringify(recorder.report())).not.toContain('private');
+});

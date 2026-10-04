@@ -1,4 +1,4 @@
-import { sceneWorkerClock, sceneWorkerTimingEnabled, recordSceneWorkerJob, safeWorkerClocks, type SceneWorkerJobTiming } from '../performance/sceneWorkerTimings';
+import { sceneWorkerClock, sceneWorkerTimingEnabled, recordSceneWorkerJob, safeWorkerClocks, safeSceneGraphSize, type SceneWorkerJobTiming } from '../performance/sceneWorkerTimings';
 import { workerSceneOrigin } from './lazyBandCompile';
 import type { ArchitectureNeighborhoodPacket, ValidationIssue } from '@okie/architecture';
 import { measureAtlasAsyncPhase, measureAtlasPhase, recordAtlasWorkerCompile, recordAtlasWorkerPhase, recordSceneWorkerDiagnostic, type SceneWorkerDiagnosticMetric } from '../performance/loadTimings';
@@ -132,6 +132,7 @@ export function createSceneCompileSession(health = browserSceneWorkerHealth): Sc
       const trace = diagnosticJobs.get(resultTiming.id);
       const validTrace = trace?.generation === resultTiming.generation && trace.workerId === currentWorkerId ? trace : undefined;
       const receiptAt = validTrace ? sceneWorkerClock() : 0;
+      if (validTrace) { const graphSize = safeSceneGraphSize(resultTiming.graphSize); if (graphSize) validTrace.graphSize = graphSize; }
       if (validTrace && resultTiming.clocks) Object.assign(validTrace.clocks, safeWorkerClocks(resultTiming.clocks, 'worker'));
       if (validTrace && 'operation' in resultTiming && resultTiming.operation === 'progress' && typeof resultTiming.workerPhaseAt === 'number') {
         validTrace.phases[resultTiming.phase] = {worker:resultTiming.workerPhaseAt, mainReceive:receiptAt, mainHandleEnd:receiptAt};

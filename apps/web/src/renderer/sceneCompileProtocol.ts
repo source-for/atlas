@@ -1,4 +1,4 @@
-import type { WorkerClocks } from '../performance/sceneWorkerTimings';
+import type { WorkerClocks, SceneGraphSize } from '../performance/sceneWorkerTimings';
 import type { ArchitectureNeighborhoodPacket } from '@okie/architecture';
 import type { ScanSceneInput, ScanModeOptions } from './scanScene';
 import type { AtlasScene } from './types';
@@ -32,4 +32,4 @@ export type NeighborhoodInitializeResponse = { operation: 'initializeNeighborhoo
   & (NeighborhoodBootstrapResult | { status: 'failed' });
 export type SceneWorkerProgress = { operation: 'progress'; id: number; generation: number; workerPhaseAt?: number; phase: 'received' | 'compiling' | 'compiled' | 'root-slice' | 'projection' | 'layout' | 'adapter' };
 export type SceneWorkerTimingResponse = { operation: 'timing'; id: number; generation: number; clocks: WorkerClocks };
-export type SceneWorkerResponse = (SceneCompileResponse | NeighborhoodInitializeResponse | SceneWorkerProgress) & { clocks?: WorkerClocks } | SceneWorkerTimingResponse;
+export type SceneWorkerResponse = ((SceneCompileResponse | NeighborhoodInitializeResponse | SceneWorkerProgress) & { clocks?: WorkerClocks } | SceneWorkerTimingResponse) & { graphSize?: SceneGraphSize };

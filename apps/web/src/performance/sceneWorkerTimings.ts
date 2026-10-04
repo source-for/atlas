@@ -6,11 +6,19 @@ export type WorkerClocks = Partial<Record<WorkerClock, number>>;
 export const WORKER_PHASES = ['received', 'compiling', 'compiled', 'root-slice', 'projection', 'layout', 'adapter'] as const;
 export type WorkerPhase = typeof WORKER_PHASES[number];
 export type WorkerPhaseClocks = Partial<Record<WorkerPhase, { worker: number; mainReceive: number; mainHandleEnd: number }>>;
+/** Full retained worker input graph, not the projected/band-limited compiler slice. */
+export type SceneGraphSize = { entities: number; relations: number };
+export function safeSceneGraphSize(value: unknown): SceneGraphSize | undefined {
+  if (!value || typeof value !== 'object') return;
+  const {entities, relations} = value as Partial<SceneGraphSize>;
+  if (typeof entities === 'number' && Number.isSafeInteger(entities) && entities >= 0 && typeof relations === 'number' && Number.isSafeInteger(relations) && relations >= 0) return {entities, relations};
+}
 export type SceneWorkerJobTiming = {
   correlationId: number; sessionId: number; jobId: number; generation: number;
   workerId?: number; operation: 'compile' | 'initialize'; priority: 'selected' | 'speculative';
   outcome: 'pending' | 'success' | 'invalid' | 'error' | 'timeout' | 'cancelled';
   abandoned: boolean; graphSent: boolean; workerFresh: boolean;
+  graphSize?: SceneGraphSize;
   clocks: WorkerClocks; phases: WorkerPhaseClocks;
 };
 const listeners = new Set<(job: SceneWorkerJobTiming) => void>();
@@ -30,7 +38,8 @@ export function copySceneWorkerJob(value: SceneWorkerJobTiming): SceneWorkerJobT
     const times = value.phases[phase];
     if (times && [times.worker, times.mainReceive, times.mainHandleEnd].every(time => Number.isFinite(time) && time >= 0)) phases[phase] = { worker: times.worker, mainReceive: times.mainReceive, mainHandleEnd: times.mainHandleEnd };
   }
-  return { correlationId:value.correlationId, sessionId:value.sessionId, jobId:value.jobId, generation:value.generation,
+  const graphSize = safeSceneGraphSize(value.graphSize);
+  return { ...(graphSize ? {graphSize} : {}), correlationId:value.correlationId, sessionId:value.sessionId, jobId:value.jobId, generation:value.generation,
     ...(value.workerId === undefined ? {} : {workerId:value.workerId}), operation:value.operation, priority:value.priority, outcome:value.outcome,
     abandoned:value.abandoned, graphSent:value.graphSent, workerFresh:value.workerFresh, clocks:safeWorkerClocks(value.clocks), phases };
 }

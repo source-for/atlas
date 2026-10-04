@@ -1,4 +1,4 @@
-import { sceneWorkerClock, type WorkerClocks } from '../performance/sceneWorkerTimings';
+import { sceneWorkerClock, safeSceneGraphSize, type SceneGraphSize, type WorkerClocks } from '../performance/sceneWorkerTimings';
 import { compileScanScene } from './scanScene';
 import type { AtlasScene } from './types';
 import type { SceneWorkerRequest, SceneWorkerResponse, SceneCompileRequest, SceneWorkerProgress } from './sceneCompileProtocol';
@@ -17,15 +17,17 @@ const retainScene = (id: number, scene: AtlasScene) => {
 worker.onmessage = event => {
   const request = event.data;
   const clocks: WorkerClocks | undefined = request.diagnostics ? {workerTimeOrigin:performance.timeOrigin, workerModuleReady:moduleReady, workerReceived:sceneWorkerClock()} : undefined;
+  let graphSize: SceneGraphSize | undefined;
+  const retainedGraphSize = () => clocks ? safeSceneGraphSize({entities:graph?.snapshot.entities?.length, relations:graph?.snapshot.relations?.length}) : undefined;
   const mark = (key: keyof WorkerClocks) => { if (clocks) clocks[key] = sceneWorkerClock(); };
-  const progress = (phase: SceneWorkerProgress['phase']) => worker.postMessage({ operation: 'progress', id: request.id, generation: request.generation, phase, ...(clocks ? {clocks:{...clocks}, workerPhaseAt:sceneWorkerClock()} : {}) });
+  const progress = (phase: SceneWorkerProgress['phase']) => worker.postMessage({ operation: 'progress', id: request.id, generation: request.generation, phase, ...(graphSize ? {graphSize} : {}), ...(clocks ? {clocks:{...clocks}, workerPhaseAt:sceneWorkerClock()} : {}) });
   const postResult = (response: SceneWorkerResponse) => {
     mark('workerResultPostBefore');
-    worker.postMessage({...response, ...(clocks ? {clocks:{...clocks}} : {})});
+    worker.postMessage({...response, ...(graphSize ? {graphSize} : {}), ...(clocks ? {clocks:{...clocks}} : {})});
     if (clocks) {
       mark('workerResultPostAfter');
       // The scalar ACK measures return from the result clone/post call; no extra message without diagnostics.
-      try { worker.postMessage({operation:'timing', id:request.id, generation:request.generation, clocks:{...clocks}}); } catch { /* diagnostics must not turn a successful result into failure */ }
+      try { worker.postMessage({operation:'timing', id:request.id, generation:request.generation, clocks:{...clocks}, ...(graphSize ? {graphSize} : {})}); } catch { /* diagnostics must not turn a successful result into failure */ }
     }
   };
   progress('received');
@@ -37,6 +39,7 @@ worker.onmessage = event => {
       if (result.status === 'ready') {
         graph = { snapshot: request.packet.snapshot, view: request.packet.view, childCounts: request.packet.childCounts, unpublishedChildren: request.packet.unpublishedChildren ?? [] };
         generation = request.generation;
+        graphSize = retainedGraphSize();
         graphInstalledAt = clocks ? sceneWorkerClock() : undefined;
         if (clocks) clocks.workerGraphInstalled = graphInstalledAt;
         retainScene(request.id, result.scene);
@@ -56,6 +59,7 @@ worker.onmessage = event => {
       scenes.clear();
     }
     if (!graph || generation !== request.generation) throw new Error('Missing graph generation');
+    graphSize = retainedGraphSize();
     if (clocks) clocks.workerGraphInstalled = graphInstalledAt;
     const previous = request.previousId === undefined ? request.input.previous : scenes.get(request.previousId);
     if (request.previousId !== undefined && !previous) throw new Error('Missing previous scene');

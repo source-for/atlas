@@ -22,13 +22,55 @@ The standalone `pnpm perf:workers` driver uses installed headed Chrome with a fr
 
 Only published read flows are exercised. CDP blocks known Ask/operator/model endpoints, and unexpected non-read application requests invalidate a row. Production/staging retain remote network and server-cache variance; local loopback origins can use the existing pinned server. Reports record hardware, browser, OS, source/dirty state, public snapshot and deployed asset fingerprints. Production builds without the new worker records are explicitly marked uninstrumented. Older deployed builds use drawn residency as a usability surrogate; newer builds require visible entities. Those two usable contracts must not be compared as identical metrics. The first N20 reproduction attempt is evidence, not a performance budget or proof that an intermittent stall cannot recur. Raw reports and traces stay outside the repository.
 
+### Formal reproduction results (2026-10-05)
+
+These are read-only published-atlas journeys against public snapshot `9831775f5bbe`, alternating the web container deep link and the full App lens link, followed by published story step 3 paused with matching populated inspection. Production used clean harness source `4b337bc`, deployed asset `index-CnWTbfbi.js`, and 20 successful unmeasured warm primes. Staging used deployed asset `index-QUWLys4R.js`; the original native matrix used clean harness source `77ad782`, and the separately retained replacement batch used clean `b674f01`. Replacement runs supplement the original failures; they do not erase them or represent a new full N20 matrix.
+
+Hardware was Apple M1 Pro, 10 logical CPUs, 32 GiB RAM, macOS/Darwin 25.3.0, installed headed Chrome 154.0.8037.95. Production used the isolated driver at 1440×1000, DPR 1; staging used the existing native profile at 1270×969, DPR 2. Native main-target CPU rate was reported as 1; worker-target rate was unverified. Network/server caches and other native-profile activity remained uncontrolled. Native post-navigation probe and polling limitations described above apply. Production is uninstrumented for correlated worker records and uses the older drawn-residency usability surrogate; staging uses renderer-visible entities. These conditions and contracts prevent treating their usable times as a matched before/after comparison.
+
+All times below are milliseconds, rounded to one decimal. `usableMs` is an observed polling upper bound, including tool/poll delay in the native adapter. Percentiles use only valid complete journeys; failures remain in attempt accounting and in the available worker phase evidence. A refused warm call did not navigate, so it has no usable measurement and is not an uninstrumented page load.
+
+| Environment / batch | Cache | Calls attempted | Actual journeys | Valid | Invalid calls | Uninstrumented journeys | Usable poll p50 | Usable poll p95 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Production isolated N20 | Cold | 20 | 20 | 20 | 0 | 20 | 2543.6 | 3179.7 |
+| Production isolated N20 | Warm | 20 | 20 | 20 | 0 | 20 | 1780.4 | 2542.6 |
+| Staging native original N20 | Cold | 20 | 20 | 19 | 1 | 0 | 11139.1 | 18993.0 |
+| Staging native original N20 | Warm | 21 | 20 | 18 | 3 | 0 | 10884.4 | 20300.1 |
+| Staging native replacements | Cold | 2 | 2 | 1 | 1 | 0 | 9972.4 | 9972.4 |
+| Staging native replacements | Warm | 2 | 2 | 2 | 0 | 0 | 7212.2 | 10285.5 |
+| Staging native combined | Cold | 22 | 22 | 20 | 2 | 0 | 10989.0 | 17926.5 |
+| Staging native combined | Warm | 23 | 22 | 20 | 3 | 0 | 10851.2 | 13797.4 |
+
+Original staging invalid calls were: warm web repetition 3 refused at cache policy after an unsuccessful prime; warm web repetition 5 exceeded the journey deadline at story-paused; warm web repetition 7 and cold web repetition 11 completed but had bounded capture overflow/truncated CDP evidence. Original warm priming failures were web repetition 3 (story-paused deadline) and web repetition 15 (capture overflow/truncation). These primes are separate from measured attempts. The replacement batch had two successful primes and one invalid cold App journey: deep navigation was usable at 10893.1 ms, but story launch exceeded the journey deadline. Its three worker records were two successes and one cancellation, with no worker timeout. A journey deadline failure is not evidence of a 20-second worker timeout.
+
+The native phase table pools both scenarios, both cache conditions, and initialization/compile operations from all 44 actual measured journeys, including invalid executed journeys. It excludes unmeasured primes and the refused cache-policy row, whose seven retained diagnostics repeated the prior failed prime. There are 220 worker records: 176 success and 44 cancelled, with no error, invalid, pending, or timeout outcome. Cold contributed 108 records and warm 112. Missing or cross-clock-incoherent endpoints are unavailable and do not enter the phase's N. The summary was calculated with `workerAnalysis.mjs` over concatenated original/replacement rows filtered to exclude `stage === 'cache-policy'`.
+
+| Native measured worker phase, pooled operations/cache/scenarios | N | p50 | p95 | Max |
+|---|---:|---:|---:|---:|
+| Queue | 220 | 0.0 | 0.2 | 0.4 |
+| Fresh worker startup | 88 | 46.6 | 76.5 | 102.0 |
+| Request post | 220 | 0.1 | 26.5 | 194.7 |
+| Inbound residual | 171 | 148.0 | 378.0 | 648.5 |
+| Compiler wall time | 176 | 4165.3 | 8702.4 | 16365.4 |
+| Result post | 176 | 166.6 | 309.4 | 912.4 |
+| Delivery residual | 176 | 112.7 | 283.2 | 371.2 |
+| Result handled, excluding next-job pump | 176 | 0.1 | 0.4 | 4.7 |
+| Complete handler, including next-job pump | 176 | 0.1 | 0.4 | 4.7 |
+| Timeout overshoot | 0 | unavailable | unavailable | unavailable |
+
+No instrumented measured job timed out or reached 20 seconds from enqueue to terminal. Production's 40 uninstrumented journeys cannot certify the absence of a slow worker job. The 16.365-second compiler interval is a concrete lead: original native warm App repetition 4, selected deep-link job 3, worker 2, took 16.715 seconds overall. Queue was 0.0 ms, startup 47.4 ms, request post 23.3 ms, inbound residual 142.0 ms, result post 45.7 ms, delivery residual 114.3 ms, and result handling 0.2 ms. Compiler long-tail wall time near the existing 20-second worker budget is the working hypothesis to investigate. That interval includes descheduling and GC; it does not prove 16.365 seconds of CPU work, starvation, or a timeout cause. No other active/abandoned job overlap was observed for that interval. CPU traces are unavailable.
+
+[Every job over 5 seconds](./worker-timeouts.md) lists all 63 qualifying measured jobs, including five from invalid executed journeys, and four qualifying failed-prime jobs separately. Each row retains context, cache, operation, priority, clocks, abandonment and observed activity overlap. Historical per-job entity/relation/byte counts were not recorded; publication totals are context, not proof of a cloned graph size. The final instrumentation adds scalar retained-input entity/relation counts for future jobs, without reconstructing those historical counts or estimating clone bytes. Initialization reports the validated full graph retained after successful bootstrap, rather than its shallow first-view compile slice; an initialization stalled before installation may have no count. The original 20-second worker failure was not reproduced, so causal attribution remains **BLOCKED**. This is an instrumentation-only result with a compiler-tail lead; no mitigation, speed improvement, performance budget, or proof of non-recurrence is claimed.
+
+All four required gates passed for the staged source, with evidence pin `cbc6bdb7`. Browser QA verified local golden story step 3 actually paused with a populated inspector and real node selection, `/` and `/new`, staging own web overview after reload, full App selection/lenses after reload, and Back → pre-story App followed by Forward → paused published story with matching URL and populated inspector. Manual story rendering used functional Canvas 2D fallback; it is not a GPU-only assertion. Screenshots are release assets, not repository files: [golden paused step 3](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla385-local-golden-story.jpg), [web own overview](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla385-staging-web-overview.jpg), [full App reload](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla385-staging-full-app.jpg), [published step 3](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla385-staging-story3.jpg), and [Forward restore](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla385-staging-forward-story.jpg). Raw reports remain in `/tmp/cla385-production-n20.json`, `/tmp/cla385-staging-native-n20.json`, and `/tmp/cla385-staging-native-replacements.json`; no raw JSON, trace, or screenshot is committed.
+
 ## Enable recording
 
 Append `perf=1` to the page query before loading, for example `/?perf=1` or `/?fixture=stress&perf=1`. Alternatively press Shift+Alt+P to start or stop a session. Late activation cannot reconstruct the application bootstrap; reload with the query flag for that measurement. The panel appears outside the application root, including on `/new` and error pages.
 
 Choose **Export safe timing JSON** before **Stop recording**. Stopping discards the local session and removes observers, the frame loop and refresh timer. When a page enters the browser Back/Forward cache, collectors stop; an active session resumes on restoration, while a manually stopped session stays stopped. The query does not persist a preference. Recording is disabled by default and has no network endpoint or account synchronization.
 
-The export contains a schema version, capability states, dropped counts, at most 240 samples with fixed metric identifiers and numeric start/duration values, and at most 64 correlated worker-job summaries. Worker summaries contain local numeric job/session/worker counters, fixed operation/priority/outcome labels, boolean state and numeric timestamps. They do not collect resource URLs, entity IDs, event targets, question text, source excerpts, credentials or heap dumps. Review any separate DevTools trace before sharing: those traces can contain information excluded from this export.
+The export contains a schema version, capability states, dropped counts, at most 240 samples with fixed metric identifiers and numeric start/duration values, and at most 64 correlated worker-job summaries. Worker summaries contain local numeric job/session/worker counters, fixed operation/priority/outcome labels, boolean state, allowlisted numeric retained-graph entity/relation counts when available, and numeric timestamps. They do not collect resource URLs, entity IDs, event targets, question text, source excerpts, credentials or heap dumps. Review any separate DevTools trace before sharing: those traces can contain information excluded from this export.
 
 ## Interpret the measurements
 
