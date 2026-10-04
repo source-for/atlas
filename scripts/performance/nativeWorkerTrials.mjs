@@ -19,19 +19,19 @@ export async function createNativeWorkerTrialSession({tab,cdp,origin,runs=20,out
  output=resolve(output??`/tmp/cla385-native-${Date.now()}.json`);
  if(!output.startsWith('/tmp/')||!output.endsWith('.json'))throw new Error('Raw output must be a .json file under /tmp.');
  if(!Number.isFinite(deadlineMs)||deadlineMs<1000||deadlineMs>45000)throw new Error('One journey deadline must be1000–45000ms.');
- let scriptId,cursor,finished=false,busy=false;
+ let originalDevMode,cursor,finished=false,busy=false;
  const primed=new Set();
  const report={schemaVersion:1,smoke:runs<20,startedAt:new Date().toISOString(),environment:{
   commit:execFileSync('git',['rev-parse','HEAD'],{cwd:repoRoot,encoding:'utf8'}).trim(),dirty:execFileSync('git',['status','--porcelain'],{cwd:repoRoot,encoding:'utf8'}).trim(),origin,
   browserProfile:'Existing native Chrome profile and ordinary sign-in; no fresh context, no cookie/token reads or copies',headless:false,node:'browser-control runtime; Node version unavailable',
   os:`${platform()} ${release()} ${arch()}`,cpu:cpus()[0].model,logicalCpus:cpus().length,memoryBytes:totalmem(),freeMemoryBytes:freemem(),cpuThrottleRate,backend,
   cache:'Existing profile reused. Cold clears browser HTTP cache and disables cache throughout journey; warm enables cache, full prime, then new document. Browser/GPU/user state retained; cache clear affects shared profile cache. Cache disabling is target-scoped and restored to standard enabled policy.',
-  nativeBackgroundPolicy:'Existing native Chrome launch/profile settings inherited, not changed; tab brought to front per journey. Background processes and other user tabs uncontrolled.',
-  instrumentation:'perf=1 and temporary dev mode; pre-document bounded longtask/visibility observers; safe workerJobs JSON, no raw trace',
+  nativeBackgroundPolicy:'Existing native Chrome launch/profile settings inherited, not changed; caller keeps agent-owned tab foreground; adapter does not alter window/tab activation. Background processes and other user tabs uncontrolled.',
+  instrumentation:'perf=1 and temporary dev mode; app perf=1 collector preserves full bootstrap workerJobs; bounded post-navigation longtask/visibility observers. Buffered longtasks may recover earlier browser entries, but startup completeness and initial visibility are unavailable; no raw trace',
   network:origin.startsWith('https:')?'Live read-only published endpoints; remote cache/network variance retained':'Loopback pinned responses',
   usableMetric:'Matching populated inspector, projection/canvas and visible-entity diagnostics when available; older builds use partitionDrawn>0 residency surrogate, labeled per row',
   order:'Alternating web/App by repetition; cold then warm; explicit full prime before measured warm; story step3 paused after each load',
-  cleanup:'Remove pre-document script, disconnect injected observers, restore only prior okie.devMode value; cache enabled and owned-target request blocklist cleared. CPU is caller metadata only, never changed here. Root closes agent-owned tab.',
+  cleanup:'Disconnect current post-navigation observers, restore only prior okie.devMode value; cache enabled and owned-target request blocklist cleared. CPU is caller metadata only, never changed here. Root closes agent-owned tab.',
  },rows:[],primingFailures:[]};
  const save=async()=>{await mkdir(dirname(output),{recursive:true});await writeFile(output,`${JSON.stringify(report,null,2)}\n`);};
  const evaluate=async(expression,timeoutMs=3000)=>{
@@ -63,8 +63,7 @@ export async function createNativeWorkerTrialSession({tab,cdp,origin,runs=20,out
    waitMs=0;
   }while(true);
  };
- const script=`(()=>{if(location.origin!==${JSON.stringify(origin)})return;
- const original=localStorage.getItem('okie.devMode');window.__okieNativeOriginalDev=original;
+ const script=`(()=>{if(location.origin!==${JSON.stringify(origin)})throw new Error('Unexpected diagnostic origin');
  const observers=[];const OriginalPO=window.PerformanceObserver,OriginalMO=window.MutationObserver;
  try {if(OriginalPO)window.PerformanceObserver=class extends OriginalPO{constructor(...args){super(...args);observers.push(this);}};
  window.MutationObserver=class extends OriginalMO{constructor(...args){super(...args);observers.push(this);}};
@@ -72,19 +71,19 @@ export async function createNativeWorkerTrialSession({tab,cdp,origin,runs=20,out
  const transitions=window.__okieWorkerTrialVisibility=[{atMs:performance.now(),visible:document.visibilityState==='visible',focused:document.hasFocus()}];
  let dropped=0;const changed=()=>{if(transitions.length<200)transitions.push({atMs:performance.now(),visible:document.visibilityState==='visible',focused:document.hasFocus()});else dropped++;};
  for(const type of ['visibilitychange','focus','blur'])window.addEventListener(type,changed);
- const restore=()=>{if(original===null)localStorage.removeItem('okie.devMode');else localStorage.setItem('okie.devMode',original);};
- window.addEventListener('pagehide',restore,{once:true});
- window.__okieNativeCleanup=()=>{observers.forEach(observer=>observer.disconnect());for(const type of ['visibilitychange','focus','blur'])window.removeEventListener(type,changed);window.removeEventListener('pagehide',restore);restore();};
+ window.__okieNativeCleanup=()=>{observers.forEach(observer=>observer.disconnect());for(const type of ['visibilitychange','focus','blur'])window.removeEventListener(type,changed);};
  window.__okieNativeVisibilityDropped=()=>dropped;
+ return {installedAtMs:performance.now(),preDocument:false,initialVisibilityAvailable:false,startupLongTasksComplete:false,bufferedLongTasks:Boolean(PerformanceObserver.supportedEntryTypes.includes('longtask'))};
  })()`;
+ const restoreDevMode=()=>evaluate(`(()=>{if(location.origin!==${JSON.stringify(origin)})throw new Error('Unexpected cleanup origin');${originalDevMode===undefined?'':`const original=${JSON.stringify(originalDevMode)};if(original===null)localStorage.removeItem('okie.devMode');else localStorage.setItem('okie.devMode',original);`}})()`,2000);
  try{
   await cdp.send('Runtime.enable',{});await cdp.send('Network.enable',{});
   await cdp.send('Network.setBlockedURLs',{urls:['*://*/api/ask*','*://*/api/operator/*','https://openrouter.ai/*','https://api.openai.com/*','https://api.anthropic.com/*']});
-  scriptId=(await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:script})).identifier;
+  originalDevMode=await evaluate(`(()=>{if(location.origin!==${JSON.stringify(origin)})throw new Error('Expected already signed-in target origin');const original=localStorage.getItem('okie.devMode');localStorage.setItem('okie.devMode','1');return original;})()`);
   report.environment.browser=await cdp.send('Browser.getVersion',{}).then(value=>({product:value.product,jsVersion:value.jsVersion,protocolVersion:value.protocolVersion})).catch(()=>({unavailable:true}));
   await drain();
  }catch(error){
-  if(scriptId)await cdp.send('Page.removeScriptToEvaluateOnNewDocument',{identifier:scriptId}).catch(()=>{});
+  if(originalDevMode!==undefined)await restoreDevMode().catch(()=>{});
   await cdp.send('Network.setBlockedURLs',{urls:[]}).catch(()=>{});
   await cdp.send('Network.setCacheDisabled',{cacheDisabled:false}).catch(()=>{});
   throw error;
@@ -117,9 +116,8 @@ export async function createNativeWorkerTrialSession({tab,cdp,origin,runs=20,out
    if(cache==='cold'){primed.clear();await cdp.send('Network.clearBrowserCache',{});}
    await cdp.send('Network.setCacheDisabled',{cacheDisabled:cache==='cold'});
    if(cache==='warm'&&!prime&&!primed.has(key))throw new Error('Measured warm journey requires a successful explicit prime');
-   await cdp.send('Page.bringToFront',{});
    await bounded(tab.goto(`${origin}${paths[scenario]}&perf=1&backend=${backend}`),remaining());
-   await cdp.send('Page.bringToFront',{});
+   row.probeAvailability=await read(script);
    row.metrics.usableMs=await poll(`(()=>{const app=document.querySelector('[data-testid="atlas-app"]');let replay,navigation;try{replay=JSON.parse(app?.dataset.rendererReplayState??'{}');navigation=JSON.parse(app?.dataset.navigationState??'{}');}catch{return false;}if(Array.from(document.querySelectorAll('[role="status"]')).some(node=>/This history entry could not|Background scene preparation is unavailable|Reload this page/.test(node.textContent??'')))return{failure:'deep-history-preparation'};const loading=Boolean(document.querySelector('.map-heading [role="status"]'));const canvas=document.querySelector('[data-testid="atlas-canvas"] canvas');const drawn=app?.hasAttribute('data-renderer-visible-entities')?Number(app.dataset.rendererVisibleEntities)>0:replay.residency?.partitionDrawn>0;return !loading&&navigation.selectedId===${JSON.stringify(row.expected)}&&navigation.rootEntityId==='container:apps-web'&&Number(app?.dataset.cameraSettledEpoch)>0&&app?.dataset.selectedEntityId===${JSON.stringify(row.expected)}&&window.__okieBenchmark?.inspectorEntityId()===${JSON.stringify(row.expected)}&&Number(app.dataset.projectionEntityCount)>0&&drawn&&canvas?.width>0&&canvas?.height>0&&performance.now();})()`);
    row.initialBackend=row.backend=await read(`document.querySelector('[data-testid="renderer-status"]')?.dataset.activeBackend`);
    row.backendMismatch=row.backend!==backend;
@@ -135,7 +133,7 @@ export async function createNativeWorkerTrialSession({tab,cdp,origin,runs=20,out
    row.metrics.storyPausedMs=(await read('performance.now()'))-storyStart;
    row.afterStory=await read(`(${timingReport.toString()})()`);
   }catch(error){row.error=/^(Journey deadline exceeded|Diagnostic evaluation failed|Measured warm journey requires a successful explicit prime|Deep App lens path was rewritten|Deep history preparation failed)$/.test(error.message)?error.message:'Navigation or UI action failed (external details omitted)';
-   if(error.message==='Journey deadline exceeded')await cdp.send('Page.stopLoading',{}, {timeoutMs:2000}).catch(()=>{});
+   if(error.message==='Journey deadline exceeded')await evaluate('window.stop()',2000).catch(()=>{});
    row.lastDiagnostics=await evaluate(`(${timingReport.toString()})()`,2000).catch(()=>null);}
   finally{
    try{await drain({row});}catch{row.captureTruncated=true;}
@@ -156,7 +154,7 @@ export async function createNativeWorkerTrialSession({tab,cdp,origin,runs=20,out
   if(busy)throw new Error('Finish only after the current journey completes');
   if(finished)return report;
   finished=true;report.cleanupFailures=[];
-  for(const [name,work]of [['probe',()=>evaluate('window.__okieNativeCleanup?.()',2000)],['script',()=>cdp.send('Page.removeScriptToEvaluateOnNewDocument',{identifier:scriptId})],['cache',()=>cdp.send('Network.setCacheDisabled',{cacheDisabled:false})],['blockedRequests',()=>cdp.send('Network.setBlockedURLs',{urls:[]})]])try{await work();}catch{report.cleanupFailures.push(name);}
+  for(const [name,work]of [['probe',()=>evaluate('window.__okieNativeCleanup?.()',2000)],['devMode',restoreDevMode],['cache',()=>cdp.send('Network.setCacheDisabled',{cacheDisabled:false})],['blockedRequests',()=>cdp.send('Network.setBlockedURLs',{urls:[]})]])try{await work();}catch{report.cleanupFailures.push(name);}
   report.finishedAt=new Date().toISOString();report.summary=summarizeWorkerTrials(report);await save();return report;
  };
  const runPair=async repetition=>{const scenario=repetition%2?'web':'app';const cold=await runOne({scenario,cache:'cold',repetition});const prime=await runOne({scenario,cache:'warm',repetition,prime:true});const warm=await runOne({scenario,cache:'warm',repetition});return{cold,prime,warm};};
