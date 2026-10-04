@@ -1,9 +1,10 @@
+import { awaitAbortableWork } from '../abortableWork';
 import { compileCurrentGeneration } from './compileCurrentGeneration';
+import { initialNeighborhoodSlice, fullSceneWorkerGeneration, INITIAL_NEIGHBORHOOD_SLICE_MIN_ENTITIES } from './neighborhoodInitialScene';
 import { createSceneCompileSession, type SceneCompileSession } from './compileSceneOffThread';
 import { measureAtlasPhase, measureAtlasAsyncPhase } from '../performance/loadTimings';
 import {
   assignNeighborhoodSnapshot,
-  sliceArchitectureNeighborhood,
   c4BandForKind,
   isNeighborhoodPacket,
   mergeChildCounts,
@@ -78,7 +79,7 @@ export type ScanFixture = {
    *  Routed through the anti-hang guard, so no path can compile the whole graph. */
   getSceneGeneration: () => number;
   disposeSceneWorker: () => void;
-  prepareInitialScene: (signal?: AbortSignal) => Promise<void>;
+  prepareInitialScene: (signal?: AbortSignal, options?: { worker: false }) => Promise<void>;
   enrichInitialScene: (signal?: AbortSignal) => Promise<AtlasScene | undefined>;
   createSceneAsync: (focusEntityId: string, previous?: AtlasScene, residency?: ScanViewportResidency, signal?: AbortSignal) => Promise<AtlasScene>;
   createScene: (focusEntityId: string, previous?: AtlasScene, residency?: ScanViewportResidency) => AtlasScene;
@@ -172,6 +173,7 @@ function buildLiveScanFixture(
     host?: ScanNeighborhoodHost;
     loadedFocusIds?: Set<string>;
     stories?: AppStoryPlan[];
+    initialized?: { scene: AtlasScene; worker: SceneCompileSession };
   },
 ): ScanFixture {
   const childCounts = extras.childCounts;
@@ -195,24 +197,29 @@ function buildLiveScanFixture(
     return fetchedDeeperThanRoot || !snapshotHasContextPeers();
   };
 
-  let initialScene: AtlasScene | undefined;
+  let initialScene: AtlasScene | undefined = extras.initialized?.scene;
   let snapshotGeneration = 0;
-  let sceneWorker: SceneCompileSession | undefined;
+  let sceneWorker: SceneCompileSession | undefined = extras.initialized?.worker;
   const workerSession = () => sceneWorker ??= createSceneCompileSession();
   // Even generations identify full graphs; the preceding odd generation is
   // reserved for a bootstrap slice. A snapshot merge advances both identities.
-  const fullWorkerGeneration = () => snapshotGeneration * 2 + 2;
+  const fullWorkerGeneration = () => fullSceneWorkerGeneration(snapshotGeneration);
+  let sceneWorkerLifetime = 0;
   const disposeSceneWorker = () => {
+    sceneWorkerLifetime++;
+    inflight.clear();
     sceneWorker?.dispose();
     sceneWorker = undefined;
   };
-  const prepareInitialScene = async (signal?: AbortSignal) => {
+  const prepareInitialScene = async (signal?: AbortSignal, preparation?: { worker: false }) => {
+    if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+    if (initialScene) return;
     const generation = snapshotGeneration;
-    const first = extras.boot === 'neighborhood' && snapshot.entities.length > 128
-      ? measureAtlasPhase('atlas-slice', () => sliceArchitectureNeighborhood(snapshot, view, { focusEntityId: view.rootEntityId, maxBand: 'container' }))
+    const first = extras.boot === 'neighborhood' && snapshot.entities.length > INITIAL_NEIGHBORHOOD_SLICE_MIN_ENTITIES
+      ? measureAtlasPhase('atlas-slice', () => initialNeighborhoodSlice(snapshot, view))
       : undefined;
     const input = { snapshot: first?.snapshot ?? snapshot, view: first?.view ?? view, focusEntityId: view.rootEntityId, boot: extras.boot, modeOptions: options, childCounts, unpublishedChildren: first?.unpublishedChildren ?? unpublishedChildren };
-    const prepared = await measureAtlasAsyncPhase('atlas-worker-round-trip', () => workerSession().compile(input, { generation: fullWorkerGeneration() - (first ? 1 : 0), signal }));
+    const prepared = preparation?.worker === false ? undefined : await measureAtlasAsyncPhase('atlas-worker-round-trip', () => workerSession().compile(input, { generation: fullWorkerGeneration() - (first ? 1 : 0), signal }));
     if (generation === snapshotGeneration) initialScene = prepared ?? measureAtlasPhase('atlas-compile', () => compileScanScene(input));
   };
   let enrichment: Promise<AtlasScene | undefined> | undefined;
@@ -286,8 +293,10 @@ function buildLiveScanFixture(
       await pending;
       return;
     }
+    const lifetime = sceneWorkerLifetime;
     const work = (async () => {
       const packet = await host.loadNeighborhood(focus);
+      if (lifetime !== sceneWorkerLifetime) throw new DOMException('Fixture preparation cancelled', 'AbortError');
       const packetIssues = measureAtlasPhase('atlas-validate', () => validateNeighborhoodPacket(packet));
       if (packetIssues.length) throw new ScanFixtureError(packetIssues);
       snapshotGeneration++;
@@ -328,7 +337,7 @@ function buildLiveScanFixture(
     try {
       await work;
     } finally {
-      inflight.delete(focus);
+      if (inflight.get(focus) === work) inflight.delete(focus);
     }
   };
 
@@ -336,7 +345,9 @@ function buildLiveScanFixture(
     const existing = snapshot.entities.find(entity => entity.id === entityId);
     if (existing?.sourceExcerpts?.length) return existing.sourceExcerpts;
     if (!host) return existing?.sourceExcerpts;
+    const lifetime = sceneWorkerLifetime;
     const excerpts = await host.loadExcerpts(entityId);
+    if (lifetime !== sceneWorkerLifetime) throw new DOMException('Fixture preparation cancelled', 'AbortError');
     if (excerpts?.length && existing) {
       existing.sourceExcerpts = excerpts;
       // Worker graphs include evidence, not only drawable geometry.
@@ -448,6 +459,18 @@ export function compileScanNeighborhoodFixture(
 ): ScanFixture {
   const packetIssues = measureAtlasPhase('atlas-validate', () => validateNeighborhoodPacket(packet));
   if (packetIssues.length) throw new ScanFixtureError(packetIssues);
+  return buildValidatedNeighborhoodFixture(packet, rawStory, host, options, rawStories);
+}
+
+/** Private construction seam: callers must have just completed packet validation. */
+function buildValidatedNeighborhoodFixture(
+  packet: ArchitectureNeighborhoodPacket,
+  rawStory: unknown,
+  host: ScanNeighborhoodHost,
+  options: ScanModeOptions,
+  rawStories?: unknown,
+  initialized?: { scene: AtlasScene; worker: SceneCompileSession },
+): ScanFixture {
   if (!isRecord(rawStory)) throw new ScanFixtureError([{ path: 'story', message: 'must be a JSON object' }]);
   let story: AppStoryPlan;
   try {
@@ -457,6 +480,7 @@ export function compileScanNeighborhoodFixture(
   }
   return buildLiveScanFixture(packet.snapshot, packet.view, story, options, {
     boot: 'neighborhood',
+    initialized,
     childCounts: { ...packet.childCounts },
     unpublishedChildren: [...(packet.unpublishedChildren ?? [])],
     host,
@@ -753,20 +777,61 @@ export async function loadScanNeighborhoodFixture(
   host: ScanNeighborhoodHost,
   focusEntityId: string | undefined,
   options: ScanModeOptions = {},
+  signal?: AbortSignal,
 ): Promise<ScanFixture> {
-  // Bootstrap packet establishes the immutable publication before any auxiliary
-  // resource fetch. This prevents story/catalog requests independently resolving
-  // a newer current pointer mid-load.
-  const packet = await host.loadNeighborhood(focusEntityId ?? '');
-  const [story, catalog, honesty] = await Promise.all([
-    host.loadStory(),
-    host.loadStories?.() ?? Promise.resolve(undefined),
-    honestyFromHost(host),
-  ]);
-  const fixture = withEnrichmentHonesty(compileScanNeighborhoodFixture(packet, story, host, options, catalog), honesty);
-  await fixture.prepareInitialScene();
-  const publication = host.publication?.();
-  return publication ? { ...fixture, publication } : fixture;
+  const worker = createSceneCompileSession();
+  let fixture: ScanFixture | undefined;
+  let rejectAbort: (reason: unknown) => void;
+  const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+  const abort = () => {
+    worker.dispose();
+    fixture?.disposeSceneWorker();
+    rejectAbort(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+  };
+  signal?.addEventListener('abort', abort, { once: true });
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+  };
+  try {
+    throwIfAborted();
+    // The host supplies a fresh, exclusively owned parsed packet. It remains
+    // unexposed and unmodified until its worker clone has passed validation.
+    // Its publication pins auxiliary requests before those requests are started.
+    const packet = await Promise.race([host.loadNeighborhood(focusEntityId ?? ''), aborted]);
+    throwIfAborted();
+    const [initialized, story, catalog, honesty] = await Promise.race([Promise.all([
+      worker.initializeNeighborhood(packet, options, { generation: fullSceneWorkerGeneration(0), signal }),
+      Promise.resolve().then(() => host.loadStory()),
+      Promise.resolve().then(() => host.loadStories?.()),
+      honestyFromHost(host),
+    ]), aborted]);
+    throwIfAborted();
+    if (initialized?.status === 'invalid') throw new ScanFixtureError(initialized.issues);
+    if (initialized?.status === 'ready') {
+      fixture = withEnrichmentHonesty(buildValidatedNeighborhoodFixture(packet, story, host, options, catalog, {
+        scene: initialized.scene, worker,
+      }), honesty);
+    } else {
+      // Unsupported/failed/timed-out worker: the original synchronous public
+      // validator remains the only fallback. Do not start a second worker/timeout
+      // for the first scene. Invalid and aborted jobs never land here.
+      worker.dispose();
+      fixture = await measureAtlasAsyncPhase('atlas-worker-bootstrap-fallback', async () => {
+        fixture = withEnrichmentHonesty(compileScanNeighborhoodFixture(packet, story, host, options, catalog), honesty);
+        await Promise.race([fixture.prepareInitialScene(signal, { worker: false }), aborted]);
+        return fixture;
+      });
+    }
+    throwIfAborted();
+    const publication = host.publication?.();
+    return publication ? { ...fixture, publication } : fixture;
+  } catch (error) {
+    worker.dispose();
+    fixture?.disposeSceneWorker();
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', abort);
+  }
 }
 
 /** Restore against the same canonical packet used by a fresh atlas entry. */
@@ -774,12 +839,24 @@ export async function loadScanNeighborhoodFixtureFromSearch(
   host: ScanNeighborhoodHost,
   search: string,
   options: ScanModeOptions = {},
+  signal?: AbortSignal,
 ): Promise<ScanFixture> {
-  const fixture = await loadScanNeighborhoodFixture(host, undefined, options);
-  const params = new URLSearchParams(search);
-  const focuses = [...params.getAll('lens'), params.get('root'), params.get('sel')];
-  for (const focus of new Set(focuses.map(id => id?.trim()).filter((id): id is string => Boolean(id)))) {
-    await fixture.ensureNeighborhood(focus);
+  const fixture = await loadScanNeighborhoodFixture(host, undefined, options, signal);
+  const abort = () => fixture.disposeSceneWorker();
+  signal?.addEventListener('abort', abort, { once: true });
+  try {
+    const params = new URLSearchParams(search);
+    const focuses = [...params.getAll('lens'), params.get('root'), params.get('sel')];
+    for (const focus of new Set(focuses.map(id => id?.trim()).filter((id): id is string => Boolean(id)))) {
+      if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+      await awaitAbortableWork(fixture.ensureNeighborhood(focus), signal);
+    }
+    if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+    return fixture;
+  } catch (error) {
+    fixture.disposeSceneWorker();
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', abort);
   }
-  return fixture;
 }

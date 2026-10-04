@@ -1,3 +1,4 @@
+import { completeFixturePreparation } from './renderer/fixturePreparation';
 import { prepareLoadedLevelScene, prepareLevelSceneWithDeadline, clearLevelScenePreparation, levelScenePreparationPending, runLevelSceneGesture, LEVEL_SCENE_PREPARING } from './renderer/levelScenePreparation';
 import { compileCurrentGeneration } from './renderer/compileCurrentGeneration';
 import { initialSceneBandsMatch } from './renderer/initialSceneCompatibility';
@@ -1838,7 +1839,7 @@ export function App() {
     if (getActivePortableAtlas() || !scanFixture || inspectorTab !== 'source' || selected.detail !== 'code') return;
     if (selected.sourceExcerpts?.length) return;
     let cancelled = false;
-    void scanFixture.ensureExcerpts(selected.id).then(excerpts => {
+    void completeFixturePreparation(scanFixture.ensureExcerpts(selected.id), () => !cancelled, excerpts => {
       if (cancelled || !excerpts?.length) return;
       setScene(current => ({
         ...current,
@@ -1846,7 +1847,7 @@ export function App() {
           ? { ...entity, sourceExcerpts: excerpts.map(excerpt => ({ ...excerpt, lines: [...excerpt.lines] })) }
           : entity),
       }));
-    });
+    }, () => setLiveMessage('Source excerpts could not be loaded. Try again.'));
     return () => { cancelled = true; };
   }, [inspectorTab, selected.detail, selected.id, selected.sourceExcerpts]);
   useEffect(() => () => inspectorCameraFlightControllerRef.current?.dispose(), []);
@@ -4302,7 +4303,9 @@ export function App() {
   function openInside(entityId = selected.id, inspectorNavigation: 'external' | 'preserve' = 'external') {
     cancelGestureSceneRequests();
     if (scanFixture) {
-      void scanFixture.ensureNeighborhood(entityId).then(() => openInsideLoaded(entityId, inspectorNavigation));
+      void completeFixturePreparation(scanFixture.ensureNeighborhood(entityId), () => true,
+        () => openInsideLoaded(entityId, inspectorNavigation),
+        () => setLiveMessage('This architecture view could not be loaded. Try again.'));
       return;
     }
     openInsideLoaded(entityId, inspectorNavigation);
@@ -4587,10 +4590,11 @@ export function App() {
         step.reveal,
         scanFixture.navigation.rootEntityId,
       );
-      void Promise.all([
+      void completeFixturePreparation(Promise.all([
         scanFixture.ensureNeighborhood(compileFocus),
         scanFixture.ensureNeighborhood(step.focusEntityIds[0] ?? compileFocus),
-      ]).then(() => setStepLoaded(index, play, historyMode, plan));
+      ]), () => true, () => setStepLoaded(index, play, historyMode, plan),
+        () => setLiveMessage('This story step could not be loaded. Try again.'));
       return;
     }
     setStepLoaded(index, play, historyMode, plan);

@@ -1,3 +1,5 @@
+import { awaitAbortableWork } from './abortableWork';
+import { createStartupLifetime } from './startupLifetime';
 import { StrictMode } from 'react';
 import { installPerformanceDiagnostics } from './performance/install';
 import { createRoot } from 'react-dom/client';
@@ -44,9 +46,10 @@ import {
   type ScanTrioLoader,
 } from './renderer/scanFixture';
 
+const startupLifetime = createStartupLifetime(window);
 const performanceDiagnostics = installPerformanceDiagnostics();
 performanceDiagnostics.mark('bootstrap-start');
-import.meta.hot?.dispose(() => performanceDiagnostics.dispose());
+import.meta.hot?.dispose(() => { startupLifetime.dispose(); performanceDiagnostics.dispose(); });
 
 // CLA-149: read `?planner=jev` before anything can rewrite the URL.
 captureBlockPlannerQueryFlag(window.location.search);
@@ -83,9 +86,11 @@ async function tryBootScanFixture(
 ): Promise<{ ok: true } | { ok: false; error: unknown }> {
   try {
     const fixture: ScanFixture = await loadScanFixture(load, { targetAspect: bootstrapScanAspect() }, slug);
+    startupLifetime.own(() => fixture.disposeSceneWorker());
     setActiveScanFixture(fixture);
     return { ok: true };
   } catch (error) {
+    startupLifetime.assertCurrent();
     return { ok: false, error };
   }
 }
@@ -93,27 +98,33 @@ async function tryBootScanFixture(
 async function tryBootNeighborhoodFixture(
   slug: string | undefined,
 ): Promise<{ ok: true } | { ok: false; error: unknown }> {
+  startupLifetime.assertCurrent();
   root.render(<main aria-busy="true" role="status" style={{ padding: '4rem 2rem', color: '#eef4f2', fontFamily: 'IBM Plex Sans, sans-serif' }}><h1>Preparing architecture map…</h1><p>Loading the published information and arranging your first view.</p></main>);
   try {
     const fixture: ScanFixture = await loadScanNeighborhoodFixtureFromSearch(
       fetchScanNeighborhoodHost(slug),
       window.location.search,
       { targetAspect: bootstrapScanAspect() },
+      startupLifetime.signal,
     );
+    startupLifetime.own(() => fixture.disposeSceneWorker());
     setActiveScanFixture(fixture);
     // CLA-149: the Jev block planner (flagged) plans against this exact immutable publication only.
     setBlockPlannerScan(slug && fixture.publication ? { slug, versionId: fixture.publication.versionId } : undefined);
     if (slug && fixture.publication) {
       try {
-        const scopes = await loadPublishedExplanations(slug, fixture.publication.versionId);
+        const scopes = await awaitAbortableWork(loadPublishedExplanations(slug, fixture.publication.versionId), startupLifetime.signal);
+        startupLifetime.assertCurrent();
         if (scopes) setPublishedPreviewContext(fixture.publication.versionId, scopes);
       } catch {
         // Never mix explanation content from another publication. The atlas itself
         // remains readable when this optional sidecar is absent or unavailable.
       }
     }
+    startupLifetime.assertCurrent();
     return { ok: true };
   } catch (error) {
+    startupLifetime.assertCurrent();
     return { ok: false, error };
   }
 }
@@ -377,7 +388,9 @@ async function boot() {
       }
     }
   }
+  startupLifetime.assertCurrent();
   const { App } = await import('./App');
+  startupLifetime.assertCurrent();
   setDocumentPage(documentPageFor('atlas'));
   root.render(<StrictMode><App /></StrictMode>);
   // CLA-266: a published atlas credits its upstream repository, commit and licence; embeds get the compact
@@ -385,4 +398,9 @@ async function boot() {
   if (route.kind === 'repo') void installPublishedAtlasAttribution(route.slug);
 }
 
-void boot().then(() => performanceDiagnostics.mark('bootstrap-complete'));
+void boot().then(() => {
+  startupLifetime.assertCurrent();
+  performanceDiagnostics.mark('bootstrap-complete');
+}).catch(error => {
+  if (!startupLifetime.signal.aborted) throw error;
+});

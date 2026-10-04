@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
-import { measureAtlasAsyncPhase, measureAtlasPhase, subscribeLoadTiming } from './loadTimings';
+import { createPerformanceRecorder } from './recorder';
+import { measureAtlasAsyncPhase, measureAtlasPhase, recordAtlasWorkerPhase, subscribeLoadTiming } from './loadTimings';
 
 it('preserves sync and async results/errors without retaining input data', async () => {
   const samples: unknown[][] = [];
@@ -37,4 +38,22 @@ it('marks only the first submission and does not invent readiness after late act
   expect(active.mock.calls[0]?.[0]).toBe('atlas-first-frame');
   expect(active.mock.calls[0]?.[2]).toBe(0);
   stop();
+});
+
+it('records bootstrap worker phases and postMessage clone cost in the bounded scalar recorder', async () => {
+  const recorder = createPerformanceRecorder();
+  const stop = subscribeLoadTiming((metric, start, duration) => recorder.record(metric, start, duration));
+  recordAtlasWorkerPhase('atlas-worker-validate', 775.1);
+  recordAtlasWorkerPhase('atlas-worker-slice', 1.2);
+  recordAtlasWorkerPhase('atlas-worker-validate', NaN);
+  recordAtlasWorkerPhase('atlas-worker-slice', -1);
+  measureAtlasPhase('atlas-worker-post-message', () => undefined);
+  await measureAtlasAsyncPhase('atlas-worker-bootstrap-round-trip', async () => undefined);
+  stop();
+  const samples = recorder.report().samples;
+  expect(samples.map(sample => sample.metric)).toEqual([
+    'atlas-worker-validate', 'atlas-worker-slice', 'atlas-worker-post-message', 'atlas-worker-bootstrap-round-trip',
+  ]);
+  expect(samples[0]?.durationMs).toBe(775.1);
+  expect(samples.every(sample => Object.keys(sample).join(',') === 'metric,startMs,durationMs')).toBe(true);
 });

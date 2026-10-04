@@ -258,9 +258,9 @@ export const GOLDEN_SOURCE_EXCERPTS = {
     "path": "packages/architecture/src/validation.ts",
     "symbol": "validateStory",
     "language": "typescript",
-    "startLine": 629,
-    "endLine": 634,
-    "highlightLine": 629,
+    "startLine": 633,
+    "endLine": 638,
+    "highlightLine": 633,
     "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
     "lines": [
       "export function validateStory(snapshot: ArchitectureSnapshot, view: ArchitectureView, story: ArchitectureStory): ValidationIssue[] {",
@@ -286,9 +286,9 @@ export const GOLDEN_SOURCE_EXCERPTS = {
       "  if (view.schemaVersion !== ARCHITECTURE_SCHEMA_VERSION) issues.push({ path: \"schemaVersion\", message: `expected ${ARCHITECTURE_SCHEMA_VERSION}` });",
       "  if (view.snapshotId !== snapshot.id) issues.push({ path: \"snapshotId\", message: \"does not match snapshot\" });",
       "  const entityIds = new Set(snapshot.entities.map((entity) => entity.id));",
-      "  const relationIds = new Set(snapshot.relations.map((relation) => relation.id));"
+      "  const relationById = new Map<string, ArchitectureSnapshot[\"relations\"][number]>();"
     ],
-    "text": "export function validateView(snapshot: ArchitectureSnapshot, view: ArchitectureView): ValidationIssue[] {\n  const issues: ValidationIssue[] = [];\n  if (view.schemaVersion !== ARCHITECTURE_SCHEMA_VERSION) issues.push({ path: \"schemaVersion\", message: `expected ${ARCHITECTURE_SCHEMA_VERSION}` });\n  if (view.snapshotId !== snapshot.id) issues.push({ path: \"snapshotId\", message: \"does not match snapshot\" });\n  const entityIds = new Set(snapshot.entities.map((entity) => entity.id));\n  const relationIds = new Set(snapshot.relations.map((relation) => relation.id));"
+    "text": "export function validateView(snapshot: ArchitectureSnapshot, view: ArchitectureView): ValidationIssue[] {\n  const issues: ValidationIssue[] = [];\n  if (view.schemaVersion !== ARCHITECTURE_SCHEMA_VERSION) issues.push({ path: \"schemaVersion\", message: `expected ${ARCHITECTURE_SCHEMA_VERSION}` });\n  if (view.snapshotId !== snapshot.id) issues.push({ path: \"snapshotId\", message: \"does not match snapshot\" });\n  const entityIds = new Set(snapshot.entities.map((entity) => entity.id));\n  const relationById = new Map<string, ArchitectureSnapshot[\"relations\"][number]>();"
   },
   "code:renderer-engine:hit-test": {
     "path": "crates/atlas-engine/src/hit_test.rs",
@@ -651,9 +651,9 @@ export const GOLDEN_SOURCE_EXCERPTS = {
     "path": "apps/web/src/App.tsx",
     "symbol": "App",
     "language": "tsx",
-    "startLine": 1440,
-    "endLine": 1445,
-    "highlightLine": 1440,
+    "startLine": 1441,
+    "endLine": 1446,
+    "highlightLine": 1441,
     "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
     "lines": [
       "export function App() {",
@@ -669,9 +669,9 @@ export const GOLDEN_SOURCE_EXCERPTS = {
     "path": "apps/web/src/App.tsx",
     "symbol": "CanvasViewport",
     "language": "tsx",
-    "startLine": 5984,
-    "endLine": 5989,
-    "highlightLine": 5984,
+    "startLine": 5988,
+    "endLine": 5993,
+    "highlightLine": 5988,
     "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
     "lines": [
       "          <CanvasViewport",

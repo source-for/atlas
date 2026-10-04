@@ -637,3 +637,21 @@ describe('CLA-73 slim neighborhood boot', () => {
     expect(fixture.boot).toBe('full');
   });
 });
+
+it('reuses a disposed fixture without joining or deleting an obsolete neighborhood fetch', async () => {
+  const packet = sliceArchitectureNeighborhood(structuredClone(demoSnapshot) as unknown as ArchitectureSnapshot, structuredClone(demoView) as unknown as ArchitectureView, { focusEntityId: 'system:okie' });
+  const complete: Array<(incoming: typeof packet) => void> = [];
+  const loadNeighborhood = vi.fn(() => new Promise<typeof packet>(resolve => complete.push(resolve)));
+  const fixture = compileScanNeighborhoodFixture(packet, demoStory, { loadNeighborhood, loadExcerpts: async () => [], loadStory: async () => demoStory });
+  const old = fixture.ensureNeighborhood('code:late-reused');
+  const oldRejected = expect(old).rejects.toMatchObject({ name: 'AbortError' });
+  fixture.disposeSceneWorker();
+  const current = fixture.ensureNeighborhood('code:late-reused');
+  expect(loadNeighborhood).toHaveBeenCalledTimes(2);
+  complete[0]!(packet); await oldRejected;
+  const sameCurrent = fixture.ensureNeighborhood('code:late-reused');
+  expect(loadNeighborhood).toHaveBeenCalledTimes(2);
+  complete[1]!(packet); await Promise.all([current, sameCurrent]);
+  expect(fixture.getSceneGeneration()).toBe(1);
+  fixture.disposeSceneWorker();
+});

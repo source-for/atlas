@@ -356,6 +356,38 @@ test("rejects non-finite view geometry and invalid dimensions", () => {
   assert.ok(issues.some((issue) => issue.path.endsWith(".height")));
 });
 
+test("view relation lookup preserves first duplicate endpoints and ordered repeated issues", () => {
+  const relatedSnapshot: ArchitectureSnapshot = {
+    ...snapshot,
+    relations: [
+      { id: "relation:hidden-first", from: "system:test", to: "container:api", kind: "calls", evidence: [] },
+      { id: "relation:hidden-first", from: "system:test", to: "system:test", kind: "calls", evidence: [] },
+      { id: "relation:visible-first", from: "system:test", to: "system:test", kind: "calls", evidence: [] },
+      { id: "relation:visible-first", from: "system:test", to: "container:api", kind: "calls", evidence: [] },
+      { id: "relation:hidden-from", from: "container:api", to: "system:test", kind: "calls", evidence: [] },
+      { id: "relation:hidden-both", from: "container:api", to: "entity:missing", kind: "calls", evidence: [] },
+    ],
+  };
+  const view: ArchitectureView = {
+    schemaVersion: 1, id: "view:test", snapshotId: snapshot.id, name: "Test",
+    rootEntityId: "system:test", entityIds: ["system:test", "system:test"],
+    relationIds: ["relation:missing", "relation:hidden-first", "relation:visible-first",
+      "relation:hidden-from", "relation:hidden-first", "relation:hidden-both", "relation:missing"],
+    layout: { nodes: { "system:test": { x: 0, y: 0, width: 200, height: 100 } } },
+  };
+  assert.deepEqual(validateView(relatedSnapshot, view), [
+    { path: "entityIds", message: "duplicate entity id: system:test" },
+    { path: "relationIds", message: "unknown relation: relation:missing" },
+    { path: "relationIds", message: "relation endpoints must both be in the view: relation:hidden-first" },
+    { path: "relationIds", message: "relation endpoints must both be in the view: relation:hidden-from" },
+    { path: "relationIds", message: "relation endpoints must both be in the view: relation:hidden-first" },
+    { path: "relationIds", message: "relation endpoints must both be in the view: relation:hidden-both" },
+    { path: "relationIds", message: "unknown relation: relation:missing" },
+  ]);
+  assert.ok(validateSnapshot(relatedSnapshot).some(issue => issue.message.includes("duplicate relation id: relation:hidden-first")));
+  assert.ok(validateSnapshot(relatedSnapshot).some(issue => issue.message.includes("duplicate relation id: relation:visible-first")));
+});
+
 test("rejects non-finite edge points and story timing/source lines", () => {
   const relatedSnapshot: ArchitectureSnapshot = {
     ...snapshot,
