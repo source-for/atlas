@@ -57,3 +57,22 @@ it('records bootstrap worker phases and postMessage clone cost in the bounded sc
   expect(samples[0]?.durationMs).toBe(775.1);
   expect(samples.every(sample => Object.keys(sample).join(',') === 'metric,startMs,durationMs')).toBe(true);
 });
+
+it('exports renderer startup phases as scalars while preserving failure behavior', async () => {
+  const recorder = createPerformanceRecorder();
+  const stop = subscribeLoadTiming((metric, start, duration) => recorder.record(metric, start, duration));
+  const source = { privateSource: 'not exported' };
+  const failure = new Error('private GPU error');
+  try {
+    expect(await measureAtlasAsyncPhase('renderer-wasm-init', async () => source)).toBe(source);
+    await expect(measureAtlasAsyncPhase('renderer-gpu-init', async () => { throw failure; })).rejects.toBe(failure);
+    expect(measureAtlasPhase('renderer-protocol', () => source)).toBe(source);
+    expect(() => measureAtlasPhase('renderer-native-scene', () => { throw failure; })).toThrow(failure);
+  } finally { stop(); }
+  const report = recorder.report();
+  expect(report.samples.map(sample => sample.metric)).toEqual([
+    'renderer-wasm-init', 'renderer-gpu-init', 'renderer-protocol', 'renderer-native-scene',
+  ]);
+  expect(report.samples.every(sample => Object.keys(sample).join(',') === 'metric,startMs,durationMs')).toBe(true);
+  expect(JSON.stringify(report)).not.toMatch(/private|GPU error|Source/);
+});

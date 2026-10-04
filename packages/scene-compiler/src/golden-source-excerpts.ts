@@ -633,9 +633,9 @@ export const GOLDEN_SOURCE_EXCERPTS = {
     "path": "apps/web/src/renderer/WasmRendererAdapter.ts",
     "symbol": "WasmRendererAdapter",
     "language": "typescript",
-    "startLine": 32,
-    "endLine": 37,
-    "highlightLine": 32,
+    "startLine": 33,
+    "endLine": 38,
+    "highlightLine": 33,
     "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
     "lines": [
       "export class WasmRendererAdapter implements AtlasRenderer {",

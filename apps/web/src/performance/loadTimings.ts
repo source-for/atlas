@@ -1,4 +1,5 @@
-export type LoadMetric = 'atlas-fetch' | 'atlas-body' | 'atlas-parse' | 'atlas-validate' | 'atlas-story' | 'atlas-slice' | 'atlas-compile' | 'atlas-worker-compile' | 'atlas-worker-validate' | 'atlas-worker-slice' | 'atlas-worker-post-message' | 'atlas-worker-bootstrap-fallback' | 'atlas-worker-bootstrap-round-trip' | 'atlas-worker-round-trip' | 'atlas-first-frame';
+export type RendererLoadMetric = 'renderer-wasm-init' | 'renderer-gpu-init' | 'renderer-protocol' | 'renderer-native-scene' | 'renderer-native-patch' | 'renderer-gpu-init-failed';
+export type LoadMetric = RendererLoadMetric | 'atlas-fetch' | 'atlas-body' | 'atlas-parse' | 'atlas-validate' | 'atlas-story' | 'atlas-slice' | 'atlas-compile' | 'atlas-worker-compile' | 'atlas-worker-validate' | 'atlas-worker-slice' | 'atlas-worker-post-message' | 'atlas-worker-bootstrap-fallback' | 'atlas-worker-bootstrap-round-trip' | 'atlas-worker-round-trip' | 'atlas-first-frame';
 type Listener = (metric: LoadMetric, startMs: number, durationMs: number) => void;
 const listeners = new Set<Listener>();
 let firstFrameSubmitted = false;
@@ -20,11 +21,13 @@ export function measureAtlasPhase<T>(metric: LoadMetric, work: () => T): T {
   try { return work(); }
   finally { for (const listener of listeners) listener(metric, start, performance.now() - start); }
 }
-export async function measureAtlasAsyncPhase<T>(metric: LoadMetric, work: () => Promise<T>): Promise<T> {
+export async function measureAtlasAsyncPhase<T>(metric: LoadMetric, work: () => Promise<T>, failureMetric: LoadMetric = metric): Promise<T> {
   if (!listeners.size) return work();
   const start = performance.now();
+  let outcome = metric;
   try { return await work(); }
-  finally { for (const listener of listeners) listener(metric, start, performance.now() - start); }
+  catch (error) { outcome = failureMetric; throw error; }
+  finally { for (const listener of listeners) listener(outcome, start, performance.now() - start); }
 }
 
 export function recordAtlasWorkerPhase(metric: 'atlas-worker-compile' | 'atlas-worker-validate' | 'atlas-worker-slice', durationMs: number): void {
