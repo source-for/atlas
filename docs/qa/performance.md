@@ -71,6 +71,44 @@ No instrumented measured job timed out or reached 20 seconds from enqueue to ter
 
 All four required gates passed for the staged source, with evidence pin `cbc6bdb7`. Browser QA verified local golden story step 3 actually paused with a populated inspector and real node selection, `/` and `/new`, staging own web overview after reload, full App selection/lenses after reload, and Back → pre-story App followed by Forward → paused published story with matching URL and populated inspector. Manual story rendering used functional Canvas 2D fallback; it is not a GPU-only assertion. Screenshots are release assets, not repository files: [golden paused step 3](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla385-local-golden-story.jpg), [web own overview](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla385-staging-web-overview.jpg), [full App reload](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla385-staging-full-app.jpg), [published step 3](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla385-staging-story3.jpg), and [Forward restore](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla385-staging-forward-story.jpg). Raw reports remain in `/tmp/cla385-production-n20.json`, `/tmp/cla385-staging-native-n20.json`, and `/tmp/cla385-staging-native-replacements.json`; no raw JSON, trace, or screenshot is committed.
 
+
+### Isolated local worker attribution, 4 October 2026
+
+The follow-up production-build run measured clean source `13d3bb6a95b80040194a7a4a4575bfc251983bfe` from 2026-10-04T21:33:41.317Z to 21:39:15.920Z. The fixture-only loopback server used the pinned publication above, without live network/model variance. Build assets were `index-GLuoTtZo.js` and `sceneCompileWorker-B-onRhsM.js`; index SHA-256 was `9925fa3f61d432bf91448dfc4e16a063ef687f82745f5794436fc9623c7d1398`. The exact invocation was `pnpm perf:workers --origin http://127.0.0.1:4214 --runs 20 --backend webgpu --output /tmp/cla385-local-isolated-n20-review.json`. Agent-owned builds, tests and browser QA were stopped during measurement. The journey alternated the `apps-web` container and full App component deep links by repetition, waited for the reached selection and populated inspector with settled camera and completed history preparation, then launched the story, paused prepared playback, jumped once to step 3, and waited for paused arrival with matching inspector. Cold preceded warm; each warm measurement followed a complete unmeasured prime and a fresh document.
+
+The environment was headed installed Chrome 154.0.8037.95 in an isolated temporary profile, Playwright 1.58.2 / Node v22.23.1, Apple M1 Pro (10 logical CPUs, 32 GiB RAM), Darwin 25.3.0 arm64, 1440 × 1000 at DPR 1, and main-page CDP CPU rate 1 (worker-target rate remains unverified). All 40 measured rows reported WebGPU. Playwright's default flags disabling background timers, occluded-window throttling and renderer backgrounding were explicitly omitted, retaining normal Chrome visibility scheduling. Dev mode, `perf=1`, and bounded pre-document long-task/visibility probes were enabled. The start-of-run free-memory sample was approximately 114.5 MiB; memory pressure and unrelated background activity were not controlled. Cold used a fresh isolated context with HTTP cache cleared and disabled throughout the journey; warm enabled cache, primed the full journey, and reloaded into fresh document workers. Browser/GPU process caches remained shared.
+
+All 40 measured journeys were valid: 20 cold and 20 warm, split equally between the two deep-link scenarios. There were no priming failures, worker warnings, timeout events, or unexpected browser requests. The retained measured diagnostics contain 200 jobs: 160 successful compiles and 40 cancelled jobs. Every successful job recorded the actual retained input graph as **5,507 entities / 13,003 relations**, not projected scene counts; the cancelled jobs had no graph-size observation. Of the successful jobs, 147 have complete, causally ordered wall-time partitions (74 cold / 73 warm). Thirteen successful jobs have incomplete partitions because required cross-realm clocks do not establish the required causal order; their raw compile intervals remain included in the 160-sample compile evidence. Cancellation records are retained but do not fabricate complete partitions.
+
+The exclusive stages below partition each eligible job from `mainQueued` through `mainHandleEnd`, including the handler tail/pump. They are wall elapsed time, not CPU execution time. Concurrent request posting/startup and result posting/delivery are clipped at receipt to avoid double counting; worker precompile includes validation/slicing before the compiler clock, and finalization covers compiler end through result-post start. Raw startup/post intervals remain separate, overlapping diagnostic context. Values are milliseconds, using nearest-rank p50/p95; stage percentiles themselves must not be summed into a percentile of total latency.
+
+| Local isolated exclusive worker stage, cold/warm pooled | N | p50 | p95 | Max |
+|---|---:|---:|---:|---:|
+| queueMs | 147 | 0.0 | 0.3 | 0.7 |
+| dispatchSetupMs | 147 | 0.1 | 0.3 | 0.4 |
+| requestPostConcurrentStartupMs | 147 | 18.5 | 25.9 | 28.8 |
+| startupRemainingMs | 147 | 6.2 | 20.4 | 131.3 |
+| inboundRemainingMs | 147 | 30.5 | 58.2 | 951.0 |
+| workerPrecompileMs | 147 | 0.1 | 54.5 | 70.8 |
+| compileMs | 147 | 789.7 | 1581.3 | 1620.3 |
+| workerFinalizationMs | 147 | 0.1 | 0.1 | 0.2 |
+| resultPostConcurrentDeliveryMs | 147 | 35.5 | 39.7 | 42.2 |
+| resultDeliveryMs | 147 | 41.7 | 60.7 | 150.8 |
+| resultHandledMs | 147 | 0.1 | 0.2 | 0.3 |
+| handlerTailMs | 147 | 0.0 | 0.0 | 0.0 |
+
+| Local job metric | N | p50 | p95 | Max |
+|---|---:|---:|---:|---:|
+| Raw compiler interval, cold | 80 | 787.8 | 1581.3 | 1609.0 |
+| Raw compiler interval, warm | 80 | 789.7 | 1558.1 | 1620.3 |
+| Raw compiler interval, pooled | 160 | 789.7 | 1565.0 | 1620.3 |
+| Full handler total, cold | 74 | 879.9 | 1716.7 | 1967.5 |
+| Full handler total, warm | 73 | 883.7 | 1674.0 | 1855.9 |
+
+The maximum raw successful compiler interval across all 160 jobs was **1,620.3 ms**. Cold usable-atlas p50/p95 was 2,629.9 / 2,749.6 ms; warm was 1,832.5 / 2,632.6 ms. These are the harness readiness surrogate, not GPU completion or pixel verification. This controlled local run did not reproduce the earlier native staging **16,365.4 ms** compiler-wall interval. That earlier native-profile observation remains a lead: its scheduling, profile, memory, backend and remote delivery conditions differ, and compiler wall time includes descheduling. The contrast neither proves a cause nor establishes a performance improvement or budget.
+
+The private raw report is `/tmp/cla385-local-isolated-n20-review.json`; the derived stage table is `/tmp/cla385-local-exclusive-stage-table.md`. No raw traces or timing dumps are committed.
+
 ## Enable recording
 
 Append `perf=1` to the page query before loading, for example `/?perf=1` or `/?fixture=stress&perf=1`. Alternatively press Shift+Alt+P to start or stop a session. Late activation cannot reconstruct the application bootstrap; reload with the query flag for that measurement. The panel appears outside the application root, including on `/new` and error pages.
