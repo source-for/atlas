@@ -1,0 +1,232 @@
+{
+  "schemaVersion": 1,
+  "slug": "source-for__atlas",
+  "origin": "https://sourcefor.dev",
+  "publication": {
+    "versionId": "publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940",
+    "artifactRevisionId": "artifact-50929931-2e70-41c6-a798-bfcac45a4b90"
+  },
+  "snapshotId": "snapshot:source-for-atlas:9831775f5bbe",
+  "commitSha": "9831775f5bbed310b771900225501be42b6d159e",
+  "entityCount": 5507,
+  "relationCount": 13003,
+  "attributionIndex": {
+    "source": "https://sourcefor.dev/scan/index.json",
+    "sourceSha256": "a123dfea7dd9fc5d7888b6992119bbd88752a4b25387b3a1f516bae3bb73e920",
+    "row": {
+      "slug": "source-for__atlas",
+      "owner": "source-for",
+      "repo": "atlas",
+      "repositoryId": "repo:source-for-atlas",
+      "versionId": "publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940",
+      "commitSha": "9831775f5bbed310b771900225501be42b6d159e",
+      "generatedAt": "2026-09-29T12:38:48.000Z",
+      "entityCount": 5507,
+      "publishedAt": "2026-09-29T17:19:37.658Z",
+      "license": {
+        "spdxId": "MIT",
+        "name": "MIT License",
+        "url": "https://github.com/source-for/atlas/blob/9831775f5bbed310b771900225501be42b6d159e/LICENSE"
+      },
+      "ownerLogin": "source-for",
+      "repoName": "atlas",
+      "description": "C4 model to simplify understanding code bases",
+      "language": "TypeScript"
+    }
+  },
+  "sourceDescription": "Immutable public API responses, byte-verified; no live scan or model.",
+  "responses": [
+    {
+      "key": "neighborhood.json",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/neighborhood.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940",
+      "status": 200,
+      "bytes": 16062951,
+      "sha256": "2358ae566ce2ba169a1b387a9eb670220f666029b4ec6ceb47caf6c362d5574c",
+      "file": "000-neighborhood.json"
+    },
+    {
+      "key": "snapshot.json",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/snapshot.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940",
+      "status": 200,
+      "bytes": 25571102,
+      "sha256": "6a61c813c8d49b12c6e13ff7d37464e0abf61dc3cecb4be0741a48c0e895e54c",
+      "file": "001-snapshot.json"
+    },
+    {
+      "key": "view.json",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/view.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940",
+      "status": 200,
+      "bytes": 2840716,
+      "sha256": "783581f1fdb88a93a64c4a95e13704d7850e55f1ef661ba803c42c793e242f03",
+      "file": "002-view.json"
+    },
+    {
+      "key": "story.json",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/story.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940",
+      "status": 200,
+      "bytes": 5011,
+      "sha256": "37b48917de6e716ad88762dcc206993df124984d0cf6ffb6d26622df71601652",
+      "file": "003-story.json"
+    },
+    {
+      "key": "stories.json",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/stories.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940",
+      "status": 200,
+      "bytes": 20966,
+      "sha256": "afa0f0012156a7f15397b3cdb01ac26c80242b63715963d03668f289dbfa706c",
+      "file": "004-stories.json"
+    },
+    {
+      "key": "enrichment-report.json",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/enrichment-report.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940",
+      "status": 204,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "file": "005-enrichment-report.json"
+    },
+    {
+      "key": "enrichment-status.json",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/enrichment-status.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940",
+      "status": 204,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "file": "006-enrichment-status.json"
+    },
+    {
+      "key": "operator-explanations.json",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/operator-explanations.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940",
+      "status": 200,
+      "bytes": 2397687,
+      "sha256": "611a792df5fdb2561f510cf685c5496a723952c9476fd4e0244ab58773296d2f",
+      "file": "007-operator-explanations.json"
+    },
+    {
+      "key": "neighborhood.json?focus=code%3Aapps-web-src-webmcp-ts%3Awebmcp-host-headers",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/neighborhood.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940&focus=code%3Aapps-web-src-webmcp-ts%3Awebmcp-host-headers",
+      "status": 200,
+      "bytes": 295628,
+      "sha256": "21accd98cf14b6dcb91a1453e6888d82351230fada36dc8537dc4930559a7965",
+      "file": "008-neighborhood.json"
+    },
+    {
+      "key": "neighborhood.json?focus=component%3Aapps-web-src-webmcp-ts",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/neighborhood.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940&focus=component%3Aapps-web-src-webmcp-ts",
+      "status": 200,
+      "bytes": 295613,
+      "sha256": "7126b5c5d62ee756bed690dbadb538ab99f280b225772e8de4c3819f432af17a",
+      "file": "009-neighborhood.json"
+    },
+    {
+      "key": "neighborhood.json?focus=container%3Aapps-server",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/neighborhood.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940&focus=container%3Aapps-server",
+      "status": 200,
+      "bytes": 563445,
+      "sha256": "9b80b37e126ed310532ff4ab2d33e0d5ee6c860bc39da11925f556936b37bfe4",
+      "file": "010-neighborhood.json"
+    },
+    {
+      "key": "neighborhood.json?focus=container%3Aapps-web",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/neighborhood.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940&focus=container%3Aapps-web",
+      "status": 200,
+      "bytes": 1063152,
+      "sha256": "55a189789d88cd0301dce4d843294b775a081ce3ec5b47d3a442add32056b07b",
+      "file": "011-neighborhood.json"
+    },
+    {
+      "key": "neighborhood.json?focus=container%3Acrates-atlas-engine",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/neighborhood.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940&focus=container%3Acrates-atlas-engine",
+      "status": 200,
+      "bytes": 129328,
+      "sha256": "dd908614db14d2828354066f543bb38946e1aa98fe89706b55335084a5ec8919",
+      "file": "012-neighborhood.json"
+    },
+    {
+      "key": "neighborhood.json?focus=container%3Acrates-atlas-gpu",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/neighborhood.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940&focus=container%3Acrates-atlas-gpu",
+      "status": 200,
+      "bytes": 40152,
+      "sha256": "39fded0abe00f6f58fd4a620df9c5e0364e4fae236321cc9b4f66e2fa8b3a80b",
+      "file": "013-neighborhood.json"
+    },
+    {
+      "key": "neighborhood.json?focus=container%3Acrates-atlas-protocol",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/neighborhood.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940&focus=container%3Acrates-atlas-protocol",
+      "status": 200,
+      "bytes": 35834,
+      "sha256": "a689c1e80704963c01227e805cd663ec27eec578de6fa7debc6971f1e6e5f14f",
+      "file": "014-neighborhood.json"
+    },
+    {
+      "key": "neighborhood.json?focus=container%3Acrates-atlas-wasm",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/neighborhood.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940&focus=container%3Acrates-atlas-wasm",
+      "status": 200,
+      "bytes": 15801,
+      "sha256": "dd1c3eb7ff0cd9361bee52979dad4a0f5eceda75d6bee01448ea0af64c555ad2",
+      "file": "015-neighborhood.json"
+    },
+    {
+      "key": "neighborhood.json?focus=container%3Apackages-architecture",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/neighborhood.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940&focus=container%3Apackages-architecture",
+      "status": 200,
+      "bytes": 212527,
+      "sha256": "72316858740be58af25f5c774c4d4d05baf7cb63a0d5da2eb3b2e1dc69e2e01b",
+      "file": "016-neighborhood.json"
+    },
+    {
+      "key": "neighborhood.json?focus=container%3Apackages-scan",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/neighborhood.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940&focus=container%3Apackages-scan",
+      "status": 200,
+      "bytes": 262255,
+      "sha256": "2ce6e940cb35725657d3c9566692f58be6c6d6aef5e84d87dbffd60074961e17",
+      "file": "017-neighborhood.json"
+    },
+    {
+      "key": "neighborhood.json?focus=container%3Apackages-scene-compiler",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/neighborhood.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940&focus=container%3Apackages-scene-compiler",
+      "status": 200,
+      "bytes": 127953,
+      "sha256": "49a295a16bade5c70816f8a67cfbb96bd53ea5e0db692b39234450be2c54b122",
+      "file": "018-neighborhood.json"
+    },
+    {
+      "key": "neighborhood.json?focus=container%3Atooling",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/neighborhood.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940&focus=container%3Atooling",
+      "status": 200,
+      "bytes": 86521,
+      "sha256": "b5671313fa73dd19e00bc21c0e10607f1e58f4fe51ecd65010eb63ba8da51c30",
+      "file": "019-neighborhood.json"
+    },
+    {
+      "key": "neighborhood.json?focus=system%3Aokie",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/neighborhood.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940&focus=system%3Aokie",
+      "status": 200,
+      "bytes": 16062951,
+      "sha256": "2358ae566ce2ba169a1b387a9eb670220f666029b4ec6ceb47caf6c362d5574c",
+      "file": "020-neighborhood.json"
+    },
+    {
+      "key": "excerpt.json?entity=code%3Aapps-web-src-webmcp-ts%3Awebmcp-host-headers",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/excerpt.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940&entity=code%3Aapps-web-src-webmcp-ts%3Awebmcp-host-headers",
+      "status": 200,
+      "bytes": 625,
+      "sha256": "a0ee45f9e82220822d48e4e5e6354fca2bb66962c58e69ba7d3b827449d29827",
+      "file": "021-excerpt.json"
+    },
+    {
+      "key": "excerpt.json?entity=component%3Aapps-web-src-webmcp-ts",
+      "source": "https://sourcefor.dev/scan/source-for__atlas/excerpt.json?version=publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940&entity=component%3Aapps-web-src-webmcp-ts",
+      "status": 200,
+      "bytes": 103,
+      "sha256": "74a186aca724c7d93896d25c8d2c300a6d7141620d34066196b6494cb016758e",
+      "file": "022-excerpt.json"
+    },
+    {
+      "key": "index.json",
+      "source": "https://sourcefor.dev/scan/index.json",
+      "status": 200,
+      "bytes": 665,
+      "sha256": "7d33079e77a1999d5638e990bad98056d8d6edfe2053de635a417298341d288f",
+      "file": "023-index.json"
+    }
+  ]
+}

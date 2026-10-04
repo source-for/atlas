@@ -54,3 +54,6 @@ docs/qa/**/*.webm
 
 # Local index.json backups written by `publish:atlas --backfill-names|--backfill-meta` (CLA-269).
 backfill-backup-*.json
+
+# Local byte-pinned browser performance data; restore via pnpm perf:acquire.
+fixtures/performance/data/
