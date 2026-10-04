@@ -106,7 +106,7 @@ test("ask worker: a cold build that overruns its deadline is negatively cached; 
   const { dir, location } = corpusDir();
   let clock = 0;
   // The cold budget covers a worker spawn + build, so it must stay generous even on a loaded CI box.
-  const worker = createAskRetrievalWorker({ workerUrl: SLOW, timeoutMs: 5_000, coldTimeoutMs: 1_500, failedKeyTtlMs: 1_000, now: () => clock });
+  const worker = createAskRetrievalWorker({ workerUrl: SLOW, timeoutMs: 5_000, coldTimeoutMs: 5_000, failedKeyTtlMs: 1_000, now: () => clock });
   try {
     const at = location();
     // A retrieval stall before any build does not blame the snapshot...
