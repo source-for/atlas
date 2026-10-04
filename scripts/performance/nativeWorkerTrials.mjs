@@ -3,7 +3,6 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { cpus, freemem, totalmem, platform, release, arch } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { version as nodeVersion } from 'node:process';
 import { repoRoot } from './common.mjs';
 import { installProbe, timingReport } from './probe.mjs';
 import { summarizeWorkerTrials } from './workerAnalysis.mjs';
@@ -24,7 +23,7 @@ export async function createNativeWorkerTrialSession({tab,cdp,origin,runs=20,out
  const primed=new Set();
  const report={schemaVersion:1,smoke:runs<20,startedAt:new Date().toISOString(),environment:{
   commit:execFileSync('git',['rev-parse','HEAD'],{cwd:repoRoot,encoding:'utf8'}).trim(),dirty:execFileSync('git',['status','--porcelain'],{cwd:repoRoot,encoding:'utf8'}).trim(),origin,
-  browserProfile:'Existing native Chrome profile and ordinary sign-in; no fresh context, no cookie/token reads or copies',headless:false,node:nodeVersion,
+  browserProfile:'Existing native Chrome profile and ordinary sign-in; no fresh context, no cookie/token reads or copies',headless:false,node:'browser-control runtime; Node version unavailable',
   os:`${platform()} ${release()} ${arch()}`,cpu:cpus()[0].model,logicalCpus:cpus().length,memoryBytes:totalmem(),freeMemoryBytes:freemem(),cpuThrottleRate,backend,
   cache:'Existing profile reused. Cold clears browser HTTP cache and disables cache throughout journey; warm enables cache, full prime, then new document. Browser/GPU/user state retained; cache clear affects shared profile cache. Cache disabling is target-scoped and restored to standard enabled policy.',
   nativeBackgroundPolicy:'Existing native Chrome launch/profile settings inherited, not changed; tab brought to front per journey. Background processes and other user tabs uncontrolled.',
