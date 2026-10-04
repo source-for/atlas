@@ -1,6 +1,6 @@
 import { cacheableNeighborhoodScene } from './lazyBandCompile';
 import { afterEach, expect, it, vi } from 'vitest';
-import { compileSceneOffThread, createSceneCompileSession } from './compileSceneOffThread';
+import { compileSceneOffThread, createSceneCompileSession, createSceneWorkerHealth } from './compileSceneOffThread';
 import { compileScanScene, type ScanSceneInput } from './scanScene';
 import demoSnapshot from '../../../../fixtures/architecture/demo-snapshot.json';
 import demoView from '../../../../fixtures/architecture/demo-view.json';
@@ -23,10 +23,10 @@ class WorkerStub {
     return scene;
   }
 }
-afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); vi.restoreAllMocks(); });
 it('keeps a worker and graph across compiles and reuses worker-owned previous scenes', async () => {
   vi.stubGlobal('Worker', WorkerStub);
-  const session = createSceneCompileSession();
+  const session = createSceneCompileSession(createSceneWorkerHealth());
   const first = session.compile(input, { generation: 0 });
   const worker = WorkerStub.latest;
   const scene = worker.reply();
@@ -42,7 +42,7 @@ it('keeps a worker and graph across compiles and reuses worker-owned previous sc
 });
 it('transfers graph on explicit revision or snapshot identity change', async () => {
   vi.stubGlobal('Worker', WorkerStub);
-  const session = createSceneCompileSession();
+  const session = createSceneCompileSession(createSceneWorkerHealth());
   for (const [generation, snapshot] of [[0, input.snapshot], [1, input.snapshot], [1, {}]] as const) {
     const result = session.compile({ ...input, snapshot } as ScanSceneInput, { generation });
     expect(WorkerStub.latest.postMessage.mock.lastCall![0].graph.snapshot).toBe(snapshot);
@@ -53,7 +53,7 @@ it('transfers graph on explicit revision or snapshot identity change', async () 
 });
 it('preempts speculative CPU, ignores late replies and reloads graph on restart', async () => {
   vi.stubGlobal('Worker', WorkerStub);
-  const session = createSceneCompileSession();
+  const session = createSceneCompileSession(createSceneWorkerHealth());
   const first = session.compile(input, { generation: 0, priority: 'speculative' });
   const rejected = expect(first).rejects.toMatchObject({ name: 'AbortError' });
   const old = WorkerStub.latest;
@@ -66,7 +66,7 @@ it('preempts speculative CPU, ignores late replies and reloads graph on restart'
 });
 it('bounds queued speculative work and rejects superseded jobs', async () => {
   vi.stubGlobal('Worker', WorkerStub);
-  const session = createSceneCompileSession();
+  const session = createSceneCompileSession(createSceneWorkerHealth());
   const selected = session.compile(input, { generation: 0 });
   const first = session.compile(input, { generation: 0, priority: 'speculative' });
   const rejected = expect(first).rejects.toMatchObject({ name: 'AbortError' });
@@ -79,27 +79,27 @@ it('bounds queued speculative work and rejects superseded jobs', async () => {
 it('aborts compilation and terminates the isolated compatibility worker', async () => {
   vi.stubGlobal('Worker', WorkerStub);
   const controller = new AbortController();
-  const result = compileSceneOffThread(input, controller.signal);
+  const result = compileSceneOffThread(input, controller.signal, createSceneWorkerHealth());
   const rejection = expect(result).rejects.toMatchObject({ name: 'AbortError' });
   controller.abort(); WorkerStub.latest.reply(); await rejection;
   expect(WorkerStub.latest.terminate).toHaveBeenCalledOnce();
 });
 it('falls back for unsupported workers, errors, wrong scope and timeout', async () => {
   vi.stubGlobal('Worker', undefined);
-  expect(await compileSceneOffThread(input)).toBeUndefined();
+  expect(await compileSceneOffThread(input, undefined, createSceneWorkerHealth())).toBeUndefined();
   vi.stubGlobal('Worker', WorkerStub);
-  let result = compileSceneOffThread(input);
+  let result = compileSceneOffThread(input, undefined, createSceneWorkerHealth());
   WorkerStub.latest.onerror?.(); expect(await result).toBeUndefined();
-  result = compileSceneOffThread(input);
+  result = compileSceneOffThread(input, undefined, createSceneWorkerHealth());
   WorkerStub.latest.reply({ rootEntityId: 'different' } as AtlasScene); expect(await result).toBeUndefined();
-  vi.useFakeTimers(); result = compileSceneOffThread(input);
+  vi.useFakeTimers(); result = compileSceneOffThread(input, undefined, createSceneWorkerHealth());
   await vi.advanceTimersByTimeAsync(20_000); expect(await result).toBeUndefined();
   expect(WorkerStub.latest.terminate).toHaveBeenCalledOnce();
 });
 
 it('rejects disposed sessions without triggering synchronous fallback', async () => {
   vi.stubGlobal('Worker', WorkerStub);
-  const session = createSceneCompileSession();
+  const session = createSceneCompileSession(createSceneWorkerHealth());
   const active = session.compile(input, { generation: 0 });
   const rejected = expect(active).rejects.toMatchObject({ name: 'AbortError' });
   session.dispose();
@@ -110,7 +110,7 @@ it('rejects disposed sessions without triggering synchronous fallback', async ()
 
 it('finishes abandoned selected CPU and starts only the latest bounded queued request without restart', async () => {
   vi.stubGlobal('Worker', WorkerStub);
-  const session = createSceneCompileSession();
+  const session = createSceneCompileSession(createSceneWorkerHealth());
   const first = session.compile(input, { generation: 0 });
   const rejectedFirst = expect(first).rejects.toMatchObject({ name: 'AbortError' });
   const worker = WorkerStub.latest;
@@ -128,7 +128,7 @@ it('finishes abandoned selected CPU and starts only the latest bounded queued re
 
 it('retains generation-static view, counts and unpublished children rather than re-cloning them', async () => {
   vi.stubGlobal('Worker', WorkerStub);
-  const session = createSceneCompileSession();
+  const session = createSceneCompileSession(createSceneWorkerHealth());
   const graphInput = { ...input, view: { layout: { nodes: { root: {} } } }, childCounts: { root: 2000 }, unpublishedChildren: [{ id: 'pending' }] } as unknown as ScanSceneInput;
   const first = session.compile(graphInput, { generation: 0 });
   const worker = WorkerStub.latest;
@@ -143,7 +143,7 @@ it('retains generation-static view, counts and unpublished children rather than 
 
 it('an abandoned active selected job keeps its timeout and cannot starve the newest request', async () => {
   vi.useFakeTimers(); vi.stubGlobal('Worker', WorkerStub);
-  const session = createSceneCompileSession();
+  const session = createSceneCompileSession(createSceneWorkerHealth());
   const controller = new AbortController();
   const first = session.compile(input, { generation: 0, signal: controller.signal });
   const rejection = expect(first).rejects.toMatchObject({ name: 'AbortError' });
@@ -175,7 +175,7 @@ it('accepts the real compiler guard fallback above 2000 entities across structur
     });
   }
   vi.stubGlobal('Worker', RealCompilerWorker);
-  const session = createSceneCompileSession();
+  const session = createSceneCompileSession(createSceneWorkerHealth());
   const scene = await session.compile(realInput, { generation: 0 });
   expect(scene?.rootEntityId).toBe(view.rootEntityId);
   expect(scene?.scanGuardRefusal).toMatchObject({ requestedFocusId: 'code:huge', fallbackFocusId: view.rootEntityId, entityCount: 2002 });
@@ -185,7 +185,7 @@ it('accepts the real compiler guard fallback above 2000 entities across structur
   session.dispose();
   vi.stubGlobal('Worker', WorkerStub);
   for (const patch of [{ requestedFocusId: 'other' }, { fallbackFocusId: 'other' }, { entityCount: 2001 }, { relationCount: 1 }]) {
-    const invalidSession = createSceneCompileSession();
+    const invalidSession = createSceneCompileSession(createSceneWorkerHealth());
     const pending = invalidSession.compile(realInput, { generation: 0 });
     WorkerStub.latest.reply({ ...scene!, scanGuardRefusal: { ...scene!.scanGuardRefusal!, ...patch } });
     expect(await pending).toBeUndefined();
@@ -196,7 +196,7 @@ it('accepts the real compiler guard fallback above 2000 entities across structur
 
 it('generation changes abandon selected work without restart and transfer the newer graph after it finishes', async () => {
   vi.stubGlobal('Worker', WorkerStub);
-  const session = createSceneCompileSession();
+  const session = createSceneCompileSession(createSceneWorkerHealth());
   const first = session.compile(input, { generation: 0 });
   const rejected = expect(first).rejects.toMatchObject({ name: 'AbortError' });
   const worker = WorkerStub.latest;
@@ -211,7 +211,7 @@ it('generation changes abandon selected work without restart and transfer the ne
 
 it('ignores wrong request IDs and generations before accepting a selected response', async () => {
   vi.stubGlobal('Worker', WorkerStub);
-  const session = createSceneCompileSession();
+  const session = createSceneCompileSession(createSceneWorkerHealth());
   const pending = session.compile(input, { generation: 4 });
   const worker = WorkerStub.latest;
   const request = worker.postMessage.mock.lastCall![0] as SceneCompileRequest;
@@ -236,7 +236,7 @@ it('uploads the bootstrap packet once, retains full graph for enrichment and rec
   vi.stubGlobal('Worker', WorkerStub);
   const samples: unknown[][] = [];
   const stop = subscribeLoadTiming((...sample) => samples.push(sample));
-  const session = createSceneCompileSession();
+  const session = createSceneCompileSession(createSceneWorkerHealth());
   const initial = session.initializeNeighborhood(packet, {}, { generation: 2 });
   const worker = WorkerStub.latest;
   expect(worker.postMessage.mock.lastCall![0].packet).toBe(packet);
@@ -257,7 +257,7 @@ it('uploads the bootstrap packet once, retains full graph for enrichment and rec
 });
 it('preserves invalid issue data rather than returning the fallback signal', async () => {
   vi.stubGlobal('Worker', WorkerStub);
-  const session = createSceneCompileSession();
+  const session = createSceneCompileSession(createSceneWorkerHealth());
   const result = session.initializeNeighborhood(packet, {}, { generation: 2 });
   replyInitialization(WorkerStub.latest, 'invalid');
   expect(await result).toEqual({ status: 'invalid', issues: [{ path: 'snapshot.entities[0]', message: 'invalid' }] });
@@ -265,12 +265,12 @@ it('preserves invalid issue data rather than returning the fallback signal', asy
 });
 it('initialization fallback is limited to unsupported/error/timeout failures', async () => {
   vi.stubGlobal('Worker', undefined);
-  let session = createSceneCompileSession();
+  let session = createSceneCompileSession(createSceneWorkerHealth());
   expect(await session.initializeNeighborhood(packet, {}, { generation: 2 })).toBeUndefined(); session.dispose();
   vi.stubGlobal('Worker', WorkerStub);
   for (const fail of ['status', 'error', 'timeout']) {
     if (fail === 'timeout') vi.useFakeTimers();
-    session = createSceneCompileSession();
+    session = createSceneCompileSession(createSceneWorkerHealth());
     const result = session.initializeNeighborhood(packet, {}, { generation: 2 });
     if (fail === 'status') replyInitialization(WorkerStub.latest, 'failed');
     else if (fail === 'error') WorkerStub.latest.onerror?.();
@@ -282,7 +282,7 @@ it('initialization fallback is limited to unsupported/error/timeout failures', a
 it('aborts, supersedes and disposes initializer jobs without fallback or accepting late replies', async () => {
   vi.stubGlobal('Worker', WorkerStub);
   for (const action of ['abort', 'supersede', 'dispose']) {
-    const session = createSceneCompileSession();
+    const session = createSceneCompileSession(createSceneWorkerHealth());
     const controller = new AbortController();
     const first = session.initializeNeighborhood(packet, {}, { generation: 2, signal: controller.signal });
     const rejection = expect(first).rejects.toMatchObject({ name: 'AbortError' });
@@ -302,7 +302,7 @@ it('aborts, supersedes and disposes initializer jobs without fallback or accepti
 
 it('reuses a retained patch-free cache copy but clones a modified copy', async () => {
   vi.stubGlobal('Worker', WorkerStub);
-  const session = createSceneCompileSession();
+  const session = createSceneCompileSession(createSceneWorkerHealth());
   try {
     const first = session.compile(input, { generation: 0 });
     const worker = WorkerStub.latest;
@@ -328,7 +328,7 @@ it('retains an abandoned guarded result without comparing it to a subsequently m
   snapshot.entities.push({ id: 'code:huge', name: 'huge', kind: 'code', parentId: view.rootEntityId, sourceRefs: [] },
     ...Array.from({ length: 2001 }, (_, i) => ({ id: `code:huge-${i}`, name: `leaf${i}`, kind: 'code' as const, parentId: 'code:huge', sourceRefs: [] })));
   const realInput: ScanSceneInput = { snapshot, view, focusEntityId: 'code:huge', boot: 'full', modeOptions: {}, childCounts: {}, unpublishedChildren: [] };
-  const session = createSceneCompileSession();
+  const session = createSceneCompileSession(createSceneWorkerHealth());
   try {
     const old = session.compile(realInput, { generation: 0 });
     const rejected = expect(old).rejects.toMatchObject({ name: 'AbortError' });
@@ -344,4 +344,92 @@ it('retains an abandoned guarded result without comparing it to a subsequently m
     worker.reply({ rootEntityId: view.rootEntityId } as AtlasScene);
     expect(await current).toBeDefined(); await rejected;
   } finally { session.dispose(); }
+});
+
+it('records worker progress and timeout without settling early or exposing payload data', async () => {
+  vi.useFakeTimers(); vi.stubGlobal('Worker', WorkerStub);
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  const diagnostics: { metric: string; duration: number }[] = [];
+  const unsubscribe = subscribeLoadTiming((metric, _start, duration) => diagnostics.push({ metric, duration }));
+  const session = createSceneCompileSession(createSceneWorkerHealth());
+  try {
+    const result = session.compile(input, { generation: 4 });
+    const worker = WorkerStub.latest;
+    const request = worker.postMessage.mock.lastCall![0] as SceneCompileRequest;
+    for (const phase of ['received', 'compiling']) worker.onmessage?.({ data: { operation: 'progress', id: request.id, generation: 4, phase } });
+    expect(worker.terminate).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(await result).toBeUndefined();
+    expect(diagnostics.map(sample => sample.metric)).toEqual(['atlas-worker-queue', 'atlas-worker-post-message', 'atlas-worker-received', 'atlas-worker-compiling', 'atlas-worker-timeout']);
+    expect(diagnostics.every(sample => Number.isFinite(sample.duration))).toBe(true);
+    expect(JSON.stringify(diagnostics)).not.toContain('root');
+    expect(warning).toHaveBeenCalledWith('Atlas worker preparation failed', { reason: 'atlas-worker-timeout', phase: 'compiling', elapsedMs: expect.any(Number) });
+  } finally { unsubscribe(); session.dispose(); }
+});
+
+it('latches a postMessage platform failure across sessions and disposal sharing browser health', async () => {
+  class BrokenWorker extends WorkerStub { postMessage = vi.fn(() => { throw new Error('transport unavailable'); }); }
+  vi.stubGlobal('Worker', BrokenWorker);
+  const health = createSceneWorkerHealth();
+  const first = createSceneCompileSession(health);
+  expect(first.unavailable()).toBe(false);
+  const pending = first.compile(input, { generation: 0 });
+  const worker = WorkerStub.latest;
+  expect(await pending).toBeUndefined(); first.dispose();
+  const next = createSceneCompileSession(health);
+  expect(first.unavailable()).toBe(true);
+  expect(next.unavailable()).toBe(true);
+  expect(await next.compile(input, { generation: 4 })).toBeUndefined();
+  expect(WorkerStub.latest).toBe(worker);
+  expect(worker.postMessage).toHaveBeenCalledOnce();
+  next.dispose();
+});
+it('request-specific rejected scope does not disable later worker sessions', async () => {
+  vi.stubGlobal('Worker', WorkerStub);
+  const health = createSceneWorkerHealth();
+  const first = createSceneCompileSession(health);
+  const pending = first.compile(input, { generation: 0 });
+  WorkerStub.latest.reply({ rootEntityId: 'wrong' } as AtlasScene);
+  expect(await pending).toBeUndefined(); first.dispose();
+  const next = createSceneCompileSession(health);
+  expect(next.unavailable()).toBe(false);
+  const current = next.compile(input, { generation: 0 });
+  const scene = WorkerStub.latest.reply();
+  expect(await current).toBe(scene); next.dispose();
+});
+
+it('a non-abandoned timeout permits a successful retry on a fresh worker across session disposal', async () => {
+  vi.useFakeTimers(); vi.stubGlobal('Worker', WorkerStub);
+  const health = createSceneWorkerHealth();
+  const first = createSceneCompileSession(health);
+  const pending = first.compile(input, { generation: 0 });
+  const old = WorkerStub.latest;
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(await pending).toBeUndefined();
+  expect(old.terminate).toHaveBeenCalledOnce();
+  expect(first.unavailable()).toBe(false);
+  first.dispose();
+  const next = createSceneCompileSession(health);
+  const retry = next.compile(input, { generation: 4 });
+  const current = WorkerStub.latest;
+  expect(current).not.toBe(old);
+  expect(current.postMessage.mock.lastCall![0].graph).toBeDefined();
+  old.reply(); const scene = current.reply();
+  expect(await retry).toBe(scene);
+  next.dispose();
+});
+it.each(['onerror', 'onmessageerror'] as const)('a transient %s resets the worker without disabling a fresh attempt', async event => {
+  vi.stubGlobal('Worker', WorkerStub);
+  const health = createSceneWorkerHealth();
+  const session = createSceneCompileSession(health);
+  const first = session.compile(input, { generation: 0 });
+  const old = WorkerStub.latest;
+  old[event]?.();
+  expect(await first).toBeUndefined();
+  expect(session.unavailable()).toBe(false);
+  const retry = session.compile(input, { generation: 0 });
+  const current = WorkerStub.latest;
+  expect(current).not.toBe(old);
+  const scene = current.reply(); expect(await retry).toBe(scene);
+  session.dispose();
 });

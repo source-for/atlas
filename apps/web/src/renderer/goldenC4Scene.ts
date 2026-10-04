@@ -182,6 +182,8 @@ export function compileAppStoryPlan(
 export const goldenAppStory = compileAppStoryPlan(goldenSnapshot, goldenView, goldenStory);
 
 export type C4SceneOptions = {
+  /** Worker diagnostics receives fixed milestones only, never semantic data. */
+  onPhase?: (phase: 'projection' | 'layout' | 'adapter') => void;
   baseSnapshot: ArchitectureSnapshot;
   rootEntityId: string;
   focusEntityId: string;
@@ -384,6 +386,7 @@ export function createC4Scene(options: C4SceneOptions): AtlasScene {
     ...(options.keepEntityIds ? { keepEntityIds: options.keepEntityIds } : {}),
     ...(options.targetAspect !== undefined ? { targetAspect: options.targetAspect } : {}),
   };
+  options.onPhase?.('projection');
   const authoredProjections = buildC4ProjectionBundle(snapshot, buildOptions);
   const previousSnapshot = previous?.protocolSnapshot as SceneSnapshot | undefined;
   const revision = previousSnapshot && previousSnapshot.sceneId === `scene:${baseSnapshot.repositoryId}:c4`
@@ -405,11 +408,13 @@ export function createC4Scene(options: C4SceneOptions): AtlasScene {
       : {}),
     ...(options.unpublishedChildren?.length ? { unpublishedChildren: options.unpublishedChildren } : {}),
   };
+  options.onPhase?.('layout');
   const compiled = authoring
     ? compileAuthoredC4Scene(baseSnapshot, authoring, buildOptions, compileOptions)
     // routeOverrides:[] is a no-op for routing but makes compileC4Scene return route
     // diagnostics, so the scan diagnostics line can surface the direct-fallback count.
     : compileC4Scene(snapshot, authoredProjections, scoped ? { ...compileOptions, routeOverrides: [] } : compileOptions);
+  options.onPhase?.('adapter');
   const directFallbackCount = (compiled.routeDiagnostics ?? [])
     .filter(diagnostic => diagnostic.routerDiagnostic === 'direct-fallback').length;
   const projections = compiled.projections;

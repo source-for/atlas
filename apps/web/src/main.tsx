@@ -85,7 +85,8 @@ async function tryBootScanFixture(
   slug: string | undefined,
 ): Promise<{ ok: true } | { ok: false; error: unknown }> {
   try {
-    const fixture: ScanFixture = await loadScanFixture(load, { targetAspect: bootstrapScanAspect() }, slug);
+    startupLifetime.assertCurrent();
+    const fixture: ScanFixture = await loadScanFixture(load, { targetAspect: bootstrapScanAspect() }, slug, startupLifetime.signal);
     startupLifetime.own(() => fixture.disposeSceneWorker());
     setActiveScanFixture(fixture);
     return { ok: true };

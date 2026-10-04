@@ -333,11 +333,13 @@ it('abandoned Back adopts its entry without applying it; an old App camera base 
 
 it('failed Back is consumed and preserves the popped entry through camera-only writes and a later old story replacement', async () => {
   const adapter = fakeHistory('https://atlas.example/map');
-  const controller = createNavigationHistoryController({ defaults, adapter, cameraUrlMinIntervalMs: 0, restore: async () => { throw new Error('host unavailable'); } });
+  const failure = new Error('host unavailable'); const onRestoreError = vi.fn();
+  const controller = createNavigationHistoryController({ defaults, adapter, cameraUrlMinIntervalMs: 0, onRestoreError, restore: async () => { throw failure; } });
   await controller.start(false); adapter.replacements.length = 0;
   const popped = 'https://atlas.example/map?root=container%3Apopped&sel=container%3Apopped';
   adapter.pop(popped); await Promise.resolve(); await Promise.resolve();
   expect(controller.current().rootEntityId).toBe('container:popped');
+  expect(onRestoreError).toHaveBeenCalledExactlyOnceWith(failure, 'popstate');
   expect(adapter.replacements).toHaveLength(0);
   controller.commitSettledCamera({ x: 9, y: 8, zoom: 1 });
   expect(adapter.pushes).toHaveLength(0); expect(adapter.replacements).toHaveLength(1);
@@ -346,6 +348,48 @@ it('failed Back is consumed and preserves the popped entry through camera-only w
   expect(adapter.pushes).toHaveLength(1); expect(adapter.replacements).toHaveLength(1);
   expect(new URL(adapter.href).searchParams.get('root')).toBe('container:old');
   controller.dispose();
+});
+
+it('reports initial restore failure while adopting its decoded entry', async () => {
+  const adapter = fakeHistory('https://atlas.example/map?root=container%3Atarget');
+  const failure = new Error('initial preparation failed'); const onRestoreError = vi.fn();
+  const controller = createNavigationHistoryController({ defaults, adapter, onRestoreError, restore: () => { throw failure; } });
+  const restored = await controller.start();
+  expect(restored.rootEntityId).toBe('container:target');
+  expect(onRestoreError).toHaveBeenCalledExactlyOnceWith(failure, 'initialize');
+  expect(adapter.replacements).toHaveLength(0);
+  controller.dispose();
+});
+
+it('does not report expected aborts or a restore failure superseded by a newer Back target', async () => {
+  const adapter = fakeHistory('https://atlas.example/map?root=container%3Afirst');
+  const onRestoreError = vi.fn(); let rejectOld!: (error: unknown) => void;
+  const blocked = new Promise<void>((_resolve, reject) => { rejectOld = reject; });
+  let calls = 0;
+  const controller = createNavigationHistoryController({ defaults, adapter, onRestoreError, restore: () => {
+    if (++calls === 1) return blocked;
+    throw new DOMException('Superseded', 'AbortError');
+  } });
+  const first = controller.start();
+  adapter.pop('https://atlas.example/map?root=container%3Asecond');
+  await Promise.resolve(); await Promise.resolve();
+  expect(controller.current().rootEntityId).toBe('container:second');
+  rejectOld(new Error('old preparation failed')); await first;
+  expect(onRestoreError).not.toHaveBeenCalled();
+  expect(controller.current().rootEntityId).toBe('container:second');
+  controller.dispose();
+});
+
+it('logs an unexpected restore failure when no error callback is installed', async () => {
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const adapter = fakeHistory('https://atlas.example/map');
+    const failure = new Error('preparation failed');
+    const controller = createNavigationHistoryController({ defaults, adapter, restore: () => { throw failure; } });
+    await controller.start();
+    expect(log).toHaveBeenCalledExactlyOnceWith('Atlas navigation restore failed', failure);
+    controller.dispose();
+  } finally { log.mockRestore(); }
 });
 
 it('a rate-limited protected push is retried as push when disposing, never as replacement of the popped entry', async () => {
@@ -363,6 +407,36 @@ it('a rate-limited protected push is retried as push when disposing, never as re
     expect(adapter.href).toBe(popped); expect(adapter.replacements).toHaveLength(0);
     adapter.throwOnPush = false; controller.dispose();
     expect(adapter.pushes).toHaveLength(1); expect(adapter.replacements).toHaveLength(0);
+    release(); await Promise.resolve();
+  } finally { vi.useRealTimers(); }
+});
+
+it('coalesces replacements into one rate-limited protected push without a duplicate history entry', async () => {
+  vi.useFakeTimers();
+  try {
+    const adapter = fakeHistory('https://atlas.example/map');
+    let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
+    const controller = createNavigationHistoryController({ defaults, adapter, restore: () => blocked });
+    await controller.start(false); adapter.replacements.length = 0;
+    const popped = 'https://atlas.example/map?root=container%3Apopped';
+    adapter.pop(popped); controller.cancelRestore();
+    adapter.throwOnPush = true;
+    controller.replace(state({ rootEntityId: 'container:old' }));
+    controller.commitSettledCamera({ x: 88, y: 99, zoom: 2 });
+    expect(adapter.href).toBe(popped);
+    adapter.throwOnPush = false;
+    const latest = state({ rootEntityId: 'container:old', selectedId: 'component:latest', camera: { x: 100, y: 110, zoom: 3 } });
+    controller.replace(latest);
+    controller.flush(latest);
+    expect(adapter.pushes).toHaveLength(0);
+    expect(adapter.replacements).toHaveLength(0);
+    vi.advanceTimersByTime(1000);
+    expect(adapter.pushes).toHaveLength(1);
+    expect(adapter.href).toBe(canonicalNavigationUrl(latest, popped));
+    vi.advanceTimersByTime(2000);
+    controller.dispose();
+    expect(adapter.pushes).toHaveLength(1);
+    expect(adapter.replacements).toHaveLength(0);
     release(); await Promise.resolve();
   } finally { vi.useRealTimers(); }
 });

@@ -18,7 +18,7 @@ describe('CLA-66: lazy band compile is the default scan path', () => {
     expect(app).toContain('scanCompileFocusForBand(');
     expect(app).toContain('stepScene');
     expect(app).toContain('function selectLevelLoaded(');
-    expect(app).toContain('await fixture.ensureNeighborhood(initialFocus)');
+    expect(app).toContain('await fixture.ensureNeighborhood(initialFocus, controller.signal)');
   });
 
   it('caches scan neighborhoods even when callers pass the authoring document', () => {

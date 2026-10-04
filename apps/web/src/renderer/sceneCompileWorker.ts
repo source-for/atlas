@@ -1,6 +1,6 @@
 import { compileScanScene } from './scanScene';
 import type { AtlasScene } from './types';
-import type { SceneWorkerRequest, SceneWorkerResponse, SceneCompileRequest } from './sceneCompileProtocol';
+import type { SceneWorkerRequest, SceneWorkerResponse, SceneCompileRequest, SceneWorkerProgress } from './sceneCompileProtocol';
 import { initializeNeighborhoodBootstrap } from './neighborhoodBootstrap';
 
 const worker = self as unknown as { onmessage: ((event: MessageEvent<SceneWorkerRequest>) => void) | null; postMessage(value: SceneWorkerResponse): void };
@@ -13,6 +13,8 @@ const retainScene = (id: number, scene: AtlasScene) => {
 };
 worker.onmessage = event => {
   const request = event.data;
+  const progress = (phase: SceneWorkerProgress['phase']) => worker.postMessage({ operation: 'progress', id: request.id, generation: request.generation, phase });
+  progress('received');
   if ('operation' in request) {
     // Failed/invalid initialization must not leave any older graph usable.
     graph = undefined; generation = undefined; scenes.clear();
@@ -39,7 +41,9 @@ worker.onmessage = event => {
     const previous = request.previousId === undefined ? request.input.previous : scenes.get(request.previousId);
     if (request.previousId !== undefined && !previous) throw new Error('Missing previous scene');
     const start = performance.now();
-    const scene = compileScanScene({ ...request.input, ...graph, previous });
+    progress('compiling');
+    const scene = compileScanScene({ ...request.input, ...graph, previous }, progress);
+    progress('compiled');
     retainScene(request.id, scene);
     worker.postMessage({ id: request.id, generation: request.generation, ok: true, scene, durationMs: performance.now() - start });
   } catch {

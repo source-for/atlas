@@ -1,5 +1,6 @@
 export type RendererLoadMetric = 'renderer-wasm-init' | 'renderer-gpu-init' | 'renderer-protocol' | 'renderer-native-scene' | 'renderer-native-patch' | 'renderer-gpu-init-failed';
-export type LoadMetric = RendererLoadMetric | 'atlas-fetch' | 'atlas-body' | 'atlas-parse' | 'atlas-validate' | 'atlas-story' | 'atlas-slice' | 'atlas-compile' | 'atlas-worker-compile' | 'atlas-worker-validate' | 'atlas-worker-slice' | 'atlas-worker-post-message' | 'atlas-worker-bootstrap-fallback' | 'atlas-worker-bootstrap-round-trip' | 'atlas-worker-round-trip' | 'atlas-first-frame';
+export type SceneWorkerDiagnosticMetric = 'atlas-worker-root-slice' | 'atlas-worker-projection' | 'atlas-worker-layout' | 'atlas-worker-adapter' | 'atlas-worker-queue' | 'atlas-worker-received' | 'atlas-worker-compiling' | 'atlas-worker-compiled' | 'atlas-worker-timeout' | 'atlas-worker-runtime-error' | 'atlas-worker-message-error' | 'atlas-worker-response-error' | 'atlas-worker-post-message-error' | 'atlas-worker-unavailable';
+export type LoadMetric = SceneWorkerDiagnosticMetric | RendererLoadMetric | 'atlas-fetch' | 'atlas-body' | 'atlas-parse' | 'atlas-validate' | 'atlas-story' | 'atlas-slice' | 'atlas-compile' | 'atlas-worker-compile' | 'atlas-worker-validate' | 'atlas-worker-slice' | 'atlas-worker-post-message' | 'atlas-worker-bootstrap-fallback' | 'atlas-worker-bootstrap-round-trip' | 'atlas-worker-round-trip' | 'atlas-first-frame';
 type Listener = (metric: LoadMetric, startMs: number, durationMs: number) => void;
 const listeners = new Set<Listener>();
 let firstFrameSubmitted = false;
@@ -38,4 +39,10 @@ export function recordAtlasWorkerPhase(metric: 'atlas-worker-compile' | 'atlas-w
 
 export function recordAtlasWorkerCompile(durationMs: number): void {
   recordAtlasWorkerPhase('atlas-worker-compile', durationMs);
+}
+
+/** Fixed reason/phase names and numeric elapsed times only. */
+export function recordSceneWorkerDiagnostic(metric: SceneWorkerDiagnosticMetric, startMs: number): void {
+  if (!listeners.size) return;
+  for (const listener of listeners) listener(metric, startMs, Math.max(0, performance.now() - startMs));
 }

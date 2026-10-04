@@ -17,6 +17,7 @@ it('owns one graph generation and bounds previous scene references to the last t
   };
   const first = send({ id: 1, generation: 0, graph, input });
   expect(first.ok).toBe(true);
+  expect(worker.postMessage.mock.calls.slice(0, 3).map(call => call[0])).toEqual(['received', 'compiling', 'compiled'].map(phase => ({ operation: 'progress', id: 1, generation: 0, phase })));
   expect(compile.mock.lastCall![0]).toMatchObject(graph);
   send({ id: 2, generation: 0, previousId: 1, input });
   expect(compile.mock.lastCall![0].previous).toBe(first.scene);

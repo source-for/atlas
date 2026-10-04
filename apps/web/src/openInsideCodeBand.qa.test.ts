@@ -37,10 +37,10 @@ describe('CLA-78: Code rail after Open inside a container', () => {
   it('wires neighborhood preparation before the level rail compiles', () => {
     expect(app).toContain('function selectLevel(');
     expect(app).toContain('function selectLevelLoaded(');
-    expect(app).toContain('await fixture.ensureNeighborhood(initialFocus)');
-    expect(app).toContain('await fixture.ensureNeighborhood(focus)');
+    expect(app).toContain('await fixture.ensureNeighborhood(initialFocus, controller.signal)');
+    expect(app).toContain('await fixture.ensureNeighborhood(focus, controller.signal)');
     const selectLevel = app.slice(app.indexOf('function selectLevel('), app.indexOf('function selectLevelLoaded('));
-    expect(selectLevel.indexOf('await fixture.ensureNeighborhood(focus)')).toBeLessThan(selectLevel.indexOf('return composeScanSceneAsync('));
+    expect(selectLevel.indexOf('await fixture.ensureNeighborhood(focus, controller.signal)')).toBeLessThan(selectLevel.indexOf('return composeScanSceneAsync('));
     expect(selectLevel).toContain('prepareForegroundWithRetry(request');
     expect(selectLevel).toContain('requireForegroundSceneRequest(request)');
     expect(selectLevel).toContain('selectLevelLoaded(index, prepared)');
