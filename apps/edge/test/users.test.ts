@@ -165,7 +165,7 @@ describe('operator users scripts (CLA-316)', () => {
     expect(fakeDeploy(['prod'])).toMatchObject({ code: 2, spawned: [], reads: [] });
   });
 
-  it.each(['preflight', 'migrations'])('retries %s once after code 7403 without exposing captured output', phase => {
+  it.each(['preflight', 'migrations'])('retries %s once after code 7403 while surfacing redacted diagnostics', phase => {
     const failed = { status: 1, stderr: '[ERROR] D1 unauthorized [code: 7403] token=never-print-this' };
     const prefix = phase === 'migrations' ? [{ status: 0 }] : [];
     const result = fakeDeploy(['staging'], { results: [...prefix, failed, { status: 0 }] });
@@ -226,6 +226,26 @@ environment-value`;
       if (secret === 'refresh') expect(output).not.toContain('refresh\nvalue');
       else expect(output).not.toContain(secret);
     }
+  });
+
+  it('redacts credentials inside double-encoded JSON without hiding ordinary short values', () => {
+    const payload = {
+      access_token: 'nested-access-value', refresh_token: 'nested-refresh\nvalue',
+      client_secret: 'nested-"quoted"-value', authorization: 'Bearer nested-auth-value',
+      progress: 'Migration completed',
+    };
+    const encoded = JSON.stringify(JSON.stringify(payload));
+    const result = fakeDeploy(['staging'], {
+      env: { SERVICE_API_KEY: 'environment-secret-value', SHORT_SECRET: 'applied' },
+      results: [{ status: 7, stderr: `API rejected payload ${encoded}\nMigration applied\n${JSON.stringify(JSON.stringify('environment-secret-value'))}` }],
+    });
+    const output = [...result.out, ...result.err].join('\n');
+    expect(output).toContain('API rejected payload');
+    expect(output).toContain('Migration completed');
+    expect(output).toContain('Migration applied');
+    for (const secret of ['nested-access-value', 'nested-refresh', 'nested-', 'environment-secret-value']) expect(output).not.toContain(secret);
+    expect(output).toContain('[REDACTED]');
+    expect(result.waits).toEqual([]);
   });
 
   it('shows redacted diagnostics from the initial and retried D1 attempts', () => {

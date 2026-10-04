@@ -516,3 +516,67 @@ it('a successful bootstrap resets prior transient faults before a mixed third-fa
   expect(session.unavailable()).toBe(true);
   session.dispose();
 });
+
+it('correlates worker clocks, main receipt/handling and post ACK after a job has settled', async()=>{
+  const {subscribeSceneWorkerTiming}=await import('../performance/sceneWorkerTimings');
+  const {createPerformanceRecorder}=await import('../performance/recorder');
+  const recorder=createPerformanceRecorder();const stop=subscribeSceneWorkerTiming(job=>recorder.recordWorkerJob(job));
+  vi.stubGlobal('Worker',WorkerStub);
+  const session=createSceneCompileSession(createSceneWorkerHealth());
+  try {
+    const pending=session.compile(input,{generation:7});const worker=WorkerStub.latest;
+    const request=worker.postMessage.mock.lastCall![0] as SceneCompileRequest;
+    expect(request.diagnostics).toBe(true);
+    worker.onmessage!({data:{operation:'progress',id:request.id,generation:7,phase:'received',workerPhaseAt:100,graphSize:{entities:5507,relations:13003,entityNames:['private']},clocks:{workerReceived:100,workerModuleReady:90,workerTimeOrigin:0,mainSendBefore:0}}});
+    worker.reply();await pending;
+    worker.onmessage!({data:{operation:'timing',id:request.id,generation:7,clocks:{workerResultPostBefore:200,workerResultPostAfter:220}}});
+    const trace=recorder.report().workerJobs[0];
+    expect(trace).toMatchObject({jobId:request.id,generation:7,outcome:'success',graphSent:true,workerFresh:true});
+    expect(trace.graphSize).toEqual({entities:5507,relations:13003});
+    expect(trace.clocks.workerResultPostAfter).toBe(220);
+    expect(trace.clocks.mainSendBefore).toBeGreaterThan(0);
+    expect(trace.clocks.mainHandleEnd).toBeGreaterThanOrEqual(trace.clocks.mainResultHandled!);
+    expect(trace.clocks.mainHandleEnd).toBeGreaterThanOrEqual(trace.clocks.mainReceive!);
+    expect(trace.phases.received).toMatchObject({worker:100,mainReceive:expect.any(Number),mainHandleEnd:expect.any(Number)});
+    const second=session.compile(input,{generation:7});worker.reply();await second;
+    const traces=recorder.report().workerJobs;
+    expect(traces[1]).toMatchObject({workerId:trace.workerId,workerFresh:false,graphSent:false});
+    expect(traces[1].correlationId).not.toBe(trace.correlationId);
+  } finally {session.dispose();stop();}
+});
+
+it('retains queued cancellation and active timeout clocks without changing job behavior',async()=>{
+  const {subscribeSceneWorkerTiming}=await import('../performance/sceneWorkerTimings');
+  const {createPerformanceRecorder}=await import('../performance/recorder');
+  const recorder=createPerformanceRecorder();const stop=subscribeSceneWorkerTiming(job=>recorder.recordWorkerJob(job));
+  vi.useFakeTimers();vi.stubGlobal('Worker',WorkerStub);
+  const session=createSceneCompileSession(createSceneWorkerHealth());
+  try {
+    const active=session.compile(input,{generation:0});
+    const controller=new AbortController();
+    const queued=session.compile(input,{generation:0,priority:'speculative',signal:controller.signal});
+    const rejected=expect(queued).rejects.toMatchObject({name:'AbortError'});controller.abort();await rejected;
+    await vi.advanceTimersByTimeAsync(20000);expect(await active).toBeUndefined();
+    const traces=recorder.report().workerJobs;
+    expect(traces[0]).toMatchObject({outcome:'timeout',clocks:{mainTerminal:expect.any(Number)}});
+    expect(traces[1]).toMatchObject({outcome:'cancelled',clocks:{mainTerminal:expect.any(Number)}});
+    expect(traces[1].clocks.mainSendBefore).toBeUndefined();
+  } finally {session.dispose();stop();}
+});
+
+it('a throwing diagnostics observer cannot strand success, failure, or the next worker request',async()=>{
+  const {subscribeSceneWorkerTiming}=await import('../performance/sceneWorkerTimings');
+  const stop=subscribeSceneWorkerTiming(()=>{throw new Error('observer failure');});
+  vi.stubGlobal('Worker',WorkerStub);
+  const session=createSceneCompileSession(createSceneWorkerHealth());
+  try {
+    const first=session.compile(input,{generation:0});
+    const firstScene=WorkerStub.latest.reply();expect(await first).toBe(firstScene);
+    const failed=session.compile(input,{generation:0});
+    expect(()=>WorkerStub.latest.onerror?.()).not.toThrow();
+    expect(await failed).toBeUndefined();
+    const retry=session.compile(input,{generation:0});
+    const retryScene=WorkerStub.latest.reply();expect(await retry).toBe(retryScene);
+    expect(session.unavailable()).toBe(false);
+  } finally {session.dispose();stop();}
+});

@@ -42,7 +42,7 @@ describe('local performance recorder', () => {
     expect(report.droppedSamples).toBe(1);
     report.samples[0]!.startMs = 999;
     expect(recorder.report().samples[0]!.startMs).toBe(2);
-    expect(Object.keys(report)).toEqual(['schemaVersion', 'capabilities', 'droppedSamples', 'samples']);
+    expect(Object.keys(report)).toEqual(['schemaVersion', 'capabilities', 'droppedSamples', 'samples', 'workerJobs', 'droppedWorkerJobs']);
     expect(JSON.stringify(report)).not.toMatch(/secret|question|private|key/);
   });
   it('never exports entry names, targets, URLs or attribution', () => {

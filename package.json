@@ -25,7 +25,8 @@
     "eval:atlas": "node --test scripts/atlas-planning-audit.test.mjs && node scripts/atlas-planning-audit.mjs",
     "perf:acquire": "node scripts/performance/acquire.mjs",
     "perf:browser": "node scripts/performance/run.mjs",
-    "perf:test": "node --test scripts/performance/common.test.mjs"
+    "perf:test": "node --test scripts/performance/common.test.mjs scripts/performance/workerAnalysis.test.mjs",
+    "perf:workers": "node scripts/performance/workerTrials.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

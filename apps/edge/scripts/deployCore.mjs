@@ -41,13 +41,24 @@ export const ENVIRONMENTS = ['staging', 'production'];
 export const API_TOKEN = 'CLOUDFLARE_API_TOKEN';
 
 /** Keep command progress/errors visible while removing credentials before they reach logs. */
-function redactD1Output(value, secretEnv) {
+function redactD1Output(value, secretEnv, depth = 0) {
   let output = String(value ?? '');
-  // Replace literal and JSON-escaped environment secrets, including the ignored API token.
+  // Replace literal and JSON-escaped env secrets of at least 8 characters, including the ignored API token.
+  // Bare values of 1–7 characters may remain to avoid mangling ordinary output;
+  // labeled credential fields and Bearer values are still redacted at any length.
   const secrets = Object.entries(secretEnv)
-    .filter(([name, value]) => value && /token|secret|password|credential|authorization|api[_-]?key/i.test(name))
+    .filter(([name, value]) => value && value.length >= 8 && /token|secret|password|credential|authorization|api[_-]?key/i.test(name))
     .flatMap(([, value]) => [value, JSON.stringify(value).slice(1, -1)])
     .sort((a, b) => b.length - a.length);
+  // Wrangler may embed a serialized JSON payload inside a quoted JSON string.
+  // Decode string literals before matching fields, then preserve their encoding in the log.
+  if (depth < 4) output = output.replace(/"(?:\\[\s\S]|[^"\\])*"/g, literal => {
+    try {
+      const decoded = JSON.parse(literal);
+      const redacted = redactD1Output(decoded, secretEnv, depth + 1);
+      return redacted === decoded ? literal : JSON.stringify(redacted);
+    } catch { return literal; }
+  });
   // Quoted values may contain escaped quotes or span lines. Consume the whole value first.
   const credential = /((?:["']?(?:[\w-]*(?:token|secret|password|credential|api[_-]?key)[\w-]*|authorization)["']?)\s*[:=]\s*)("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[^\s,;}]+)/gi;
   output = output.replace(credential, '$1[REDACTED]');

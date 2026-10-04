@@ -1,3 +1,4 @@
+import { WORKER_JOB_LIMIT, copySceneWorkerJob, type SceneWorkerJobTiming } from './sceneWorkerTimings';
 export const PERFORMANCE_LIMIT = 240;
 export type SearchMetric = 'search-startup' | 'search-prepare' | 'search-index' | 'search-query' | 'search-round-trip' | 'search-fallback';
 export type RenderMetric = 'render-scene' | 'render-state' | 'render-draw' | 'render-publish';
@@ -6,7 +7,7 @@ export type Metric = SearchMetric | RenderMetric | LoadMetric | 'navigation' | '
 export type Capability = 'navigation' | 'paint' | 'largest-contentful-paint' | 'event' | 'longtask' | 'frames';
 export type Availability = 'available' | 'unsupported' | 'failed';
 export interface Sample { metric: Metric; startMs: number; durationMs: number }
-export interface PerformanceReport { schemaVersion: 1; capabilities: Partial<Record<Capability, Availability>>; droppedSamples: number; samples: Sample[] }
+export interface PerformanceReport { schemaVersion: 1; capabilities: Partial<Record<Capability, Availability>>; droppedSamples: number; samples: Sample[]; workerJobs: SceneWorkerJobTiming[]; droppedWorkerJobs: number }
 const metrics = new Set<Metric>(['navigation', 'first-paint', 'first-contentful-paint', 'largest-contentful-paint', 'interaction', 'long-task', 'frame-stall', 'bootstrap-start', 'bootstrap-complete', 'search-startup', 'search-prepare', 'search-index', 'search-query', 'search-round-trip', 'search-fallback', 'render-scene', 'render-state', 'render-draw', 'render-publish', 'atlas-fetch', 'atlas-body', 'atlas-parse', 'atlas-validate', 'atlas-story', 'atlas-slice', 'atlas-compile', 'atlas-worker-root-slice', 'atlas-worker-projection', 'atlas-worker-layout', 'atlas-worker-adapter', 'atlas-worker-queue','atlas-worker-received','atlas-worker-compiling','atlas-worker-compiled','atlas-worker-timeout','atlas-worker-runtime-error','atlas-worker-message-error','atlas-worker-response-error','atlas-worker-post-message-error','atlas-worker-unavailable', 'atlas-worker-compile', 'atlas-worker-validate', 'atlas-worker-slice', 'atlas-worker-post-message', 'atlas-worker-bootstrap-fallback', 'atlas-worker-bootstrap-round-trip', 'atlas-worker-round-trip', 'atlas-first-frame', 'renderer-wasm-init', 'renderer-gpu-init', 'renderer-protocol', 'renderer-native-scene', 'renderer-native-patch', 'renderer-gpu-init-failed']);
 
 /** Only fixed metric identifiers and numeric timings enter the report. Never serialize browser entries. */
@@ -15,6 +16,9 @@ export function createPerformanceRecorder(limit = PERFORMANCE_LIMIT) {
   const samples: Sample[] = [];
   const capabilities: PerformanceReport['capabilities'] = {};
   let droppedSamples = 0;
+  let droppedWorkerJobs = 0;
+  let newestCorrelationId = 0;
+  const workerJobs = new Map<number, SceneWorkerJobTiming>();
   return {
     capability(name: Capability, state: Availability) { capabilities[name] = state; },
     record(metric: Metric, startMs: number, durationMs = 0) {
@@ -22,7 +26,15 @@ export function createPerformanceRecorder(limit = PERFORMANCE_LIMIT) {
       if (samples.length === bound) { samples.shift(); droppedSamples++; }
       samples.push({ metric, startMs: Math.round(startMs * 10) / 10, durationMs: Math.round(durationMs * 10) / 10 });
     },
-    report(): PerformanceReport { return { schemaVersion: 1, capabilities: { ...capabilities }, droppedSamples, samples: samples.map(sample => ({ ...sample })) }; },
+    recordWorkerJob(job: SceneWorkerJobTiming) {
+      if (!workerJobs.has(job.correlationId)) {
+        if (job.correlationId <= newestCorrelationId) return; // Late ACK must not resurrect an evicted job.
+        newestCorrelationId = job.correlationId;
+        if (workerJobs.size === WORKER_JOB_LIMIT) { workerJobs.delete(workerJobs.keys().next().value!); droppedWorkerJobs++; }
+      }
+      workerJobs.set(job.correlationId, copySceneWorkerJob(job));
+    },
+    report(): PerformanceReport { return { schemaVersion: 1, capabilities: { ...capabilities }, droppedSamples, samples: samples.map(sample => ({ ...sample })), workerJobs: [...workerJobs.values()].map(copySceneWorkerJob), droppedWorkerJobs }; },
   };
 }
 

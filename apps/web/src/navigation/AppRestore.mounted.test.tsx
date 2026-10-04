@@ -10,11 +10,17 @@ import { setActiveScanFixture } from '../renderer/fixtureBundle';
 import type { NavigationHistoryController } from './historyController';
 import { sliceArchitectureNeighborhood, type ArchitectureSnapshot, type ArchitectureView } from '@okie/architecture';
 import { canonicalNavigationUrl } from './navigationState';
+import { entityForScene } from '../renderer/goldenC4Scene';
+import type { AtlasScene } from '../renderer/types';
 
-const captured = vi.hoisted(() => ({ controller: undefined as NavigationHistoryController | undefined }));
+const captured = vi.hoisted(() => ({ controller: undefined as NavigationHistoryController | undefined, creations: 0, restores: [] as string[] }));
 vi.mock('./historyController', async importOriginal => {
   const original = await importOriginal<typeof import('./historyController')>();
   return { ...original, createNavigationHistoryController: (...args: Parameters<typeof original.createNavigationHistoryController>) => {
+    captured.creations += 1;
+    const options = args[0];
+    const restore = options.restore;
+    options.restore = (state, source) => { captured.restores.push(source); return restore(state, source); };
     captured.controller = original.createNavigationHistoryController(...args);
     return captured.controller;
   } };
@@ -196,11 +202,25 @@ describe('mounted App story history restoration', () => {
    });
    const renamedStory = JSON.parse(JSON.stringify(story).replaceAll('container:web-app', 'container:apps-web'));
    fixture = compileScanNeighborhoodFixture(packet, renamedStory, { loadNeighborhood, loadStory: async () => renamedStory, loadExcerpts: async () => undefined });
+   // A retained parent card can predate neighborhood enrichment. Canonical presentation wins.
+   const staleResidentScene = (scene: AtlasScene): AtlasScene => {
+     const resident = scene.entities.find(entity => entity.id === container.id) ?? entityForScene(container, {});
+     return { ...scene, entities: [...scene.entities.filter(entity => entity.id !== container.id),
+       { ...resident, name: 'Stale resident web', kind: 'component', responsibility: 'Old resident prose' }] };
+   };
+   const createScene = fixture.createScene.bind(fixture);
+   vi.spyOn(fixture, 'createScene').mockImplementation((...args) => staleResidentScene(createScene(...args)));
+   const createSceneAsync = fixture.createSceneAsync.bind(fixture);
+   vi.spyOn(fixture, 'createSceneAsync').mockImplementation(async (...args) => staleResidentScene(await createSceneAsync(...args)));
    setActiveScanFixture(fixture);
    const module = await import('../App'); module.refreshAppScanFixture();
    window.history.replaceState(null, '', '/?fixture=scan&backend=canvas2d&root=container%3Aapps-web&detail=context&lens=system%3Aokie&z=7.95');
    root = createRoot(host);
    await act(async () => { root.render(<App/>); }); await settle();
+   await act(async () => { host.querySelector<HTMLButtonElement>('#details-tab')!.click(); });
+   expect(host.querySelector('#architecture-inspector h2')!.textContent).toBe('@okie/web');
+   expect(host.querySelector('#architecture-inspector')!.textContent).toContain(description);
+   expect(host.querySelector('#architecture-inspector')!.textContent).not.toContain('Old resident prose');
    await act(async () => { host.querySelector<HTMLButtonElement>('#overview-tab')!.click(); });
    expect(captured.controller!.current()).toMatchObject({ rootEntityId: 'container:apps-web', selectedId: 'container:apps-web' });
    expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-selected-entity-id')).toBe('container:apps-web');
@@ -222,9 +242,13 @@ describe('mounted App story history restoration', () => {
    const requestedRoot = unknown ? 'unknown-root' : rootId;
    const requestedSelected = unknown ? 'unknown-selected' : selectedId;
    window.history.replaceState(null, '', `/?fixture=stress&backend=canvas2d&root=${requestedRoot}&sel=${requestedSelected}&lens=${unknown ? 'unknown-lens' : rootId}`);
+   const creations = captured.creations;
+   captured.restores = [];
    root = createRoot(host);
    await act(async () => { root.render(<App/>); }); await settle();
    const current = captured.controller!.current();
+   expect(captured.creations - creations).toBe(1);
+   expect(captured.restores).toEqual(['initialize']);
    expect(current.rootEntityId).toBe(unknown ? loaded.entities[0]!.id : rootId);
    expect(current.selectedId).toBe(unknown ? loaded.entities[0]!.id : selectedId);
    expect(current.lensPath).toBeUndefined();
