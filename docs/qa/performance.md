@@ -237,3 +237,6 @@ PR #182 final re-review integration is based on PR #181 `58dea89`, including own
 
 
 PR #182 has been replayed onto PR #181 `d91cfb6`, which keeps canonical inspector selection outside render residency and retains only resident geometry when framing relationships. Renderer telemetry behavior is unchanged. Regeneration preserves the parent's reviewed anchors and adds only the adapter's one-line anchor shift relative to that parent; deliberate combined evidence pin is `9d79f772` (from `40270fdb`). Final source/head are frozen during refreshed full gates. Parent and final-head browser verification remain required; earlier-head green results are historical evidence.
+
+
+PR #182 final story integration is based on PR #181 `1cb23ce`, preserving logical story selection for Overview content, token-owned publication status, and the nested arrival callback fence. Renderer attribution behavior is unchanged. Regeneration produces no additional generated changes; the adapter anchor advances one line relative to the parent without changing excerpt text. Deliberate combined evidence pin is `9636323e` (from `9d79f772`). Refreshed full gates and final browser checks remain pending; source and head are frozen while verification runs.
