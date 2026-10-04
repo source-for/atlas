@@ -22,11 +22,15 @@
     "package:cli": "node scripts/package-scan.mjs",
     "publish:atlas": "node scripts/publish-atlas.mjs",
     "build:portable": "pnpm build && node scripts/build-portable-viewer.mjs",
-    "eval:atlas": "node --test scripts/atlas-planning-audit.test.mjs && node scripts/atlas-planning-audit.mjs"
+    "eval:atlas": "node --test scripts/atlas-planning-audit.test.mjs && node scripts/atlas-planning-audit.mjs",
+    "perf:acquire": "node scripts/performance/acquire.mjs",
+    "perf:browser": "node scripts/performance/run.mjs",
+    "perf:test": "node --test scripts/performance/common.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
     "esbuild": "0.25.12",
+    "playwright": "1.58.2",
     "typescript": "^5.8.3"
   }
 }

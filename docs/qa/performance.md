@@ -263,3 +263,88 @@ PR #184 review corrected the initial latch policy: a single timeout cannot estab
 Corrected source passed all four required gates (1,791 web tests). The staging retry passed D1 migrations and deployed version `45b19451-cc1e-4879-9448-7dff0dabc833` using existing credentials/configuration. Browser staging QA passed golden step 3 after waiting for paused, populated inspector and entity selection; published story Back → pre-story, Forward → restored paused step 2 with matching URL and `@okie/web` inspector; and rapid Back/Forward reversal. Screenshots: [corrected golden step 3](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla382-fixes-golden-step3.jpg), [corrected published restore](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla382-fixes-published-forward.jpg). Automated staging smoke stopped at Access login because this worktree has no service token; browser QA used the existing signed-in session. Production was not deployed.
 
 Diagnostics also captured a slow successful story jump: 13,911 ms queued behind abandoned work, then 14,733.9 ms worker compile, 30,146 ms caller round trip. Worker progress reached projection at 931.2 ms, layout at 6,772.6 ms, adapter at 14,242 ms and completion at 14,789.1 ms relative to worker start. No timeout/error warning occurred. This attributes that successful slow trial to queueing and compilation, not the original unexplained 20-second timeout; it is not a performance improvement claim. Safe worker-only samples are retained privately in `/tmp/cla382-fixes-worker-timings.json`.
+
+## Local production-build baseline harness
+
+`pnpm perf:browser` measures the built application through its normal UI and module workers. It is a manual measurement tool, with no performance budget or CI gate. Prepare it with:
+
+```sh
+pnpm install
+pnpm exec playwright install chromium # optional when using --channel chromium; default uses installed Chrome
+pnpm perf:acquire
+pnpm build
+pnpm perf:browser --runs 10 --backend webgpu --channel chrome --cpu 1 --output /tmp/okie-performance.json
+```
+
+The default browser is headed installed Chrome, with a 1440 × 1000 viewport and device scale factor 1. `--channel chromium` uses the Playwright-managed browser. `--headless` is a separate environment, not interchangeable with a headed baseline; record it in every comparison. `--cpu 4` applies CDP CPU slowdown, not network throttling. For implementation checks only, `--smoke --runs 1 --datasets golden` permits fewer than ten repetitions and labels the raw report as a smoke run. Close other workloads before a baseline. Build/check/test processes must finish first. The harness runs datasets and repetitions serially in fixed blocks golden → stress → published, with cold before warm each repetition. Thermal/background drift therefore correlates with dataset and cache order; this run does not cancel that bias.
+
+The fixture-only HTTP server binds loopback and serves `apps/web/dist`, the root/`/new`/published route shell, a fixed read-only `auth/me` answer with Ask disabled, and byte-verified captured public responses. It never proxies an API or model. Unknown scan focuses, excerpts, versions and other API requests fail and invalidate a measured row. CSP limits connections to the local origin, DNS resolution blocks remote hosts, and browser requests are checked for external HTTP(S) traffic. Browser route interception is deliberately absent: interception disables HTTP caching in Playwright.
+
+The committed [`published-large.pin.json`](../../fixtures/performance/published-large.pin.json) identifies publication `publication-fd362d5c-bc5e-4a21-92ca-ca93462dc940`, artifact `artifact-50929931-2e70-41c6-a798-bfcac45a4b90`, snapshot `snapshot:source-for-atlas:9831775f5bbe`, source commit `9831775f5bbed310b771900225501be42b6d159e`, 5,507 entities and 13,003 relations. Its response manifest includes immutable API URLs, status, exact bytes and SHA-256 for the complete snapshot, view, root and focused neighborhoods, story/catalog, excerpts and sidecars. The ancillary attribution index pins the matching published row plus the acquisition source-index hash; restoration reuses that recorded row and never substitutes the latest index. `perf:acquire` restores 24 gitignored response bodies (66,090,986 bytes) and refuses changed hashes. Acquisition is the only step contacting production; timing runs use local captured bytes. `--write-pin` is for an explicitly reviewed new pin, not routine restoration. Golden snapshot and generated stress hashes are included in each local report; stress generation uses 5,000 nodes, 15,000 paths and seed 42.
+
+Static hashed assets and version-pinned JSON use `public, max-age=31536000, immutable`; the initial unversioned neighborhood uses the production latest-object policy `public, max-age=60`. HTML uses `no-cache`, API auth uses `no-store`, and the local server supports ETags/304. It mirrors the application CSP, MIME, tools permission and origin-cluster headers, with a tighter same-origin connect policy to prevent outside traffic. This measures browser startup, worker processing and interactions on loopback, not CDN/R2, model, geographic network or cold server latency. Response bodies are preloaded on the local server in both cache conditions.
+
+Each repetition uses a fresh browser context for the cold run, with CDP HTTP cache cleared and disabled throughout the complete measured journey. Repeated interaction fetches cannot reuse cached responses, so cold interaction timings are a cache-disabled upper-bound condition, not a typical first visit that caches after load. The warm run enables HTTP caching, performs an unmeasured full journey to prime every required asset/data response, then loads a fresh document in that context. Warm means browser resource/data cache, **not** a retained JavaScript module, scene worker, search index or BFCache page. Both conditions create fresh document workers. Contexts are isolated; the browser process/GPU shader caches remain shared across repetitions, so “cold” does not claim cold hardware or a new OS process.
+
+Every measured load forces `okie.devMode=1`: the baseline measures the dev-mode shell, including authoring toolbar, `+ Diagram`, renderer-status pill, search-backend label and diagnostics inspector notation, rather than the default-user shell. Recording is enabled before navigation with `perf=1`; the performance diagnostic panel is hidden by the harness to avoid covering controls. A separate `addInitScript` long-task observer starts before document scripts, so the maximum startup task cannot disappear from the app recorder's 240-sample ring. That observer stores only numeric start/duration values. Browser/Playwright versions, commit/dirty state, OS/architecture, CPU model/count, RAM, GPU feature/device information, actual renderer backend, viewport, CPU rate, cache definition, build-index hash and all fixture pins accompany the measurements. Raw JSON and generated Markdown tables default to `/tmp`; traces, screenshots and raw timing dumps do not belong in git.
+
+| Metric | Operational definition |
+| --- | --- |
+| First draw submission | Existing `atlas-first-frame` timestamp since navigation: first successful real-scene CPU draw/submission, never GPU completion or generic page paint. Missing/evicted timing is a failure, not zero. |
+| Usable atlas | Later of first draw submission and the pre-document DOM observer's first populated Details title or Overview title, matching selected entity, nonempty projected graph, positive-size canvas and post-draw renderer visible-entity diagnostics reporting at least one visible object. This explicit readiness surrogate does not assert pixel correctness or GPU completion; browser QA remains separate. |
+| Maximum long task before draw | Maximum complete main-thread long-task duration whose start precedes first draw; includes the task containing submission. Zero means supported observer with no matching tasks; unavailable observer is unsupported. |
+| Level state commit | Containers control click (Code for stress) to committed target detail with matching populated inspector, changed navigation-commit epoch and nonzero visible entities. Camera snaps; no flight is involved. This predicate does not assert a new frame has drawn at the target level; visible counts can belong to the prior frame. |
+| Child navigation | First inspector child click to matching selected/inspected child and new settled camera epoch. Includes the camera transition. |
+| Story start | Overview launch click to the expected story player leaving preparation with a populated inspector. Flight/playing is permitted: startup is measured separately from arrival. |
+| Story step 3 | Step-3 jump click to `data-playback-state="paused"`, visible `STEP 3 OF`, and populated inspector. No fixed-delay completion. |
+| Search | First nonblank input event to matching typed query, completed result list and at least one result. Golden/published use `web`; stress uses `Node 42`. Search backend/result count are recorded. This can include remaining worker index startup after input; opening search itself is unmeasured. |
+
+The fixed journey is load → unmeasured switch to the Details tab (to expose the same inspector child control) → Containers → first inspector child → overview launch → jump to step 3 → first nonblank search. Control timings start from captured browser click/input events and finish at the first successful browser readiness poll, with animation-frame polling granularity. Stress is a renderer-only synthetic scene: child/story operations are reported unsupported instead of borrowing golden data or inventing zero latencies. Stress enters at `cx=59&cy=44&z=5.27&detail=component`, around Node 0, then measures the Code level control. The default Context/Fit camera culls all cards on this fixture in the current renderer and would fail usable readiness; this limitation remains unchanged. Its explicit arrival is a fixture benchmark, not default-route latency. Level targets and synthetic compile costs are comparable only within the same fixture. Its startup, level and search are measured normally. A failed step is retained with its failure reason; later steps are attempted and missing requests invalidate the run. Warm priming must succeed before a warm measurement.
+
+The summary reports successful N separately from failures and unsupported operations. Median and p95 use nearest-rank percentiles on successful samples, without discarding failed runs from the failure count. With ten successful runs, p95 is the observed maximum; this is a small-sample descriptive baseline, not a tail guarantee. Compare only matching environments and fixture/build pins. Smoke output is not a baseline or an improvement claim.
+
+## Recorded baseline: 4 October 2026
+
+Measured 2026-10-04T10:55:55.953Z through 2026-10-04T11:00:38.794Z, using clean application/harness commit `573a396cd55f53dd465143e7916aa89d3a7faac3`. The tables below are a documentation-only addition after measurement; they identify the measured source, not this report's later commit. Production build index SHA-256: `1de9c7da8c9b8fad7873600b64e5dafb678c45cf466e25f6c54da99fa9c27911`. All four required gates passed before this run; explicit fixture regeneration and golden QA passed with evidence pin `851b05d8`, and the five manual harness regression tests passed.
+
+The exact recorded invocation was `pnpm perf:browser --runs 10 --backend webgpu --cpu 1 --output /tmp/cla357-baseline.json`; the channel default was `chrome`, and absence of `--headless` means headed. The explicit equivalent recipe above adds `--channel chrome`. This run forced dev mode and enabled `perf=1` plus the pre-document long-task/DOM probes; their UI and observer overhead is included. Later review fixes clarify these definitions and reject missing action clocks, without changing the recorded measurements or their source commit.
+
+The serial matrix completed 60 measured journeys: ten cold and ten warm loads for each of three datasets, plus 30 unmeasured full-journey warm primes. Every applicable metric has successful N=10 per dataset/cache group, zero failures, and no external browser HTTP(S) requests or uncaptured local requests. Stress child/story metrics are unsupported because its synthetic leaves have no children or story. No failed runs were discarded.
+
+| Environment | Recorded value |
+| --- | --- |
+| Hardware / OS | Apple M1 Pro, 10 logical CPUs, 32 GiB RAM; macOS Darwin 25.3.0 arm64 |
+| Memory snapshot | 2.36 GiB free at run start; not a controlled memory-pressure experiment |
+| Browser | Installed Chrome 154.0.8037.95, headed, isolated temporary profile; Playwright 1.58.2; Node v22.23.1 |
+| GPU / backend | Apple M1 Pro, ANGLE Metal, Apple driver 26.3; WebGPU enabled and actual backend `webgpu` on all 60 loads |
+| Viewport / throttling | 1440 × 1000 CSS pixels, DPR 1; CDP CPU rate 1 (no slowdown); unthrottled loopback |
+| Cache | Cold: fresh context, HTTP cache cleared and disabled for the entire journey (including repeated interaction fetches). Warm: complete journey prime, enabled HTTP cache, fresh document and fresh workers/search index. Server response bodies preloaded in both. |
+| Dev mode / instrumentation | `okie.devMode=1`, extra authoring/diagnostic UI, `perf=1` app recorder and pre-document long-task/DOM observers; included in measured cost |
+| Ordering | Golden → stress → published blocks; cold before warm, with an unmeasured prime before each warm reload; no thermal/drift balancing |
+| Concurrent work | Agent-owned builds, tests, browser QA and deployments stopped before measurement; unrelated user/background processes were not controlled. |
+
+Values are **median / p95 in milliseconds**, nearest rank. With N=10, p95 is the maximum observed value.
+
+| Dataset | Cache | First draw submission | Usable atlas | Max long task before draw |
+| --- | --- | ---: | ---: | ---: |
+| golden | cold | 498.1 / 546.4 | 738.8 / 772.7 | 160.0 / 178.0 |
+| golden | warm | 369.8 / 399.9 | 655.6 / 665.8 | 151.0 / 164.0 |
+| stress | cold | 766.5 / 814.2 | 769.9 / 823.9 | 413.0 / 452.0 |
+| stress | warm | 622.8 / 646.7 | 675.8 / 681.5 | 356.0 / 382.0 |
+| published | cold | 755.5 / 843.0 | 1014.4 / 1041.0 | 93.0 / 97.0 |
+| published | warm | 687.8 / 824.2 | 916.3 / 999.5 | 69.0 / 117.0 |
+
+| Dataset | Cache | Level state commit | Child navigation | Story start | Story step 3 paused | Search |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| golden | cold | 12.1 / 13.7 | 463.8 / 464.4 | 19.9 / 35.0 | 937.7 / 1094.7 | 9.2 / 11.9 |
+| golden | warm | 10.2 / 11.2 | 464.3 / 468.1 | 13.9 / 27.6 | 938.3 / 947.1 | 3.1 / 9.4 |
+| stress | cold | 12.2 / 13.8 | unsupported | unsupported | unsupported | 64.4 / 71.9 |
+| stress | warm | 10.9 / 17.8 | unsupported | unsupported | unsupported | 64.9 / 72.9 |
+| published | cold | 1019.3 / 1096.6 | 506.0 / 507.9 | 946.6 / 995.0 | 1750.6 / 1852.8 | 82.9 / 85.2 |
+| published | warm | 1005.4 / 1092.8 | 506.1 / 507.2 | 939.7 / 976.6 | 1747.8 / 1820.9 | 79.4 / 84.5 |
+
+At startup readiness the actual post-draw visible counts were consistently golden **7 entities / 3 relations**, stress **4 / 0**, and published **3 / 2**. These are the rendered arrival views, not the full graph counts. Golden/published level state commit targets Containers; stress targets Code from its explicit component camera around Node 0. The stress fixture contains 5,000 nodes and 15,000 paths, but its default Context/Fit route currently culls all cards. That unchanged renderer limitation is excluded by using the disclosed explicit component arrival; this stress result must not be presented as default-route usability or proof that all 5,000 cards/15,000 paths are visible.
+
+The published source pin is the immutable publication/artifact/snapshot listed above, with full neighborhood SHA-256 `2358ae566ce2ba169a1b387a9eb670220f666029b4ec6ceb47caf6c362d5574c` and complete snapshot SHA-256 `6a61c813c8d49b12c6e13ff7d37464e0abf61dc3cecb4be0741a48c0e895e54c`. Golden snapshot SHA-256: `bf516e57a50c813037f8f5e9734b8036c6a89fff7c903d2190cf3b1585b992c5`; stress fixture SHA-256: `20db51bef2d523bbe38426ba38e1050e735007e46b1ad969b776c91df8345e16`. These pins and the complete response manifest distinguish a repeat from fresh production data.
+
+The usable timestamp requires first draw submission, a populated matching inspector, nonempty projection, positive-size canvas and actual renderer visible-entity count above zero. It does not measure GPU completion or verify every pixel. Story-start completion permits playing/flight; step-3 completion requires paused arrival. Search begins at the first input after opening the overlay and may include remaining index startup; it does not measure the entire first-open interaction. All search runs used the module worker backend and returned nonempty results. These local descriptive measurements establish a baseline only: they do not reproduce production network latency, prove the earlier 20-second failure resolved, impose a budget, or claim an improvement. Raw reports remain local at `/tmp/cla357-baseline.json` and `/tmp/cla357-baseline.md`; no traces, screenshots or raw dumps were committed.
