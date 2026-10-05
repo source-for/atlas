@@ -455,3 +455,43 @@ At startup readiness the actual post-draw visible counts were consistently golde
 The published source pin is the immutable publication/artifact/snapshot listed above, with full neighborhood SHA-256 `2358ae566ce2ba169a1b387a9eb670220f666029b4ec6ceb47caf6c362d5574c` and complete snapshot SHA-256 `6a61c813c8d49b12c6e13ff7d37464e0abf61dc3cecb4be0741a48c0e895e54c`. Golden snapshot SHA-256: `bf516e57a50c813037f8f5e9734b8036c6a89fff7c903d2190cf3b1585b992c5`; stress fixture SHA-256: `20db51bef2d523bbe38426ba38e1050e735007e46b1ad969b776c91df8345e16`. These pins and the complete response manifest distinguish a repeat from fresh production data.
 
 The usable timestamp requires first draw submission, a populated matching inspector, nonempty projection, positive-size canvas and actual renderer visible-entity count above zero. It does not measure GPU completion or verify every pixel. Story-start completion permits playing/flight; step-3 completion requires paused arrival. Search begins at the first input after opening the overlay and may include remaining index startup; it does not measure the entire first-open interaction. All search runs used the module worker backend and returned nonempty results. These local descriptive measurements establish a baseline only: they do not reproduce production network latency, prove the earlier 20-second failure resolved, impose a budget, or claim an improvement. Raw reports remain local at `/tmp/cla357-baseline.json` and `/tmp/cla357-baseline.md`; no traces, screenshots or raw dumps were committed.
+
+## CLA-385 compile cost: indexed edge-routing blockage
+
+The staging attribution put the long tail inside the worker's compile, mostly layout and adapter. Offline, the same compile (pinned 5,507-entity publication, focus `component:apps-web-src-app-tsx` with the App component kept resident) took 1.9–3.8 s depending on machine load. A Node CPU profile attributed about 75% of it to edge routing:
+- `findGridPath` in `orthogonal-router.ts` tested every obstacle for every grid point, and again for every A* expansion. The grid lines come from obstacle edges, so each route cost roughly O(N³).
+- Routing runs twice per compile: once in `bandLayout`, then again in `applyIntrinsicOwnerGeometry`.
+
+The fix is exact:
+- `orthogonalGridBlockage` marks the blocked points and edges once per route. Grid lines include every obstacle edge, so each obstacle covers a contiguous index range. The bounds use the same strict EPSILON comparisons as `pointInsideRect` and `segmentIntersectsRectInterior`.
+- The A* loop reads coordinates directly instead of allocating points, and keeps the same neighbour order.
+- `goldenC4Scene`'s code-window `ownsCode` builds one entity index per compile (`scanSubtreeMembership`) instead of one per object and edge.
+- Non-finite obstacles fall back to the original per-test path.
+
+**Equivalence**
+- The SHA-256 of the compiled scene JSON is identical for 48 compiles: view root, all 10 containers, 12 components and the App component, each with and without residency.
+- Golden fixtures and the evidence hash are unchanged.
+- A randomized test with 600 lattice obstacle sets (coincident edges, ±0.5/1/2 EPSILON offsets, zero-size rects) compares every point and edge mark against the original predicates. It catches off-by-one span and strict/non-strict comparison mutations.
+
+**Offline A/B** (interleaved, same machine, 3 × 3 runs, ms):
+
+| Focus | main | this change |
+|---|---:|---:|
+| `component:apps-web-src-app-tsx` (App deep link) | 1,869–2,691 | 487–575 |
+| `container:apps-web` | 376–487 | 198–303 |
+
+**Browser, through the real worker:**
+- **Setup:** local production builds, pinned publication, headed Chrome, `workerTrials.mjs --smoke --runs 6` per build.
+- **Results** (ms, p50; compile also shows max):
+
+| | main | this change |
+|---|---:|---:|
+| App deep-link worker compile, p50 / max | 1,672 / 1,740 | 570 / 633 |
+| Web deep-link worker compile, p50 / max | 816 / 858 | 530 / 584 |
+| App usable, cold / warm | 2,828 / 2,683 | 1,507 / 1,348 |
+| Web usable, cold / warm | 1,967 / 1,789 | 1,476 / 1,265 |
+
+**Limits**
+- This is a smoke sample (n=3 per cell for usable time), not a p95 claim. Native staging wasn't re-measured.
+- The proportional effect on the 8–16 s native tail is expected but unmeasured.
+- The routing-twice structure remains. The `dedupeSorted` coordinate sort per route (about 14% of what's left) is the next exact candidate.

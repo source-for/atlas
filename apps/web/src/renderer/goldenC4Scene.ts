@@ -30,7 +30,7 @@ import {
   NO_SUMMARY_SUPPLIED,
   type SceneSnapshot,
 } from '@okie/scene-compiler';
-import { scanCompileFocusForBand, scanEntityHasChildren, scanEntityIsInSubtree } from './lazyBandCompile';
+import { scanCompileFocusForBand, scanEntityHasChildren, scanEntityIsInSubtree, scanSubtreeMembership } from './lazyBandCompile';
 import type { AtlasScene, Camera, EntityKind as AtlasEntityKind, OmittedEdge, OmittedNode, OmittedRelation, ScopedCompileInfo, SceneEntity, SceneRelation, SemanticDetail } from './types';
 
 const bands: readonly C4Band[] = ['context', 'container', 'component', 'code'];
@@ -435,7 +435,7 @@ export function createC4Scene(options: C4SceneOptions): AtlasScene {
           ?? c4ScanComponentCardFace(options.targetAspect)
         : c4ScanComponentCardFace(options.targetAspect), options.scanCodeSafeWidth) : undefined;
   if (focusedCodeWindow) {
-    const ownsCode = (id: string) => scanEntityIsInSubtree(snapshot, id, options.focusEntityId);
+    const ownsCode = scanSubtreeMembership(snapshot, options.focusEntityId);
     for (const object of compiled.scene.objects) {
       const id = visualToSemanticEntityId[object.id];
       if (!id || !ownsCode(id)) continue;

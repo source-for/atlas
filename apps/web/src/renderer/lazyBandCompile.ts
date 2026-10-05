@@ -158,6 +158,22 @@ export function scanPrefetchFocusIds(
  * True when `entityId` is `ownerId` or a descendant of it. Used so an opened
  * L3 neighborhood (CLA-122) does not treat a CLA-106 peer container as in-focus.
  */
+/** {@link scanEntityIsInSubtree} for many ids against one owner: one entity index per call site, not per id. */
+export function scanSubtreeMembership(snapshot: ArchitectureSnapshot, ownerId: string): (entityId: string) => boolean {
+  const byId = entityById(snapshot);
+  return entityId => {
+    if (entityId === ownerId) return true;
+    let current = byId.get(entityId);
+    const seen = new Set<string>();
+    while (current && !seen.has(current.id)) {
+      if (current.id === ownerId) return true;
+      seen.add(current.id);
+      current = current.parentId ? byId.get(current.parentId) : undefined;
+    }
+    return false;
+  };
+}
+
 export function scanEntityIsInSubtree(
   snapshot: ArchitectureSnapshot,
   entityId: string,

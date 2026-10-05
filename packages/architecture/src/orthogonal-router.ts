@@ -194,6 +194,63 @@ function compareHeap(left: HeapValue, right: HeapValue): number {
     || left.state - right.state;
 }
 
+/** First index whose value satisfies a predicate that is false then true along sorted values. */
+function firstIndex(values: readonly number[], test: (value: number) => boolean): number {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (test(values[middle]!)) high = middle;
+    else low = middle + 1;
+  }
+  return low;
+}
+
+/**
+ * Grid points strictly inside an obstacle, and grid edges crossing an obstacle's
+ * interior, marked once per route instead of testing every obstacle on every A*
+ * expansion. Grid lines include every obstacle edge, so each obstacle covers a
+ * contiguous index range; the bounds use the same strict EPSILON comparisons as
+ * pointInsideRect and segmentIntersectsRectInterior, so the marks are identical.
+ * Non-finite obstacles return undefined and keep the direct per-test path.
+ * Exported for the equivalence test against those predicates.
+ */
+export function orthogonalGridBlockage(xs: readonly number[], ys: readonly number[], obstacles: readonly NodeLayout[]) {
+  if (!obstacles.every(value => Number.isFinite(value.x) && Number.isFinite(value.y) && Number.isFinite(value.width) && Number.isFinite(value.height))) return undefined;
+  const width = xs.length;
+  const height = ys.length;
+  const point = new Uint8Array(width * height);
+  // right[n]: edge n -> n + 1 (same row); down[n]: edge n -> n + width (same column).
+  const right = new Uint8Array(width * height);
+  const down = new Uint8Array(width * height);
+  for (const obstacle of obstacles) {
+    const left = obstacle.x + EPSILON;
+    const rightEdge = obstacle.x + obstacle.width - EPSILON;
+    const top = obstacle.y + EPSILON;
+    const bottom = obstacle.y + obstacle.height - EPSILON;
+    // Columns/rows strictly inside (left, rightEdge) / (top, bottom).
+    const insideX0 = firstIndex(xs, value => value > left);
+    const insideX1 = firstIndex(xs, value => value >= rightEdge);
+    const insideY0 = firstIndex(ys, value => value > top);
+    const insideY1 = firstIndex(ys, value => value >= bottom);
+    // Spans [i, i + 1] with xs[i + 1] > left and xs[i] < rightEdge (likewise ys).
+    const spanX0 = Math.max(0, insideX0 - 1);
+    const spanX1 = Math.min(width - 1, insideX1);
+    const spanY0 = Math.max(0, insideY0 - 1);
+    const spanY1 = Math.min(height - 1, insideY1);
+    for (let y = insideY0; y < insideY1; y += 1) {
+      const row = y * width;
+      for (let x = insideX0; x < insideX1; x += 1) point[row + x] = 1;
+      for (let x = spanX0; x < spanX1; x += 1) right[row + x] = 1;
+    }
+    for (let y = spanY0; y < spanY1; y += 1) {
+      const row = y * width;
+      for (let x = insideX0; x < insideX1; x += 1) down[row + x] = 1;
+    }
+  }
+  return { point, right, down };
+}
+
 type GridPath = { points: Point[]; cost: number; bends: number; length: number; explored: number };
 
 function pathMetrics(points: readonly Point[], bendPenalty: number): Pick<GridPath, 'cost' | 'bends' | 'length'> {
@@ -241,7 +298,17 @@ function findGridPath(
     const y = ys.findIndex(value => Math.abs(value - point.y) <= EPSILON);
     return x < 0 || y < 0 ? -1 : y * xs.length + x;
   };
-  const valid = Array.from({ length: gridSize }, (_, index) => !obstacles.some(obstacle => pointInsideRect(pointFor(index), obstacle)));
+  const blocked = orthogonalGridBlockage(xs, ys, obstacles);
+  const valid = new Uint8Array(gridSize);
+  for (let index = 0; index < gridSize; index += 1) {
+    valid[index] = blocked ? 1 - blocked.point[index]! : obstacles.some(obstacle => pointInsideRect(pointFor(index), obstacle)) ? 0 : 1;
+  }
+  const edgeBlocked = (node: number, next: number) => {
+    if (!blocked) return obstacles.some(obstacle => segmentIntersectsRectInterior(pointFor(node), pointFor(next), obstacle));
+    if (next === node + 1) return blocked.right[node] === 1;
+    if (next === node - 1) return blocked.right[next] === 1;
+    return blocked.down[Math.min(node, next)] === 1;
+  };
   const startIndex = indexFor(start);
   const endIndex = indexFor(end);
   if (startIndex < 0 || endIndex < 0 || !valid[startIndex] || !valid[endIndex]) return undefined;
@@ -268,20 +335,21 @@ function findGridPath(
     }
     const xIndex = node % xs.length;
     const yIndex = Math.floor(node / xs.length);
-    const candidates = [
-      xIndex > 0 ? node - 1 : -1,
-      xIndex + 1 < xs.length ? node + 1 : -1,
-      yIndex > 0 ? node - xs.length : -1,
-      yIndex + 1 < ys.length ? node + xs.length : -1,
-    ];
-    for (const next of candidates) {
+    const fromX = xs[xIndex]!;
+    const fromY = ys[yIndex]!;
+    // Neighbours in the fixed order left, right, up, down.
+    for (let candidate = 0; candidate < 4; candidate += 1) {
+      const next = candidate === 0 ? (xIndex > 0 ? node - 1 : -1)
+        : candidate === 1 ? (xIndex + 1 < xs.length ? node + 1 : -1)
+          : candidate === 2 ? (yIndex > 0 ? node - xs.length : -1)
+            : (yIndex + 1 < ys.length ? node + xs.length : -1);
       if (next < 0 || !valid[next]) continue;
-      const from = pointFor(node);
-      const to = pointFor(next);
-      if (obstacles.some(obstacle => segmentIntersectsRectInterior(from, to, obstacle))) continue;
-      const nextDirection = Math.abs(from.y - to.y) <= EPSILON ? 1 : 2;
+      if (edgeBlocked(node, next)) continue;
+      const toX = xs[next % xs.length]!;
+      const toY = ys[Math.floor(next / xs.length)]!;
+      const nextDirection = Math.abs(fromY - toY) <= EPSILON ? 1 : 2;
       const bend = direction !== 0 && direction !== nextDirection ? 1 : 0;
-      const segmentLength = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
+      const segmentLength = Math.abs(toX - fromX) + Math.abs(toY - fromY);
       const nextLength = current.length + segmentLength;
       const nextBends = current.bends + bend;
       const nextCost = nextLength + nextBends * bendPenalty;
