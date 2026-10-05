@@ -4035,9 +4035,10 @@ export function App() {
         ? createScanDetailMorph(liveScene, nextScene, handoff.compileFocus, 'component', 'code', liveCamera.zoom, currentSession, codeWindow)
         : undefined;
     scanContainerMorphRef.current = containerMorph;
-    recordSemanticLensDiagnostics('handoff-publication', { camera: liveCamera, pointer: scanZoomPointerRef.current ?? { x: viewport.width / 2, y: viewport.height / 2 }, direction: 'none', gestureSettled: false, mobile: false });
     if (containerMorph) {
       const initial = sampleScanContainerMorph(containerMorph, liveCamera.zoom);
+      // The first outward input must retain the already published deadband state.
+      containerMorph.progress = initial.progress;
       semanticLensSessionRef.current = initial.session;
       semanticMorphStateRef.current = undefined;
       semanticMorphBaselineRef.current = 0;
@@ -4054,8 +4055,10 @@ export function App() {
         lensPath: semanticLensCanonicalPathIds(initial.session),
       }, 'replace');
       publishSemanticRenderPacket(liveCamera, containerMorph.scene, initial.session);
+      recordSemanticLensDiagnostics('handoff-publication', { camera: liveCamera, pointer: scanZoomPointerRef.current ?? { x: viewport.width / 2, y: viewport.height / 2 }, direction: 'none', gestureSettled: false, mobile: false });
       return liveCamera;
     }
+    recordSemanticLensDiagnostics('handoff-publication', { camera: liveCamera, pointer: scanZoomPointerRef.current ?? { x: viewport.width / 2, y: viewport.height / 2 }, direction: 'none', gestureSettled: false, mobile: false });
     const nextSession = semanticLevelSession(nextScene, handoff.detail, preferredIds);
     const previousAnchorId = currentSession.settled.at(-1)?.targetId
       ?? (semanticBounds(liveScene, preferredId, previousDetail) ? preferredId : navigationIdentityRef.current.rootEntityId);

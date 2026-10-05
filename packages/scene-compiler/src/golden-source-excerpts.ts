@@ -669,9 +669,9 @@ export const GOLDEN_SOURCE_EXCERPTS = {
     "path": "apps/web/src/App.tsx",
     "symbol": "CanvasViewport",
     "language": "tsx",
-    "startLine": 6466,
-    "endLine": 6471,
-    "highlightLine": 6466,
+    "startLine": 6469,
+    "endLine": 6474,
+    "highlightLine": 6469,
     "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
     "lines": [
       "          <CanvasViewport",

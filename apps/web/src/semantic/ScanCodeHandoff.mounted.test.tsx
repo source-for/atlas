@@ -101,6 +101,29 @@ it.each(['mouse', 'pinch'] as const)('freezes the cold code reveal window while 
   expect(diagnostic().bridge.fullZoom).toBeCloseTo(reveal.fullZoom, 8);
 });
 
+it('retains published reveal progress on the first outward pinch inside the deadband', async () => {
+  inputMode = 'pinch';
+  let resolve!: () => void;
+  vi.spyOn(fixture, 'createSceneAsync').mockImplementationOnce((focus, previous) => new Promise<AtlasScene>(done => {
+    resolve = () => done(fixture.createScene(focus, previous));
+  }));
+  await zoomTo(reveal.startZoom * 1.01); await settle();
+  const completionZoom = reveal.startZoom * Math.pow(reveal.fullZoom / reveal.startZoom, .9);
+  await zoomTo(completionZoom);
+  await act(async () => resolve()); await settle();
+  const shell = host.querySelector('[data-testid="atlas-app"]')!;
+  const published = diagnostic().bridge;
+  expect(published.progress).toBeCloseTo(.9, 8);
+  expect(shell.getAttribute('data-detail')).toBe('code');
+  const lens = new URL(window.location.href).searchParams.getAll('lens');
+  expect(lens).toContain('component:web-navigation');
+  // No idle callback or further inward sample seeds the bridge's memory.
+  await zoomTo(completionZoom * .999);
+  expect(diagnostic().bridge.progress).toBeCloseTo(published.progress, 8);
+  expect(shell.getAttribute('data-detail')).toBe('code');
+  expect(new URL(window.location.href).searchParams.getAll('lens')).toEqual(lens);
+});
+
 it('aborts an obsolete cold code compile when input reverses before publication', async () => {
   inputMode = 'pinch';
   let resolve!: () => void;
