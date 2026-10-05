@@ -43,6 +43,9 @@ export type NavigationHistoryOptions = {
   defaults: NavigationDefaults;
   adapter?: NavigationHistoryAdapter;
   urlOptions?: NavigationUrlOptions;
+  /** Lazy published snapshots cannot judge entity IDs until restore has loaded their neighborhoods.
+   * The restore callback must validate against the merged graph before returning applied state. */
+  deferEntityValidationOnRestore?: boolean;
   restore(state: NavigationState, source: 'initialize' | 'popstate'): NavigationState | void | Promise<NavigationState | void>;
   /** Reports only a current restore's unexpected failure; aborts and obsolete work are silent. */
   onRestoreError?(error: unknown, source: 'initialize' | 'popstate'): void;
@@ -96,6 +99,11 @@ function browserAdapter(): NavigationHistoryAdapter {
 
 export function createNavigationHistoryController(options: NavigationHistoryOptions): NavigationHistoryController {
   const adapter = options.adapter ?? browserAdapter();
+  // An absent hasEntity validator accepts bounded entity IDs for restore hydration.
+  // Parsing limits and other validators remain active; start(false) stays eager.
+  const restoreUrlOptions = options.deferEntityValidationOnRestore
+    ? { ...options.urlOptions, references: { ...options.urlOptions?.references, hasEntity: undefined } }
+    : options.urlOptions;
   void options.cameraCoalesceMs;
   let state = canonicalNavigationState({}, options.defaults);
   let settledEpoch = 0;
@@ -189,8 +197,8 @@ export function createNavigationHistoryController(options: NavigationHistoryOpti
     // App may still display the pre-Back scene after abandonment. A later write
     // based on that view must leave the popped entry available instead of erasing it.
     if (mode === 'replace' && abandonedEntryHref) {
-      const currentUrl = navigationStateFromUrl(adapter.getHref(), options.defaults, options.urlOptions).canonicalUrl;
-      const abandonedUrl = navigationStateFromUrl(abandonedEntryHref, options.defaults, options.urlOptions).canonicalUrl;
+      const currentUrl = navigationStateFromUrl(adapter.getHref(), options.defaults, restoreUrlOptions).canonicalUrl;
+      const abandonedUrl = navigationStateFromUrl(abandonedEntryHref, options.defaults, restoreUrlOptions).canonicalUrl;
       if (differsOnlyInCamera(currentUrl, abandonedUrl) && !differsOnlyInCamera(canonicalUrl, currentUrl)) mode = 'push';
     }
     if (mode === 'push') {
@@ -225,7 +233,7 @@ export function createNavigationHistoryController(options: NavigationHistoryOpti
     const generation = ++restoreGeneration;
     // The pending camera URL belonged to the entry the user just left.
     cancelPendingReplace();
-    const decoded = navigationStateFromUrl(adapter.getHref(), options.defaults, options.urlOptions);
+    const decoded = navigationStateFromUrl(adapter.getHref(), options.defaults, restoreUrlOptions);
     abandonedEntryHref = undefined;
     pendingRestore = { generation, state: decoded.state, source, href: adapter.getHref() };
     let restored: NavigationState | void;

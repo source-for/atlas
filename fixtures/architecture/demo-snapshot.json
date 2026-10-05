@@ -627,8 +627,8 @@
           "path": "apps/web/src/App.tsx",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "App",
-          "startLine": 1481,
-          "endLine": 1486
+          "startLine": 1482,
+          "endLine": 1487
         }
       ],
       "sourceExcerpts": [
@@ -636,9 +636,9 @@
           "path": "apps/web/src/App.tsx",
           "symbol": "App",
           "language": "tsx",
-          "startLine": 1481,
-          "endLine": 1486,
-          "highlightLine": 1481,
+          "startLine": 1482,
+          "endLine": 1487,
+          "highlightLine": 1482,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "export function App() {",
@@ -669,8 +669,8 @@
           "path": "apps/web/src/App.tsx",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "CanvasViewport",
-          "startLine": 6577,
-          "endLine": 6582
+          "startLine": 6604,
+          "endLine": 6609
         }
       ],
       "sourceExcerpts": [
@@ -678,9 +678,9 @@
           "path": "apps/web/src/App.tsx",
           "symbol": "CanvasViewport",
           "language": "tsx",
-          "startLine": 6577,
-          "endLine": 6582,
-          "highlightLine": 6577,
+          "startLine": 6604,
+          "endLine": 6609,
+          "highlightLine": 6604,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "          <CanvasViewport",
@@ -793,8 +793,8 @@
           "path": "apps/web/src/navigation/historyController.ts",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "createNavigationHistoryController",
-          "startLine": 97,
-          "endLine": 102
+          "startLine": 100,
+          "endLine": 105
         }
       ],
       "sourceExcerpts": [
@@ -802,19 +802,19 @@
           "path": "apps/web/src/navigation/historyController.ts",
           "symbol": "createNavigationHistoryController",
           "language": "typescript",
-          "startLine": 97,
-          "endLine": 102,
-          "highlightLine": 97,
+          "startLine": 100,
+          "endLine": 105,
+          "highlightLine": 100,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "export function createNavigationHistoryController(options: NavigationHistoryOptions): NavigationHistoryController {",
             "  const adapter = options.adapter ?? browserAdapter();",
-            "  void options.cameraCoalesceMs;",
-            "  let state = canonicalNavigationState({}, options.defaults);",
-            "  let settledEpoch = 0;",
-            "  let restoreGeneration = 0;"
+            "  // An absent hasEntity validator accepts bounded entity IDs for restore hydration.",
+            "  // Parsing limits and other validators remain active; start(false) stays eager.",
+            "  const restoreUrlOptions = options.deferEntityValidationOnRestore",
+            "    ? { ...options.urlOptions, references: { ...options.urlOptions?.references, hasEntity: undefined } }"
           ],
-          "text": "export function createNavigationHistoryController(options: NavigationHistoryOptions): NavigationHistoryController {\n  const adapter = options.adapter ?? browserAdapter();\n  void options.cameraCoalesceMs;\n  let state = canonicalNavigationState({}, options.defaults);\n  let settledEpoch = 0;\n  let restoreGeneration = 0;"
+          "text": "export function createNavigationHistoryController(options: NavigationHistoryOptions): NavigationHistoryController {\n  const adapter = options.adapter ?? browserAdapter();\n  // An absent hasEntity validator accepts bounded entity IDs for restore hydration.\n  // Parsing limits and other validators remain active; start(false) stays eager.\n  const restoreUrlOptions = options.deferEntityValidationOnRestore\n    ? { ...options.urlOptions, references: { ...options.urlOptions?.references, hasEntity: undefined } }"
         }
       ],
       "parentId": "component:web-navigation",

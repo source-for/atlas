@@ -640,7 +640,7 @@ describe('story launcher chrome (CLA-98)', () => {
     expect(app).toContain('cluster.smallestPx < ASK_MAP_MIN_CARD_PX');
     expect(app).toMatch(/function restoreAskMapView[\s\S]*?commitNavigation\(saved\.navigation, 'replace'\)/);
     // Wiring guards for the pure decisions in ask/askMapSession.ts (unit tested there).
-    for (const site of ['function focusEntity(', 'function handlePick(', 'async restore(next, source) {', 'function changeVisibility(', 'function toggleDetails(']) {
+    for (const site of ['function focusEntity(', 'function handlePick(', 'async restore(', 'function changeVisibility(', 'function toggleDetails(']) {
       const body = app.slice(app.indexOf(site), app.indexOf(site) + 400);
       expect(body, site).toContain('cancelAskMapShow();');
     }

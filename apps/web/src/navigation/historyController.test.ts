@@ -2,7 +2,7 @@ import { createStoryFlight, freezeCommittedStoryFlight, resumeStoryFlight, sampl
 import { navigationEntityReference } from './entityReferences';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createNavigationHistoryController, type NavigationHistoryAdapter } from './historyController';
-import { canonicalNavigationState, canonicalNavigationUrl, type NavigationDefaults, type NavigationState } from './navigationState';
+import { canonicalNavigationState, canonicalNavigationUrl, navigationStateFromUrl, type NavigationDefaults, type NavigationState } from './navigationState';
 import { beginForegroundPlaybackPreparation, createForegroundSceneRequestOwner, createForegroundRequestStatus, beginMapInteraction } from '../renderer/foregroundSceneRequest';
 
 const defaults: NavigationDefaults = {
@@ -501,4 +501,74 @@ it('keeps a successfully applied restore authoritative when its canonical URL re
   expect(new URL(adapter.href).searchParams.get('sel')).toBe('component:applied');
   expect(adapter.pushes).toHaveLength(0);
   controller.dispose();
+});
+
+
+describe('lazy neighborhood history entity validation (CLA-384)', () => {
+  const references = {
+    hasEntity: (id: string) => id === defaults.rootEntityId,
+    hasSnapshot: (id: string) => id === defaults.snapshotId,
+    hasView: (id: string) => id === defaults.viewId,
+    hasStory: (id: string) => id === 'known-story',
+  };
+  const reached = 'https://atlas.example/map?root=system%3Aatlas&sel=component%3Aremote&lens=system%3Aatlas&lens=container%3Aremote&lens=component%3Aremote';
+  it('defers only entity references while retaining bounded parsing and other reference validation', async () => {
+    const adapter = fakeHistory('https://atlas.example/map');
+    let release!: () => void;
+    const pending = new Promise<void>(done => { release = done; });
+    const restore = vi.fn(async (_next: NavigationState) => pending);
+    const controller = createNavigationHistoryController({ defaults, adapter, urlOptions: { references },
+      deferEntityValidationOnRestore: true, restore });
+    await controller.start(false);
+    adapter.pop(reached + '&snap=unknown&view=unknown&story=unknown&lens=component%3Aignored');
+    const candidate = restore.mock.calls[0]![0] as NavigationState;
+    expect(candidate.selectedId).toBe('component:remote');
+    expect(candidate.lensPath).toEqual(['system:atlas', 'container:remote', 'component:remote']);
+    expect(candidate.snapshotId).toBe(defaults.snapshotId);
+    expect(candidate.viewId).toBe(defaults.viewId);
+    expect(candidate.story).toBeUndefined();
+    controller.cancelRestore(); release(); await Promise.resolve(); controller.dispose();
+  });
+  it('canonicalizes genuinely unknown IDs only from the successfully validated callback result', async () => {
+    const adapter = fakeHistory('https://atlas.example/map');
+    let release!: () => void;
+    const pending = new Promise<void>(done => { release = done; });
+    const controller = createNavigationHistoryController({ defaults, adapter, urlOptions: { references },
+      deferEntityValidationOnRestore: true, restore: async next => {
+        await pending;
+        // Represents a completed neighborhood fetch whose merged graph still lacks the IDs.
+        return navigationStateFromUrl(canonicalNavigationUrl(next, reached), defaults, { references }).state;
+      } });
+    await controller.start(false); adapter.replacements.length = 0;
+    adapter.pop(reached);
+    expect(adapter.href).toBe(reached); expect(adapter.replacements).toHaveLength(0);
+    release(); await Promise.resolve(); await Promise.resolve();
+    expect(controller.current().selectedId).toBe(defaults.rootEntityId);
+    expect(controller.current().lensPath).toEqual(['system:atlas']);
+    expect(new URL(adapter.href).searchParams.get('sel')).toBeNull();
+    expect(new URL(adapter.href).searchParams.getAll('lens')).toEqual(['system:atlas']);
+    expect(adapter.replacements).toHaveLength(1);
+    controller.dispose();
+  });
+  for (const failure of ['error', 'cancel'] as const) it(`preserves raw IDs after ${failure} and protects the reached entry from old-scene camera writes`, async () => {
+    const adapter = fakeHistory('https://atlas.example/map');
+    let release!: () => void; let reject!: (error: unknown) => void;
+    const pending = new Promise<void>((done, fail) => { release = done; reject = fail; });
+    const onRestoreError = vi.fn();
+    const controller = createNavigationHistoryController({ defaults, adapter, urlOptions: { references },
+      deferEntityValidationOnRestore: true, onRestoreError, cameraUrlMinIntervalMs: 0, restore: () => pending });
+    await controller.start(false); const displayedBeforeBack = controller.current(); adapter.replacements.length = 0;
+    adapter.pop(reached);
+    if (failure === 'error') { reject(new Error('Neighborhood unavailable')); await Promise.resolve(); await Promise.resolve(); }
+    else controller.cancelRestore();
+    expect(adapter.href).toBe(reached); expect(adapter.replacements).toHaveLength(0);
+    expect(controller.current().selectedId).toBe('component:remote');
+    expect(controller.current().lensPath).toEqual(['system:atlas', 'container:remote', 'component:remote']);
+    controller.commitSettledCamera({ x: 10, y: 20, zoom: 2 }, displayedBeforeBack);
+    expect(adapter.pushes).toHaveLength(1); expect(adapter.replacements).toHaveLength(0);
+    expect(new URL(adapter.pushes[0]!).searchParams.get('sel')).toBeNull();
+    if (failure === 'cancel') { release(); await Promise.resolve(); await Promise.resolve(); }
+    expect(adapter.pushes).toHaveLength(1); expect(onRestoreError).toHaveBeenCalledTimes(failure === 'error' ? 1 : 0);
+    controller.dispose();
+  });
 });
