@@ -68,6 +68,8 @@ export type ScanScopedOptions = {
 
 /** Camera-resident compile window (CLA-74). Does not change CLA-73 fetch. */
 export type ScanViewportResidency = {
+  /** Safe map width in CSS pixels, frozen for scan code reveal preparation. */
+  scanCodeSafeWidth?: number;
   worldBounds?: Rect;
   keepEntityIds?: readonly string[];
 };
@@ -326,6 +328,7 @@ export function compileScanScene(input: ScanSceneInput, onPhase?: (phase: 'root-
     ...(scoped.maxBand !== undefined ? { bandDepthThreshold: SCAN_BAND_DEPTH_MIN_ENTITIES } : {}),
     ...(residency?.worldBounds && !keepResidentL3 ? { residentWorldBounds: residency.worldBounds } : {}),
     ...(residency?.keepEntityIds ? { keepEntityIds: residency.keepEntityIds } : {}),
+    ...(residency?.scanCodeSafeWidth !== undefined ? { scanCodeSafeWidth: residency.scanCodeSafeWidth } : {}),
     childCounts,
     ...(compileUnpublished.length ? { unpublishedChildren: compileUnpublished } : {}),
   });

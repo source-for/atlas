@@ -580,6 +580,15 @@ export function validateRestoredSemanticLensPath(
   const structural = validateSemanticLensPath(scene, baseDetail, targetIds);
   if (!Number.isFinite(zoom)) return structural;
   const entries: SemanticLensPathEntry[] = [];
+  const final = structural.entries.at(-1);
+  const focusedCode = scene.targetAspect !== undefined && scene.scanCodeSafeWidth !== undefined
+    && final !== undefined && final.targetId === scene.rootEntityId && final.nextDetail === 'code'
+    ? scene.projection?.semanticTransitionsByEntityId?.[final.targetId]?.code : undefined;
+  // A narrow map can reveal the focused code face before an ancestor's desktop
+  // runway. Structural validation still applies; the exact deeper endpoint's
+  // authored leave threshold owns its already traversed ancestors on restoration.
+  const ownsFocusedCode = focusedCode?.minZoom !== undefined
+    && zoom + (focusedCode.hysteresis ?? 0) + 1e-9 >= focusedCode.minZoom;
   for (const entry of structural.entries) {
     const authored = scene.projection?.semanticTransitionsByEntityId?.[entry.targetId]?.[entry.nextDetail];
     const protocol = scene.protocolSnapshot as ProtocolProjectionScene | undefined;
@@ -591,7 +600,7 @@ export function validateRestoredSemanticLensPath(
     // representation LOD, then the shared C4 band policy for sparse imports.
     const minZoom = authored?.minZoom ?? representation?.lod?.minZoom ?? band?.enterZoom;
     const hysteresis = authored?.hysteresis ?? representation?.lod?.hysteresis ?? band?.hysteresis ?? 0;
-    if (minZoom !== undefined && zoom + hysteresis + 1e-9 < minZoom) break;
+    if (!ownsFocusedCode && minZoom !== undefined && zoom + hysteresis + 1e-9 < minZoom) break;
     entries.push(entry);
   }
   return { entries, truncated: structural.truncated || entries.length !== structural.entries.length };
@@ -994,6 +1003,7 @@ function semanticLensTargetZoomPolicy(
   currentBounds: LensBounds,
   safeWidth: number,
   safeHeight: number,
+  collectDiagnostics = false,
 ) {
   const authored = scene.projection?.semanticTransitionsByEntityId?.[targetId]?.[nextDetail];
   const protocol = scene.protocolSnapshot as ProtocolProjectionScene | undefined;
@@ -1041,12 +1051,34 @@ function semanticLensTargetZoomPolicy(
     minimumCssSize.width / Math.max(1, currentBounds.width),
     minimumCssSize.height / Math.max(1, currentBounds.height),
   );
+  const coverageZoom = authored && !collectDiagnostics ? undefined
+    : semanticLensCoverageEnterZoom(currentBounds, safeWidth, safeHeight, enterCoverage);
+  const unclampedEnterZoom = authored?.minZoom ?? Math.max(fallbackEnterZoom, minimumCssZoom, coverageZoom!);
+  const enterZoom = Math.min(viewMaxZoom, unclampedEnterZoom);
+  const hysteresis = authored?.hysteresis ?? representation?.lod?.hysteresis ?? SEMANTIC_LENS_POLICY.reverseZoomDelta;
+  const diagnostics = collectDiagnostics ? {
+    currentBounds: { ...currentBounds }, nextBounds: { ...scene.projection!.boundsByEntityIdAndDetail[targetId]![nextDetail]! },
+    safeWidth, safeHeight, authoredMinimum: authored?.minZoom ?? null,
+    lodMinimum: representation?.lod?.minZoom ?? null, fallbackMinimum: fallbackEnterZoom,
+    minimumCssZoom, coverageZoom: coverageZoom!, unclampedEnterZoom, viewMaxZoom, enterZoom,
+    leaveZoom: enterZoom - hysteresis, fullZoom: authored?.fullZoom ?? null,
+    commitCoverageZoom: semanticLensCoverageEnterZoom(currentBounds, safeWidth, safeHeight, commitCoverage),
+    fullCoverageZoom: semanticLensCoverageEnterZoom(currentBounds, safeWidth, safeHeight, fullCoverage),
+    dominantTerms: authored ? ['authored-minimum'] : [
+      ...(fallbackEnterZoom === unclampedEnterZoom ? [representation?.lod?.minZoom === undefined ? 'band-minimum' : 'lod-minimum'] : []),
+      ...(minimumCssZoom === unclampedEnterZoom ? ['minimum-css-size'] : []),
+      ...(coverageZoom === unclampedEnterZoom ? ['current-card-coverage'] : []),
+    ],
+    commitGate: authored?.fullZoom === undefined ? 'current-card-coverage' : 'enter-zoom',
+    fullGate: authored?.fullZoom === undefined ? 'current-card-coverage' : 'full-zoom',
+    enterCoverage, commitCoverage, fullCoverage, leaveCoverage, minimumCssSize,
+    pointerInsetPx: authored?.pointerInsetPx ?? SEMANTIC_LENS_POLICY.retargetContainmentPx,
+    dwellMs: authored?.dwellMs ?? SEMANTIC_LENS_POLICY.dwellMs,
+  } : undefined;
   return {
-    enterZoom: Math.min(viewMaxZoom, authored?.minZoom
-      ?? Math.max(fallbackEnterZoom, minimumCssZoom, semanticLensCoverageEnterZoom(currentBounds, safeWidth, safeHeight, enterCoverage))),
-    hysteresis: authored?.hysteresis
-      ?? representation?.lod?.hysteresis
-      ?? SEMANTIC_LENS_POLICY.reverseZoomDelta,
+    enterZoom,
+    hysteresis,
+    ...(diagnostics ? { diagnostics } : {}),
     policy: {
       ...(authored?.sourceRepresentationId ? { sourceRepresentationId: authored.sourceRepresentationId } : {}),
       ...(authored?.targetRepresentationId ? { targetRepresentationId: authored.targetRepresentationId } : {}),
@@ -1061,6 +1093,26 @@ function semanticLensTargetZoomPolicy(
       pointerInsetPx: authored?.pointerInsetPx ?? SEMANTIC_LENS_POLICY.retargetContainmentPx,
     },
   };
+}
+
+/** One-shot, read-only diagnostics for local/dev attribution; never sampled or logged by the runtime.
+ * Thresholds do not prove candidate eligibility: pointer containment and descendants also gate targeting. */
+export function semanticLensTargetZoomDiagnostics(
+  scene: AtlasScene,
+  targetId: string,
+  currentDetail: SemanticDetail,
+  viewport: ViewportSize,
+  safeArea: SafeArea,
+) {
+  const nextDetail = (['context', 'container', 'component', 'code'] as const)[detailIndex(currentDetail) + 1] as Exclude<SemanticDetail, 'context'> | undefined;
+  const currentBounds = scene.projection?.boundsByEntityIdAndDetail[targetId]?.[currentDetail];
+  const nextBounds = nextDetail && scene.projection?.boundsByEntityIdAndDetail[targetId]?.[nextDetail];
+  if (!nextDetail || !currentBounds || !nextBounds) return undefined;
+  const safeWidth = Math.max(1, viewport.width - safeArea.left - safeArea.right);
+  const safeHeight = Math.max(1, viewport.height - safeArea.top - safeArea.bottom);
+  return { currentDetail, nextDetail, ...semanticLensTargetZoomPolicy(
+    scene, targetId, nextDetail, currentBounds, safeWidth, safeHeight, true,
+  ).diagnostics! };
 }
 
 export function findSemanticLensTarget(

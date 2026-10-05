@@ -171,6 +171,7 @@ export type AtlasScene = {
    *  ⇒ coverage-based reveal is active, so explicit framings land the focus at its
    *  children's reveal coverage instead of the band floor. Absent for demo/golden. */
   targetAspect?: number;
+  scanCodeSafeWidth?: number;
   /** Present when the scan compile guard refused the requested focus and fell
    *  back to a safe scene (dev diagnostics only; absent normally). */
   scanGuardRefusal?: ScanGuardRefusal;

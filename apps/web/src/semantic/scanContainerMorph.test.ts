@@ -4,7 +4,7 @@ import demoSnapshot from '../../../../fixtures/architecture/demo-snapshot.json';
 import demoView from '../../../../fixtures/architecture/demo-view.json';
 import demoStory from '../../../../fixtures/architecture/demo-story.json';
 import { compileScanFixture, SCAN_RESIDENT_NODES_PER_BAND } from '../renderer/scanFixture';
-import { applySemanticBackgroundVisibility, composeSemanticZoomCamera, semanticLensSessionProjectionOverride } from './semanticLens';
+import { applySemanticBackgroundVisibility, composeSemanticZoomCamera, semanticLensSessionProjectionOverride, validateRestoredSemanticLensPath } from './semanticLens';
 import { semanticPanFocusPlan } from './semanticLensEngine';
 import { createScanContainerMorph, createScanDetailMorph, createScanReverseMorph, sampleScanContainerMorph, scanContainerMorphCamera, scanContainerMorphOwnsSession, shouldStartScanContainerReverseMorph } from './scanContainerMorph';
 
@@ -237,7 +237,7 @@ describe('scan container expansion', () => {
     expect(scanContainerMorphCamera(morph, frame.progress, rendered)).toEqual(rendered);
   });
 
-  it('retains the L3 file geometry while revealing bounded L4 code peers, then reverses at the same camera', () => {
+  it('retains the L3 file geometry while revealing bounded L4 code peers, then contracts along the shifted leave curve with continuous camera compensation', () => {
     const scan = compileScanFixture({ snapshot: structuredClone(demoSnapshot), view: structuredClone(demoView), story: structuredClone(demoStory) });
     const l2 = scan.createScene(scan.navigation.rootEntityId);
     const compiledL3 = scan.createScene('container:web-app', l2);
@@ -262,7 +262,7 @@ describe('scan container expansion', () => {
     const siblingVisual = morph!.scene.projection!.semanticToVisualEntityId[sibling!.id];
     expect(sourceProjection.objects.find(object => object.objectId === siblingVisual))
       .toMatchObject({ sourceOpacity: 1, targetOpacity: 1 });
-    const raw = { x: 464.903, y: -252.777, zoom: 9 };
+    const raw = { x: 464.903, y: -252.777, zoom: Math.sqrt(morph!.startZoom * morph!.fullZoom) };
     const middle = sampleScanContainerMorph(morph!, raw.zoom);
     const rendered = scanContainerMorphCamera(morph!, middle.progress, raw);
     const center = (bounds: { x: number; y: number; width: number; height: number }) => ({ x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 });
@@ -274,9 +274,81 @@ describe('scan container expansion', () => {
     expect((blended.y - rendered.y) * raw.zoom).toBeCloseTo((from.y - raw.y) * raw.zoom, 8);
     morph!.progress = 1;
     const reverse = sampleScanContainerMorph(morph!, raw.zoom);
-    expect(reverse.progress).toBe(middle.progress);
+    const leave = morph!.codeWindow!;
+    const expectedLeave = Math.log(raw.zoom / leave.leaveStartZoom) / Math.log(leave.leaveFullZoom / leave.leaveStartZoom);
+    expect(reverse.progress).toBeCloseTo(expectedLeave, 8);
+    expect(reverse.progress).toBeGreaterThan(middle.progress);
     expect(reverse.session.active.phase).toBe('reversing');
-    expect(scanContainerMorphCamera(morph!, reverse.progress, raw)).toEqual(rendered);
+    morph!.progress = reverse.progress;
+    expect(sampleScanContainerMorph(morph!, raw.zoom).progress).toBe(reverse.progress);
+    const reverseCamera = scanContainerMorphCamera(morph!, reverse.progress, raw);
+    expect(reverseCamera.zoom).toBe(raw.zoom);
+    expect(reverseCamera.x).toBeCloseTo(raw.x + (to.x - from.x) * reverse.progress, 8);
+    expect(reverseCamera.y).toBeCloseTo(raw.y + (to.y - from.y) * reverse.progress, 8);
+    const beyond = morph!.fullZoom * 1.2;
+    expect(sampleScanContainerMorph(morph!, beyond, 0).progress).toBe(0);
+    expect(sampleScanContainerMorph(morph!, beyond, .5).progress).toBe(.5);
+    expect(sampleScanContainerMorph(morph!, beyond, 1).progress).toBe(1);
+  });
+
+  it('freezes scan code thresholds across delayed completion and retains continuous ownership through jitter', () => {
+    const scan = compileScanFixture({ snapshot: structuredClone(demoSnapshot), view: structuredClone(demoView), story: structuredClone(demoStory) });
+    const l3 = scan.createScene('container:web-app');
+    const file = l3.entities.find(entity => entity.parentId === 'container:web-app' && entity.detail === 'component')!;
+    const l4 = scan.createScene(file.id, l3);
+    const early = createScanDetailMorph(l3, l4, file.id, 'component', 'code', 5)!;
+    const delayed = createScanDetailMorph(l3, l4, file.id, 'component', 'code', 13)!;
+    expect([early.startZoom, early.fullZoom]).toEqual([delayed.startZoom, delayed.fullZoom]);
+    expect(early.fullZoom).toBeLessThan(7.1);
+    const restored = validateRestoredSemanticLensPath(l4, 'context', early.targetSession.settled.map(entry => entry.targetId), early.fullZoom);
+    expect(restored.entries.at(-1)?.nextDetail).toBe('code');
+    const authored = l4.projection!.semanticTransitionsByEntityId![file.id]!.code!;
+    expect(authored.minZoom).toBe(early.startZoom);
+    expect(authored.fullZoom).toBe(early.fullZoom);
+    const bootstrap = scan.createScene(scan.navigation.rootEntityId);
+    const cold = scan.createScene(file.id, bootstrap);
+    expect(cold.projection!.semanticTransitionsByEntityId![file.id]!.code!.minZoom).toBe(early.startZoom);
+    expect(cold.projection!.semanticTransitionsByEntityId![file.id]!.code!.fullZoom).toBe(early.fullZoom);
+    const midpoint = Math.sqrt(early.startZoom * early.fullZoom);
+    const entered = sampleScanContainerMorph(early, midpoint + 0.01);
+    early.progress = entered.progress;
+    expect(entered.progress).toBeGreaterThan(0.5);
+    for (const zoom of [midpoint - 0.01, midpoint + 0.01, midpoint - 0.01]) {
+      const sample = sampleScanContainerMorph(early, zoom);
+      expect(sample.progress).toBe(entered.progress);
+      early.progress = sample.progress;
+    }
+    const leaveMidpoint = Math.sqrt(early.codeWindow!.leaveStartZoom * early.codeWindow!.leaveFullZoom);
+    expect(sampleScanContainerMorph(early, leaveMidpoint - 0.01).progress).toBeLessThan(0.5);
+    expect(sampleScanContainerMorph(early, early.codeWindow!.leaveStartZoom).progress).toBe(0);
+    expect(sampleScanContainerMorph(early, early.fullZoom).progress).toBe(1);
+  });
+
+  it('authors narrow safe-width LOD and cold restoration from the actual parent face, not a tiny overview preview', () => {
+    const scan = compileScanFixture({ snapshot: structuredClone(demoSnapshot), view: structuredClone(demoView), story: structuredClone(demoStory) });
+    const l3 = scan.createScene('container:web-app', undefined, { scanCodeSafeWidth: 300 });
+    const file = l3.entities.find(entity => entity.parentId === 'container:web-app' && entity.detail === 'component')!;
+    const l4 = scan.createScene(file.id, l3, { scanCodeSafeWidth: 300 });
+    const morph = createScanDetailMorph(l3, l4, file.id, 'component', 'code', 12)!;
+    expect(morph.sourceBounds.width * morph.startZoom).toBeCloseTo(300 * .42 * 1.25, 8);
+    expect(morph.sourceBounds.width * morph.fullZoom).toBeCloseTo(300 * .42 * 1.50, 8);
+    const overview = scan.createScene(scan.navigation.rootEntityId);
+    overview.projection!.boundsByEntityIdAndDetail[file.id] = { component: { x: 0, y: 0, width: 1, height: 1 } };
+    const cold = scan.createScene(file.id, overview, { scanCodeSafeWidth: 300 });
+    const authored = cold.projection!.semanticTransitionsByEntityId![file.id]!.code!;
+    expect(authored.minZoom).toBe(morph.startZoom);
+    expect(authored.fullZoom).toBe(morph.fullZoom);
+    const ownCode = cold.entities.find(entity => entity.parentId === file.id && entity.detail === 'code')!.id;
+    const visual = cold.projection!.semanticToVisualEntityId[ownCode];
+    const representation = (cold.protocolSnapshot as SceneSnapshot).objects.find(object => object.id === visual)!.representations.find(rep => rep.id === `${visual}:code`)!;
+    expect(representation.lod.minZoom).toBe(morph.startZoom);
+    expect(representation.lod.fadeWidth).toBeCloseTo(morph.fullZoom - morph.startZoom, 8);
+    const restored = validateRestoredSemanticLensPath(cold, 'context', morph.targetSession.settled.map(entry => entry.targetId), morph.fullZoom);
+    expect(restored.entries.at(-1)?.nextDetail).toBe('code');
+    expect(validateRestoredSemanticLensPath(cold, 'context', [...morph.targetSession.settled.map(entry => entry.targetId), 'component:unknown'], morph.fullZoom).truncated).toBe(true);
+    expect(validateRestoredSemanticLensPath(cold, 'context', morph.targetSession.settled.map(entry => entry.targetId), morph.codeWindow!.leaveStartZoom - .01).entries.at(-1)?.nextDetail).not.toBe('code');
+    const reverse = createScanReverseMorph(l3, cold, file.id, 'code')!;
+    expect(reverse.codeWindow).toEqual(morph.codeWindow);
   });
 
   it('reconstructs a cold L4 reverse endpoint with the full parent file neighborhood', () => {
@@ -301,7 +373,7 @@ describe('scan container expansion', () => {
     expect(middle.progress).toBeLessThan(1);
     expect(middle.session.active.phase).toBe('reversing');
     expect(scanContainerMorphOwnsSession(morph, middle.session)).toBe(true);
-    const end = sampleScanContainerMorph(morph, morph.startZoom);
+    const end = sampleScanContainerMorph(morph, morph.codeWindow?.leaveStartZoom ?? morph.startZoom);
     expect(end.session).toEqual(morph.sourceSession);
     expect(end.progress).toBe(0);
     for (const arrivalZoom of [10, 7]) {
@@ -309,8 +381,10 @@ describe('scan container expansion', () => {
       expect(sampleScanContainerMorph(restored, arrivalZoom).progress).toBe(1);
       const firstWheel = sampleScanContainerMorph(restored, arrivalZoom / 1.037259);
       expect(firstWheel.progress).toBeGreaterThan(.9);
-      expect(firstWheel.progress).toBeLessThan(1);
-      expect(firstWheel.session.active.phase).toBe('reversing');
+      // A deep saved camera remains at the complete endpoint until it reaches the fixed face window.
+      expect(firstWheel.progress).toBe(1);
+      expect(restored.startZoom).toBe(morph.startZoom);
+      expect(restored.fullZoom).toBe(morph.fullZoom);
     }
   });
 
