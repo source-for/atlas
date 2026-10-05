@@ -455,3 +455,31 @@ At startup readiness the actual post-draw visible counts were consistently golde
 The published source pin is the immutable publication/artifact/snapshot listed above, with full neighborhood SHA-256 `2358ae566ce2ba169a1b387a9eb670220f666029b4ec6ceb47caf6c362d5574c` and complete snapshot SHA-256 `6a61c813c8d49b12c6e13ff7d37464e0abf61dc3cecb4be0741a48c0e895e54c`. Golden snapshot SHA-256: `bf516e57a50c813037f8f5e9734b8036c6a89fff7c903d2190cf3b1585b992c5`; stress fixture SHA-256: `20db51bef2d523bbe38426ba38e1050e735007e46b1ad969b776c91df8345e16`. These pins and the complete response manifest distinguish a repeat from fresh production data.
 
 The usable timestamp requires first draw submission, a populated matching inspector, nonempty projection, positive-size canvas and actual renderer visible-entity count above zero. It does not measure GPU completion or verify every pixel. Story-start completion permits playing/flight; step-3 completion requires paused arrival. Search begins at the first input after opening the overlay and may include remaining index startup; it does not measure the entire first-open interaction. All search runs used the module worker backend and returned nonempty results. These local descriptive measurements establish a baseline only: they do not reproduce production network latency, prove the earlier 20-second failure resolved, impose a budget, or claim an improvement. Raw reports remain local at `/tmp/cla357-baseline.json` and `/tmp/cla357-baseline.md`; no traces, screenshots or raw dumps were committed.
+
+## Outward scan zoom worker preparation (CLA-359)
+
+Reverse semantic zoom now asynchronously prepares the adjacent source endpoint through the retained scene worker while leaving the deep scene visible and accepting live camera samples. The semantic branch stays fixed until an owned bridge is ready; publication samples the latest rendered camera and compensates it once using the existing morph geometry. Exact compiled graph generation, fixture, scene, session and selection ownership guard publication. Inward reversal, real pan start and new foreground navigation cancel pending preparation. Delayed effects and stale finalizers cannot clear a newer reverse request's loading cue.
+
+
+Ported onto current main (after #183–#194). It merges with main's level-preparation ownership, the generation-checked `compileCurrentGeneration`, and `ScanWorkerUnavailableError`. Outward preparation uses the same worker policy as explicit navigation: a synchronous fallback below `SCAN_BAND_DEPTH_MIN_ENTITIES` (2,000 entities, where compiling is cheap) and no fallback above it. Reverse publication now records a `reverse-publication` lens diagnostic, so the dev panel and the mounted #191 cold-compile test see the rebuilt L2/L3 bridge.
+
+**Failure handling (after PR #195 review).**
+- While a preparation is pending, settle is deferred, not dropped. When the preparation ends (published, failed, stale or abandoned), the deferred settle runs at the live camera, so the URL, prefetch, handoff and neighbourhood refresh catch up.
+- The neighbourhood fetch receives the request signal. An 8 s deadline abandons a stalled preparation, so "Loading view…" and settle can't wait on the worker's 20 s timeout.
+- After a failure, the same endpoint pair isn't re-requested for 2 s. Outward ticks in that window take the generic zoom path (no morph) rather than waiting to retry; a later outward gesture prepares again.
+- The 8 s deadline also bounds a slow worker compile. An atlas whose parent compile takes longer would never morph outward; today's published atlas takes about 0.9 s.
+- A worker that is unavailable (latched until reload) on a large atlas stops outward preparation for the session and shows the reload message. Outward zoom out of a deep scene then no longer morphs, though the rail and breadcrumb still navigate. Below the threshold, the synchronous fallback still applies.
+- Mounted regressions in `ReverseScenePreparation.mounted.test.tsx` cover each case. Removing settle replay, the backoff, the latch or the deadline fails the matching test.
+
+**Browser comparison.**
+- **Setup:** local production build, published `source-for/atlas` pin, headed Chrome at 1280×720.
+- **Gesture:** L2 rail, double-click `atlas-protocol` (Open inside → container root at L3), then 90 ctrl+wheel steps outward, 12 px every 16 ms, pointer at the viewport centre.
+- **Long tasks after the gesture starts:**
+  - main: one task of 889 / 867 / 895 ms (three runs), the synchronous source compile.
+  - this branch: one task of 71 / 76 / 77 ms.
+- **What you see:**
+  - main shows L2 briefly, then L1, but input is blocked for about 0.9 s.
+  - this branch keeps the shrinking L3 scene under "Loading view…" while the worker prepares the source. At this synthetic gesture speed the camera has passed L2 by publication, so the bridge publishes straight to L1.
+  - Both end with L1 in the same pointer-anchored position.
+- **Frame strips:** [main](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla357-reverse-morph-main-strip.jpg), [branch](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla357-reverse-morph-branch-strip.jpg).
+- **Caveats:** small sequential samples on a loaded machine, so this is not a p95 claim. Only one gesture speed was measured, and time-to-publication wasn't recorded; whether a slower real gesture shows the L3→L2 morph is untested. The golden atlas is authored, not a scan, so it doesn't take this path.
