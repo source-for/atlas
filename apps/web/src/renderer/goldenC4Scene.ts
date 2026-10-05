@@ -1,6 +1,8 @@
+import { scanCodeRevealWindow } from '../semantic/scanCodeRevealWindow';
 import {
   buildC4ProjectionBundle,
   c4CodeChildSlots,
+  c4ScanComponentCardFace,
   materializeArchitectureAuthoring,
   selectC4BandProjection,
   validateStory,
@@ -421,6 +423,32 @@ export function createC4Scene(options: C4SceneOptions): AtlasScene {
   const semanticToVisualEntityId = Object.fromEntries(Object.entries(projections.index.visualNodeIdsByEntityId)
     .flatMap(([entityId, visualIds]) => visualIds[0] ? [[entityId, visualIds[0]]] : []));
   const visualToSemanticEntityId = { ...projections.index.entityIdByVisualNodeId };
+  const focusedCodeWindow = options.targetAspect !== undefined
+    && snapshot.entities.find(entity => entity.id === options.focusEntityId)?.kind === 'component'
+    ? scanCodeRevealWindow(
+      // A bootstrap system scene contains compact preview pills, not the L3
+      // peer face. Cold code restoration must use the same painted L3 face
+      // as descent from the owning container, never that reserved/preview box.
+      previous?.rootEntityId === snapshot.entities.find(entity => entity.id === options.focusEntityId)?.parentId
+        ? previous?.projection?.boundsByEntityIdAndDetail[options.focusEntityId]?.component
+          ?? c4ScanComponentCardFace(options.targetAspect)
+        : c4ScanComponentCardFace(options.targetAspect)) : undefined;
+  if (focusedCodeWindow) {
+    const ownsCode = (id: string) => scanEntityIsInSubtree(snapshot, id, options.focusEntityId);
+    for (const object of compiled.scene.objects) {
+      const id = visualToSemanticEntityId[object.id];
+      if (!id || !ownsCode(id)) continue;
+      for (const representation of object.representations) {
+        if (representation.id !== `${object.id}:code`) continue;
+        representation.lod = { ...representation.lod, minZoom: focusedCodeWindow.startZoom,
+          fadeWidth: focusedCodeWindow.fullZoom - focusedCodeWindow.startZoom };
+      }
+    }
+    const ownedPaths = new Set(selectC4BandProjection(projections, 'code').edges.filter(edge =>
+      ownsCode(visualToSemanticEntityId[edge.fromVisualId] ?? '') && ownsCode(visualToSemanticEntityId[edge.toVisualId] ?? '')).map(edge => edge.id));
+    for (const path of compiled.scene.paths) if (ownedPaths.has(path.id)) path.lod = { ...path.lod,
+      minZoom: focusedCodeWindow.startZoom, fadeWidth: focusedCodeWindow.fullZoom - focusedCodeWindow.startZoom };
+  }
   const visualToSemanticRelationIds = { ...projections.index.relationIdsByVisualEdgeId };
   const semanticToVisualRelationIds = { ...projections.index.visualEdgeIdsByRelationId };
   const entityIdsByDetail = Object.fromEntries(bands.map(band => {
@@ -486,12 +514,15 @@ export function createC4Scene(options: C4SceneOptions): AtlasScene {
           width: Math.max(320, largestTargetText * 10),
           height: Math.max(180, largestTargetText * 4),
         },
-        minZoom: revealWindow?.minZoom ?? nextBand.enterZoom,
+        minZoom: nextDetail === 'code' && entity.id === options.focusEntityId && focusedCodeWindow
+          ? focusedCodeWindow.startZoom : revealWindow?.minZoom ?? nextBand.enterZoom,
         fullZoom: Math.min(
           compiled.zoomPolicy.maxZoom,
-          revealWindow?.fullZoom ?? nextBand.enterZoom + nextBand.fadeWidth,
+          nextDetail === 'code' && entity.id === options.focusEntityId && focusedCodeWindow
+            ? focusedCodeWindow.fullZoom : revealWindow?.fullZoom ?? nextBand.enterZoom + nextBand.fadeWidth,
         ),
-        hysteresis: nextBand.hysteresis,
+        hysteresis: nextDetail === 'code' && entity.id === options.focusEntityId && focusedCodeWindow
+          ? focusedCodeWindow.startZoom - focusedCodeWindow.leaveStartZoom : nextBand.hysteresis,
         transitionMs: 180,
         dwellMs: 80,
         pointerInsetPx: 24,

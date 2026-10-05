@@ -9,7 +9,7 @@ it('marks direct drag camera intent before movement while old settle/assist call
   const pan = source.slice(source.indexOf('function stabilizeSemanticLensForPan'), source.indexOf('function beginSemanticZoomBurst'));
   expect(pan).toContain('if (foregroundSceneRequestRef.current.pending()) return;');
   expect(pan).not.toContain('beginUserCameraIntent()');
-  expect(source).toContain('if (foregroundSceneRequestRef.current.pending()) return sample.camera;');
+  expect(source).toMatch(/if \(foregroundSceneRequestRef\.current\.pending\(\)\) \{[^}]*return sample\.camera; \}/);
 });
 import {
   cameraWorldRect,
@@ -77,7 +77,7 @@ describe('CLA-104: continuous zoom L2→L3 hands off the focused container graph
     expect(maybeScanZoomHandoff).toContain('inspectorSelectionRef.current ?? selected.id');
     expect(app).toContain('const liveCamera = renderedCameraRef.current');
     expect(maybeScanZoomHandoff).toContain('await composeScanSceneAsync(handoff.compileFocus, sourceScene, request.signal)');
-    expect(app).toContain('applyScanZoomHandoff(still, liveCamera, livePreferredId, prepared)');
+    expect(app).toContain("applyScanZoomHandoff(still, liveCamera, livePreferredId, prepared, handoff.detail === 'code' ? codeWindow : undefined)");
     expect(maybeScanZoomHandoff).toContain('if (!owns()) return;');
     expect(refreshViewportNeighborhood).toContain('composeScanSceneAsync(compileFocus, sourceScene, request.signal, next)');
     expect(refreshViewportNeighborhood).toContain('viewportRequestedTileRef.current !== tileKey');

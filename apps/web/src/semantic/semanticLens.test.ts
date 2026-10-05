@@ -28,6 +28,7 @@ import {
   semanticLensStrictDescendantIds,
   semanticLensUrl,
   semanticLensZoomProgress,
+  semanticLensTargetZoomDiagnostics,
   settleSemanticLensPanFocus,
   stabilizeSemanticLensSessionForPan,
   settledSemanticLensId,
@@ -1024,5 +1025,50 @@ describe('semantic lens policy', () => {
     expect(semanticLensCoverageProgress(SEMANTIC_LENS_POLICY.commitCoverage)).toBe(0);
     expect(semanticLensCoverageProgress({ major: .49, minor: .22 })).toBeCloseTo(.5);
     expect(semanticLensCoverageProgress(SEMANTIC_LENS_POLICY.fullCoverage)).toBe(1);
+  });
+});
+
+
+describe('one-shot semantic lens zoom attribution', () => {
+  const viewport = { width: 1200, height: 800 };
+  const safeArea = { top: 0, right: 0, bottom: 0, left: 0 };
+  it('reports the actual authored gate while distinguishing unused CSS and coverage floors', () => {
+    const scene = createGoldenC4Scene();
+    const diagnostics = semanticLensTargetZoomDiagnostics(scene, 'system:okie', 'context', viewport, safeArea)!;
+    const bounds = diagnostics.currentBounds;
+    const measured = measureSemanticLensTarget(scene, 'system:okie', 'context', {
+      x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2, zoom: diagnostics.enterZoom,
+    }, viewport, safeArea)!;
+    expect(diagnostics.enterZoom).toBe(measured.enterZoom);
+    expect(diagnostics.fullZoom).toBe(measured.policy!.fullZoom);
+    expect(diagnostics.leaveZoom).toBe(measured.enterZoom - measured.hysteresis!);
+    expect(diagnostics.dominantTerms).toEqual(['authored-minimum']);
+    expect(diagnostics.commitGate).toBe('enter-zoom');
+    expect(diagnostics.fullGate).toBe('full-zoom');
+    expect(diagnostics.coverageZoom).toBeGreaterThan(diagnostics.enterZoom);
+    expect(measured).not.toHaveProperty('diagnostics');
+  });
+  it('distinguishes CSS-size, LOD and current-card coverage fallback winners', () => {
+    const scene = createGoldenC4Scene();
+    scene.projection!.semanticTransitionsByEntityId = {};
+    const lod = semanticLensTargetZoomDiagnostics(scene, 'system:okie', 'context', { width: 20, height: 20 }, safeArea)!;
+    expect(lod.dominantTerms).toEqual(['lod-minimum']);
+    expect(lod.enterZoom).toBe(lod.lodMinimum);
+    const bounds = scene.projection!.boundsByEntityIdAndDetail['system:okie']!.context!;
+    bounds.width = 20; bounds.height = 10;
+    const css = semanticLensTargetZoomDiagnostics(scene, 'system:okie', 'context', { width: 20, height: 20 }, safeArea)!;
+    expect(css.dominantTerms).toEqual(['minimum-css-size']);
+    expect(css.enterZoom).toBe(8.4);
+    const coverage = semanticLensTargetZoomDiagnostics(scene, 'system:okie', 'context', viewport, safeArea)!;
+    expect(coverage.dominantTerms).toEqual(['current-card-coverage']);
+    expect(coverage.enterZoom).toBe(coverage.coverageZoom);
+    expect(coverage.commitGate).toBe('current-card-coverage');
+    expect(coverage.fullGate).toBe('current-card-coverage');
+    expect(coverage.fullCoverageZoom).toBeGreaterThan(coverage.commitCoverageZoom);
+  });
+  it('does not invent a threshold when the destination geometry is absent', () => {
+    const scene = createGoldenC4Scene();
+    delete scene.projection!.boundsByEntityIdAndDetail['system:okie']!.container;
+    expect(semanticLensTargetZoomDiagnostics(scene, 'system:okie', 'context', viewport, safeArea)).toBeUndefined();
   });
 });

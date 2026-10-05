@@ -1,3 +1,4 @@
+import { scanCodeRevealWindow, type ScanCodeRevealWindow } from './scanCodeRevealWindow';
 import { C4_CAMERA_LIMITS, C4_ZOOM_BANDS, type SceneSnapshot } from '@okie/scene-compiler';
 import type { AtlasScene, Camera } from '../renderer/types';
 import { semanticBounds } from '../renderer/goldenC4Scene';
@@ -95,6 +96,7 @@ export function createScanDetailMorph(
   targetDetail: typeof detailOrder[number],
   startZoom: number,
   sourceSession?: SemanticLensSession,
+  frozenWindow?: ScanCodeRevealWindow,
 ) {
   const sourceIndex = detailOrder.indexOf(sourceDetail);
   const targetIndex = detailOrder.indexOf(targetDetail);
@@ -109,10 +111,13 @@ export function createScanDetailMorph(
     : { ...targetSession, settled: targetSession.settled.slice(0, -1), active: idleSemanticLens() };
   if (!sourceBounds || !targetBounds || entry?.targetId !== focusId || entry.currentDetail !== sourceDetail
     || semanticLensSessionDetail(resolvedSourceSession) !== sourceDetail) return undefined;
-  const fullZoom = Math.min(C4_CAMERA_LIMITS.maxZoom, Math.max(C4_ZOOM_BANDS[targetIndex]!.enterZoom, startZoom * 1.65));
+  const codeWindow = targetDetail === 'code' && target.targetAspect !== undefined
+    ? frozenWindow ?? scanCodeRevealWindow(sourceBounds) : undefined;
+  if (codeWindow) startZoom = codeWindow.startZoom;
+  const fullZoom = codeWindow?.fullZoom ?? Math.min(C4_CAMERA_LIMITS.maxZoom, Math.max(C4_ZOOM_BANDS[targetIndex]!.enterZoom, startZoom * 1.65));
   if (fullZoom <= startZoom) return undefined;
   return {
-    scene, sourceScene: source, focusId, sourceDetail, targetDetail, sourceBounds, targetBounds, startZoom, fullZoom,
+    scene, sourceScene: source, focusId, sourceDetail, targetDetail, sourceBounds, targetBounds, startZoom, fullZoom, codeWindow,
     sourceSession: resolvedSourceSession,
     targetSession, entry, progress: 0, baselineProgress: 0,
   };
@@ -158,7 +163,7 @@ export function createScanReverseMorph(source: AtlasScene, target: AtlasScene, f
   // Saved lenses restore a settled endpoint even below the usual full zoom.
   // Anchor that endpoint to the pre-input camera, rather than jumping halfway
   // through a fixed interval on the first outward event.
-  if (arrivalZoom !== undefined && Number.isFinite(arrivalZoom) && arrivalZoom > 0 && arrivalZoom < morph.fullZoom) {
+  if (!(detail === 'code' && target.targetAspect !== undefined) && arrivalZoom !== undefined && Number.isFinite(arrivalZoom) && arrivalZoom > 0 && arrivalZoom < morph.fullZoom) {
     morph.fullZoom = arrivalZoom;
     morph.startZoom = arrivalZoom / 1.65;
   }
@@ -188,7 +193,12 @@ export function scanContainerMorphCamera(morph: ScanDetailMorph, progress: numbe
 
 /** Same geometric blend in either direction; stopping the wheel never advances it. */
 export function sampleScanContainerMorph(morph: ScanDetailMorph, zoom: number): { progress: number; session: SemanticLensSession } {
-  const progress = semanticLensZoomProgress(zoom, morph.startZoom, morph.fullZoom);
+  const entering = semanticLensZoomProgress(zoom, morph.startZoom, morph.fullZoom);
+  const leaving = morph.codeWindow
+    ? semanticLensZoomProgress(zoom, morph.codeWindow.leaveStartZoom, morph.codeWindow.leaveFullZoom) : entering;
+  // A continuous play operator: reversals within the frozen deadband retain the
+  // same geometry, opacity and ownership; only scan L3→L4 opts into this memory.
+  const progress = Math.max(entering, Math.min(morph.progress, leaving));
   if (progress <= 0) return { progress: 0, session: morph.sourceSession };
   return {
     progress,
