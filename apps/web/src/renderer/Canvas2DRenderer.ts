@@ -1,5 +1,5 @@
 import type { AtlasRenderer, AtlasScene, Camera, PickResult, RenderState, RendererDiagnostics, RendererLodState, SceneEntity, SceneRelation, SemanticDetail } from './types';
-import { C4_BOUNDARY_STROKE_ALPHA, C4_LABEL_MIN_TITLE_PX, C4_PRESENTATION_AT_FOCUS, C4_ZOOM_BANDS, c4TitleFitFloor, cardSupportCopy, codeCardCopy, fitDisplayText, fitDisplayTextAtSize } from '@okie/scene-compiler';
+import { C4_BOUNDARY_STROKE_ALPHA, C4_LABEL_MIN_TITLE_PX, C4_PRESENTATION_AT_FOCUS, C4_ZOOM_BANDS, c4TitleFitFloor, cardContentLayout, cardSupportCopy, codeCardCopy } from '@okie/scene-compiler';
 import { roundedOrthogonalRoute, routeArrowHead, routeArrowHeads, routeShaft, type RouteArrowHead, type RoutePoint } from './routeGeometry';
 
 const palette = {
@@ -28,13 +28,6 @@ function diagramFont(role: 'sans' | 'mono') {
     || (role === 'sans' ? 'sans-serif' : 'monospace');
 }
 
-const visualScaleByDetail: Readonly<Record<SemanticDetail, number>> = {
-  context: C4_PRESENTATION_AT_FOCUS.context.geometryScale / C4_ZOOM_BANDS[0]!.focusZoom,
-  container: C4_PRESENTATION_AT_FOCUS.container.geometryScale / C4_ZOOM_BANDS[1]!.focusZoom,
-  component: C4_PRESENTATION_AT_FOCUS.component.geometryScale / C4_ZOOM_BANDS[2]!.focusZoom,
-  code: C4_PRESENTATION_AT_FOCUS.code.geometryScale / C4_ZOOM_BANDS[3]!.focusZoom,
-};
-
 const focusZoomByDetail: Readonly<Record<SemanticDetail, number>> = Object.fromEntries(
   C4_ZOOM_BANDS.map(band => [band.detail, band.focusZoom]),
 ) as Record<SemanticDetail, number>;
@@ -44,9 +37,9 @@ const focusZoomByDetail: Readonly<Record<SemanticDetail, number>> = Object.fromE
  * Canvas CSS pixels. Keeping this conversion in one place prevents camera zoom
  * from being applied to raw (already screen-targeted) font sizes.
  */
-export function canvasEntityPresentationMetrics(detail: SemanticDetail, boundary: boolean, zoom: number) {
-  const screenScale = visualScaleByDetail[detail] * zoom;
-  const focusZoom = focusZoomByDetail[detail];
+export function canvasEntityPresentationMetrics(detail: SemanticDetail, boundary: boolean, zoom: number, referenceZoom?: number) {
+  const focusZoom = referenceZoom ?? focusZoomByDetail[detail];
+  const screenScale = C4_PRESENTATION_AT_FOCUS[detail].geometryScale / focusZoom * zoom;
   const presentation = C4_PRESENTATION_AT_FOCUS[detail];
   const fontScale = zoom / focusZoom;
   const kickerFontSize = presentation.kickerFontSize * fontScale;
@@ -602,43 +595,24 @@ export class Canvas2DRenderer implements AtlasRenderer {
     ctx.beginPath();
     ctx.rect(origin.x, origin.y, width, height);
     ctx.clip();
-    const textMaxWidth = Math.max(1, width - metrics.horizontalInsets);
     const codeCopy = entity.detail === 'code' ? codeCardCopy(entity) : undefined;
     const label = codeCopy?.kicker ?? (entity.kindLabel ?? entity.kind).toUpperCase();
-    const displayKicker = fitDisplayText(label, textMaxWidth, metrics.kickerFontSize, 'word', 'sans-semibold');
-    const titleMetrics = renderedDetail === 'code' ? 'mono-semibold' as const : 'sans-semibold' as const;
-    const titleFloor = c4TitleFitFloor(renderedDetail, metrics.titleFontSize, C4_LABEL_MIN_TITLE_PX);
-    const fittedTitle = fitDisplayTextAtSize(
-      entity.name,
-      textMaxWidth,
-      metrics.titleFontSize,
-      titleFloor,
-      'identifier',
-      titleMetrics,
-    );
+    const rawDescription = codeCopy ? codeCopy.description : cardSupportCopy(entity.responsibility);
+    const textLayout = cardContentLayout({
+      width, inset: metrics.leftInset, top: 12 * metrics.screenScale,
+      bottom: 10 * metrics.screenScale, gap: 4 * metrics.screenScale,
+      kicker: label, title: entity.name, description: boundary ? undefined : rawDescription,
+      descriptionLines: renderedDetail === 'component' || renderedDetail === 'code' ? 2 : 3,
+      kickerSize: metrics.kickerFontSize, titleSize: metrics.titleFontSize,
+      titleFloor: c4TitleFitFloor(renderedDetail, metrics.titleFontSize, C4_LABEL_MIN_TITLE_PX),
+      titleFitStep: .25 * this.camera.zoom / focusZoomByDetail[renderedDetail],
+      descriptionSize: metrics.descriptionFontSize, mono: renderedDetail === 'code',
+    });
     ctx.globalAlpha = projectionContentOpacity * labelVisibility;
-    ctx.fillStyle = colors.accent;
-    ctx.font = `600 ${metrics.kickerFontSize}px ${diagramFont('sans')}`;
-    ctx.fillText(displayKicker, origin.x + metrics.leftInset, origin.y + metrics.kickerBaseline);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = `600 ${fittedTitle.fontSize}px ${diagramFont(renderedDetail === 'code' ? 'mono' : 'sans')}`;
-    ctx.fillText(fittedTitle.content, origin.x + metrics.leftInset, origin.y + metrics.titleBaseline);
-
-    const rawDescription = codeCopy
-      ? codeCopy.description
-      : cardSupportCopy(entity.responsibility);
-    if (!boundary && rawDescription) {
-      ctx.globalAlpha = projectionContentOpacity * labelVisibility;
-      ctx.fillStyle = '#9aa8b4';
-      ctx.font = `400 ${metrics.descriptionFontSize}px ${diagramFont(renderedDetail === 'code' ? 'mono' : 'sans')}`;
-      const description = fitDisplayText(
-        rawDescription,
-        textMaxWidth,
-        metrics.descriptionFontSize,
-        codeCopy?.descriptionMode ?? 'word',
-        renderedDetail === 'code' ? 'mono-regular' : 'sans-regular',
-      );
-      ctx.fillText(description, origin.x + metrics.leftInset, origin.y + metrics.descriptionBaseline);
+    for (const line of textLayout.lines) {
+      ctx.fillStyle = line.role === 'kicker' ? colors.accent : line.role === 'title' ? '#ffffff' : '#9aa8b4';
+      ctx.font = `${line.role === 'description' ? 400 : 600} ${line.size}px ${diagramFont(line.metrics.startsWith('mono') ? 'mono' : 'sans')}`;
+      ctx.fillText(line.content, origin.x + metrics.leftInset, origin.y + line.baseline);
     }
     ctx.restore();
   }

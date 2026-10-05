@@ -192,9 +192,11 @@ test('intrinsic hierarchy sizing preserves readable headers, cards, padding, gap
     focusEntityId: 'system:okie',
   });
   const authoredRoot = authored.index.boundsByEntityIdAndBand['system:okie']!.context!;
-  const normalized = compileC4Scene(goldenSnapshot, authored).projections;
+  const compiled = compileC4Scene(goldenSnapshot, authored);
+  const normalized = compiled.projections;
   const boundsByEntity = normalized.index.boundsByEntityIdAndBand;
   const root = boundsByEntity['system:okie']!;
+  // The root owns containers, so its face keeps the authored height (CLA-381 compacts leaves only).
   assert.deepEqual(root.context, authoredRoot);
   assert.deepEqual(root.context, { x: 820, y: 120, width: 480, height: 250 });
   assert.deepEqual(root.container, root.context);
@@ -242,11 +244,13 @@ test('intrinsic hierarchy sizing preserves readable headers, cards, padding, gap
 
   const codeFocusZoom = C4_ZOOM_BANDS[3]!.focusZoom;
   const minimumCodeWidth = C4_INTRINSIC_LAYOUT.leaf.code.width / codeFocusZoom;
-  const minimumCodeHeight = C4_INTRINSIC_LAYOUT.leaf.code.height / codeFocusZoom;
   for (const code of goldenSnapshot.entities.filter(entity => entity.kind === 'code')) {
     const bounds = boundsByEntity[code.id]!.code!;
-    assert.ok(bounds.width >= minimumCodeWidth && bounds.height >= minimumCodeHeight,
-      `${code.id} must remain at least 224×112 CSS px at the L4 focus`);
+    assert.ok(bounds.width >= minimumCodeWidth, `${code.id} retains its readable fixed width`);
+    const visualId = normalized.index.visualNodeIdsByEntityId[code.id]![0]!;
+    const representation = compiled.scene.objects.find(object => object.id === visualId)!.representations.find(value => value.id.endsWith(':code'))!;
+    const text = representation.primitives.filter(value => value.kind === 'text');
+    assert.ok(bounds.height >= text.at(-1)!.position.y - bounds.y, `${code.id} face contains all wrapped text`);
   }
   const threeCodeComponent = boundsByEntity['component:model-validation']!.code!;
   assert.ok(threeCodeComponent.width >= 504 / codeFocusZoom && threeCodeComponent.height >= 356 / codeFocusZoom,
@@ -305,9 +309,10 @@ test('focus presets keep human C4 labels legible and suppress dense L3/L4 relati
       assert.ok(support.content.startsWith('export function') || support.content.includes('…'),
         'L4 support is the signature excerpt, truncated with a word ellipsis when needed');
     }
-    if (support.content !== rawSupport) {
-      assert.ok(support.content.includes('…'), `${sample.band} truncated support must announce omission`);
-      const prefix = support.content.slice(0, -1);
+    const supportCopy = text.slice(2).map(line => line.content).join(' ');
+    if (supportCopy !== rawSupport) {
+      assert.ok(supportCopy.includes('…'), `${sample.band} truncated support must announce omission`);
+      const prefix = supportCopy.slice(0, -1);
       assert.ok(rawSupport.startsWith(prefix), `${sample.band} prose must retain a semantic prefix`);
       assert.match(rawSupport.slice(prefix.length, prefix.length + 1), /\s/u,
         `${sample.band} prose must stop at a word boundary`);
@@ -332,13 +337,13 @@ test('focus presets keep human C4 labels legible and suppress dense L3/L4 relati
   const projectedCodeTitle = codeTitle.fontSize * C4_ZOOM_BANDS[3]!.focusZoom;
   const projectedCodeTitleAtMaximum = codeTitle.fontSize * C4_CAMERA_LIMITS.maxZoom;
   assert.equal(projectedCodeTitle, C4_PRESENTATION_AT_FOCUS.code.titleFontSize);
-  assert.ok(projectedCodeTitleAtMaximum <= 26,
+  assert.ok(projectedCodeTitleAtMaximum <= 33,
     'L4 title type must remain comfortable across the explicit framing runway');
   const [codeKicker, , codeSupport] = codeRepresentation.primitives.filter(primitive => primitive.kind === 'text');
   assert.ok(codeKicker!.fontSize * C4_CAMERA_LIMITS.maxZoom >= 15
-    && codeKicker!.fontSize * C4_CAMERA_LIMITS.maxZoom <= 17);
+    && codeKicker!.fontSize * C4_CAMERA_LIMITS.maxZoom <= 24);
   assert.ok(codeSupport!.fontSize * C4_CAMERA_LIMITS.maxZoom >= 15
-    && codeSupport!.fontSize * C4_CAMERA_LIMITS.maxZoom <= 17);
+    && codeSupport!.fontSize * C4_CAMERA_LIMITS.maxZoom <= 26);
 
   for (const object of compiled.scene.objects) {
     for (const representation of object.representations) {
@@ -419,7 +424,8 @@ test('retained owner shells publish active-detail typography on persistent L2-L4
   assert.deepEqual(text('component:model-scoping', 'component').map(primitive => primitive.content), [
     'COMPONENT',
     'Hierarchy selectors',
-    'Reconstructs snapshots and…',
+    'Reconstructs snapshots and',
+    'selects a view scoped to a…',
   ]);
   for (const band of ['container', 'component', 'code'] as const) {
     assert.deepEqual(text('system:okie', band).map(primitive => primitive.content), ['SOFTWARE SYSTEM', 'Okie'],
@@ -433,13 +439,14 @@ test('settled C4 presets have collision-free peers and labels, with every edge c
     focusEntityId: 'system:okie',
   });
   const compiled = compileC4Scene(goldenSnapshot, bundle);
+  const normalizedBundle = compiled.projections;
   const allLabelNodeIntersections: string[] = [];
   const allLabelIntersections: string[] = [];
 
   for (const band of C4_BANDS) {
     const policy = C4_ZOOM_BANDS.find(candidate => candidate.detail === band)!;
-    const projection = bundle.projectionById[bundle.family.projectionIds[band]]!;
-    const layout = bundle.bandLayoutById[projection.layoutId]!;
+    const projection = normalizedBundle.projectionById[normalizedBundle.family.projectionIds[band]]!;
+    const layout = normalizedBundle.bandLayoutById[projection.layoutId]!;
     const peerIntersections: string[] = [];
     for (let leftIndex = 0; leftIndex < projection.visualNodeIds.length; leftIndex += 1) {
       const leftId = projection.visualNodeIds[leftIndex]!;
@@ -454,7 +461,7 @@ test('settled C4 presets have collision-free peers and labels, with every edge c
     assert.deepEqual(peerIntersections, [], `${band} peer nodes must not intersect at the settled preset`);
 
     for (const edgeId of projection.visualEdgeIds) {
-      const edge = bundle.visualEdgeById[edgeId]!;
+      const edge = normalizedBundle.visualEdgeById[edgeId]!;
       const points = layout.edges[edgeId]!.points;
       assert.equal(pointIsOnBoundary(points[0]!, layout.nodes[edge.fromVisualId]!), true,
         `${band} ${edgeId} must leave the source boundary`);
@@ -467,7 +474,7 @@ test('settled C4 presets have collision-free peers and labels, with every edge c
         .filter(representation => representation.id.endsWith(`:${band}`))
         .map(representation => ({ id: object.id, bounds: representation.bounds ?? object.bounds })));
     const boundaryNodeIds = new Set(projection.visualNodeIds.filter(nodeId => projection.visualNodeIds.some(candidateId => (
-      bundle.visualNodeById[candidateId]?.parentVisualId === nodeId
+      normalizedBundle.visualNodeById[candidateId]?.parentVisualId === nodeId
     ))));
     const padding = 8 / policy.focusZoom;
     const labelNodeIntersections: string[] = [];
@@ -507,7 +514,8 @@ test('final C4 routes avoid unrelated hierarchy interiors with stable parallel l
     rootEntityId: 'system:okie',
     focusEntityId: 'system:okie',
   });
-  const normalized = compileC4Scene(goldenSnapshot, authored).projections;
+  const compiled = compileC4Scene(goldenSnapshot, authored);
+  const normalized = compiled.projections;
   const violations: string[] = [];
 
   for (const band of C4_BANDS) {

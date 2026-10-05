@@ -73,7 +73,7 @@ describe('Canvas2D band-normalized typography', () => {
     { detail: 'context' as const, zoom: 0.75, title: 20, kicker: 13.5, description: 15.5 },
     { detail: 'container' as const, zoom: 1.99, title: 15.5, kicker: 10, description: 11 },
     { detail: 'component' as const, zoom: 5.27, title: 16.5, kicker: 10, description: 11 },
-    { detail: 'code' as const, zoom: 13.96, title: 11.2, kicker: 7.2, description: 7.4 },
+    { detail: 'code' as const, zoom: 13.96, title: 14, kicker: 10, description: 11 },
   ])('keeps $detail focus labels at native presentation scale', ({ detail, zoom, title, kicker, description }) => {
     const metrics = canvasEntityPresentationMetrics(detail, false, zoom);
     expect(metrics.titleFontSize).toBeCloseTo(title, 5);
@@ -87,7 +87,7 @@ describe('Canvas2D band-normalized typography', () => {
       { detail: 'context', zoom: 0.75, title: 15.6 },
       { detail: 'container', zoom: 1.99, title: 12.09 },
       { detail: 'component', zoom: 5.27, title: 16.5 },
-      { detail: 'code', zoom: 13.96, title: 11.2 },
+      { detail: 'code', zoom: 13.96, title: 14 },
     ];
     for (const { detail, zoom, title } of bands) {
       expect(canvasEntityPresentationMetrics(detail, true, zoom).titleFontSize).toBeCloseTo(title, 5);
@@ -97,11 +97,11 @@ describe('Canvas2D band-normalized typography', () => {
   it('keeps L4 text within the authored comfort cap at maximum runway', () => {
     const metrics = canvasEntityPresentationMetrics('code', false, 32);
     expect(metrics.titleFontSize).toBeGreaterThanOrEqual(24);
-    expect(metrics.titleFontSize).toBeLessThanOrEqual(26);
+    expect(metrics.titleFontSize).toBeLessThanOrEqual(33);
     expect(metrics.kickerFontSize).toBeGreaterThanOrEqual(15);
-    expect(metrics.kickerFontSize).toBeLessThanOrEqual(17);
+    expect(metrics.kickerFontSize).toBeLessThanOrEqual(24);
     expect(metrics.descriptionFontSize).toBeGreaterThanOrEqual(15);
-    expect(metrics.descriptionFontSize).toBeLessThanOrEqual(17);
+    expect(metrics.descriptionFontSize).toBeLessThanOrEqual(26);
   });
 
   it('keeps native Canvas corner and stroke geometry aligned at maximum runway', () => {
@@ -210,9 +210,9 @@ describe('Canvas2D band-normalized typography', () => {
     expect(target.call('rect').mock.calls.at(-1)![2]).toBeCloseTo(card.width);
     expect(target.call('rect').mock.calls.at(-1)![3]).toBeCloseTo(card.height);
     expect(target.call('clip')).toHaveBeenCalled();
-    expect(target.textCalls).toHaveLength(3);
+    expect(target.textCalls).toHaveLength(4);
     expect(target.textCalls[0]!.content).toBe('FN · 40–88');
-    expect(target.textCalls[1]!.font).toContain('11.2px');
+    expect(target.textCalls[1]!.font).toContain('14px');
     expect(target.textCalls[2]!.content).toContain('export function');
     expect(target.textCalls[2]!.content).not.toContain('validation.ts');
     expect(target.textCalls[2]!.content).not.toContain('prose');

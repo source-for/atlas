@@ -180,6 +180,7 @@ export function fitDisplayTextAtSize(
   minFontSize: number,
   mode: DisplayTextMode = 'word',
   metrics: DisplayFontMetrics = 'sans',
+  fitStep = .25,
 ): { content: string; fontSize: number } {
   const ceiling = Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 0;
   const floor = Number.isFinite(minFontSize) && minFontSize > 0
@@ -189,7 +190,8 @@ export function fitDisplayTextAtSize(
   if (displayTextWidth(content, ceiling, metrics) <= maxWidth) {
     return { content, fontSize: ceiling };
   }
-  for (let size = ceiling - 0.25; size >= floor - 1e-9; size -= 0.25) {
+  const step = Number.isFinite(fitStep) && fitStep > 0 ? fitStep : .25;
+  for (let size = ceiling - step; size >= floor - 1e-9; size -= step) {
     const candidate = Math.max(floor, size);
     if (displayTextWidth(content, candidate, metrics) <= maxWidth) {
       return { content, fontSize: candidate };

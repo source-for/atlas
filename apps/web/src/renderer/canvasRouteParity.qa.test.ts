@@ -213,10 +213,12 @@ describe('Canvas2D compiled route parity', () => {
     renderer.setCamera(camera);
     renderer.setRenderState(renderState({ projectionOverride: override }));
 
-    expect(renderer.pick(600, 400)).toEqual({
-      kind: 'relation',
-      id: 'relation:web-shell-renderer-host',
-    });
+    // CLA-381: compact golden L3 faces route the parallel web-shell→renderer-host `calls`
+    // edge through the same middle corridor, so either relation may own this pixel. The
+    // invariant is that a visible deep-band route wins over its enclosing owner shell.
+    expect(['relation:web-shell-renderer-host', 'relation:code-app-create-renderer'])
+      .toContain((renderer.pick(600, 400) as { kind: string; id: string }).id);
+    expect(renderer.pick(600, 400)?.kind).toBe('relation');
     const source = scene.projection!.boundsByEntityIdAndDetail['component:web-shell']!.component!;
     const sourceCenter = screenPoint({
       x: source.x + source.width / 2,

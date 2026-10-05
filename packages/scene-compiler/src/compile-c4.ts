@@ -34,7 +34,8 @@ import {
 import { RENDERER_PROTOCOL_VERSION, type LodRange, type Rect, type Representation, type SceneObject, type ScenePath, type SceneSnapshot, type Timeline } from './protocol.js';
 import { defaultTheme, type SceneTheme } from './theme.js';
 import { codeCardCopy } from './code-card-copy.js';
-import { displayTextWidth, fitDisplayText, fitDisplayTextAtSize } from './display-text.js';
+import { cardContentLayout } from './card-content-layout.js';
+import { displayTextWidth, fitDisplayText } from './display-text.js';
 
 export type CompiledZoomBand = {
   detail: C4Band;
@@ -64,7 +65,7 @@ export const C4_PRESENTATION_AT_FOCUS = Object.freeze({
   context: { geometryScale: 0.62, kickerFontSize: 13.5, titleFontSize: 20, descriptionFontSize: 15.5 },
   container: { geometryScale: 0.78, kickerFontSize: 10, titleFontSize: 15.5, descriptionFontSize: 11 },
   component: { geometryScale: 1.10, kickerFontSize: 10, titleFontSize: 16.5, descriptionFontSize: 11 },
-  code: { geometryScale: 1.25, kickerFontSize: 7.2, titleFontSize: 11.2, descriptionFontSize: 7.4 },
+  code: { geometryScale: 1.25, kickerFontSize: 10, titleFontSize: 14, descriptionFontSize: 11 },
 } satisfies Readonly<Record<C4Band, {
   geometryScale: number;
   kickerFontSize: number;
@@ -290,6 +291,19 @@ function expand(rect: Rect, padding: number): Rect {
   };
 }
 
+export function c4CardContentLayout(band: C4Band, boundary: boolean, width: number, kicker: string, title: string, description?: string, referenceZoom = C4_ZOOM_BANDS.find(value => value.detail === band)!.focusZoom) {
+  const style = C4_PRESENTATION_AT_FOCUS[band];
+  const scale = style.geometryScale / referenceZoom;
+  const titleSize = style.titleFontSize * (boundary && (band === 'context' || band === 'container') ? .78 : 1) / referenceZoom;
+  return cardContentLayout({ width, inset: (boundary ? 22 : 18) * scale,
+    top: 12 * scale, bottom: 10 * scale, gap: 4 * scale,
+    kicker, title, description: boundary ? undefined : description,
+    descriptionLines: band === 'context' || band === 'container' ? 3 : 2,
+    kickerSize: style.kickerFontSize / referenceZoom, titleSize,
+    titleFloor: c4TitleFitFloor(band, titleSize, C4_LABEL_MIN_TITLE_PX / referenceZoom), titleFitStep: .25 / referenceZoom,
+    descriptionSize: style.descriptionFontSize / referenceZoom, mono: band === 'code' });
+}
+
 function presentation(
   node: VisualNode,
   entity: ArchitectureEntity | undefined,
@@ -299,14 +313,12 @@ function presentation(
   theme: SceneTheme,
   revealLod?: LodRange,
   shell = false,
+  referenceZoom?: number,
 ): Representation {
-  const visualScale = visualScaleByBand[band];
+  const visualScale = referenceZoom !== undefined ? C4_PRESENTATION_AT_FOCUS[band].geometryScale / referenceZoom : visualScaleByBand[band];
   const fill = theme.entityFill[node.kind];
   const bodyFill: typeof fill = boundary ? [fill[0], fill[1], fill[2], 0.14] : fill;
   const left = bounds.x + (boundary ? 22 : 18) * visualScale;
-  const kickerY = bounds.y + (band === 'context' ? 30 : 24) * visualScale;
-  const titleY = bounds.y + (boundary ? 36 : band === 'context' ? 68 : band === 'code' ? 42 : 50) * visualScale;
-  const descriptionY = bounds.y + (band === 'context' ? 112 : band === 'code' ? 68 : 76) * visualScale;
   const codeCopy = !shell && band === 'code' && node.kind === 'code'
     ? codeCardCopy(entity ?? { name: node.name })
     : undefined;
@@ -326,43 +338,8 @@ function presentation(
     code: 'SOURCE',
     boundary: 'BOUNDARY',
   };
-  const focusZoom = C4_ZOOM_BANDS.find(candidate => candidate.detail === band)!.focusZoom;
-  const focusPresentation = C4_PRESENTATION_AT_FOCUS[band];
-  const maxWidth = Math.max(1, bounds.width - 36 * visualScale);
-  const authoredTitleFontSize = focusPresentation.titleFontSize
-    * (boundary && (band === 'context' || band === 'container') ? 0.78 : 1)
-    / focusZoom;
-  const kickerFontSize = focusPresentation.kickerFontSize / focusZoom;
-  const descriptionFontSize = focusPresentation.descriptionFontSize / focusZoom;
-  const titleMetrics = band === 'code' ? 'mono-semibold' as const : 'sans-semibold' as const;
-  const titleFloor = c4TitleFitFloor(band, authoredTitleFontSize, C4_LABEL_MIN_TITLE_PX / focusZoom);
-  const fittedTitle = fitDisplayTextAtSize(
-    node.name,
-    maxWidth,
-    authoredTitleFontSize,
-    titleFloor,
-    'identifier',
-    titleMetrics,
-  );
-  const displayKicker = fitDisplayText(
-    codeCopy?.kicker ?? kindLabel[node.kind],
-    maxWidth,
-    kickerFontSize,
-    'word',
-    'sans-semibold',
-  );
-  const displayTitle = fittedTitle.content;
-  const titleFontSize = fittedTitle.fontSize;
-  const descriptionMode = codeCopy?.descriptionMode ?? (band === 'code' ? 'path' : 'word');
-  const displayDescription = description
-    ? fitDisplayText(
-      description,
-      maxWidth,
-      descriptionFontSize,
-      descriptionMode,
-      band === 'code' ? 'mono-regular' : 'sans-regular',
-    )
-    : undefined;
+  const textLayout = c4CardContentLayout(band, boundary, bounds.width,
+    codeCopy?.kicker ?? kindLabel[node.kind], node.name, description, referenceZoom);
   return {
     id: `${node.id}:${band}`,
     lod: revealLod ?? lodFor(band),
@@ -377,36 +354,15 @@ function presentation(
         fill: bodyFill,
         stroke: { color: [Math.min(1, fill[0] + 0.18), Math.min(1, fill[1] + 0.18), Math.min(1, fill[2] + 0.18), boundary ? C4_BOUNDARY_STROKE_ALPHA : 0.94], width: (boundary ? 1.5 : 2) * visualScale },
       },
-      {
-        kind: 'text',
-        position: { x: left, y: kickerY },
-        maxWidth,
-        content: displayKicker,
-        fontFamily: 'IBM Plex Sans SemiBold',
-        fontSize: kickerFontSize,
-        color: theme.mutedText,
-        align: 'start',
-      },
-      {
-        kind: 'text',
-        position: { x: left, y: titleY },
-        maxWidth,
-        content: displayTitle,
-        fontFamily: band === 'code' ? 'IBM Plex Mono SemiBold' : 'IBM Plex Sans SemiBold',
-        fontSize: titleFontSize,
-        color: theme.text,
-        align: 'start',
-      },
-      ...(!boundary && displayDescription ? ([{
+      ...textLayout.lines.map(line => ({
         kind: 'text' as const,
-        position: { x: left, y: descriptionY },
-        maxWidth,
-        content: displayDescription,
-        fontFamily: band === 'code' ? 'IBM Plex Mono' : 'IBM Plex Sans',
-        fontSize: descriptionFontSize,
-        color: theme.mutedText,
+        position: { x: left, y: bounds.y + line.baseline }, maxWidth: textLayout.maxWidth,
+        content: line.content,
+        fontFamily: line.metrics.startsWith('mono') ? line.role === 'title' ? 'IBM Plex Mono SemiBold' : 'IBM Plex Mono'
+          : line.role === 'description' ? 'IBM Plex Sans' : 'IBM Plex Sans SemiBold',
+        fontSize: line.size, color: line.role === 'title' ? theme.text : theme.mutedText,
         align: 'start' as const,
-      }] satisfies Representation['primitives']) : []),
+      })),
     ],
   };
 }
@@ -1135,6 +1091,7 @@ function applyIntrinsicOwnerGeometry(
 ): void {
   const rootId = bundle.family.rootEntity.logicalId;
   const unpublishedIds = new Set(unpublishedChildren.map(child => child.id));
+  const ownerIds = new Set(snapshot.entities.flatMap(entity => entity.parentId ? [entity.parentId] : []));
   const entities = new Map(entityById);
   const childrenByOwner = new Map<string, ArchitectureEntity[]>();
   for (const entity of snapshot.entities) {
@@ -1477,6 +1434,37 @@ function applyIntrinsicOwnerGeometry(
       if (targetAspect !== undefined && focus?.kind === 'component') {
         alignBandToAnchor(bundle, layout, 'component', focus.id, persistentContextPeerVisualIds);
       }
+    }
+    // Authored leaf faces shrink to their text, never past the authored face; row peers
+    // share the row maximum. Owner faces keep their height so a prior-depth ancestor
+    // still encloses its expanded branch. Scan tiles are proportional child-count
+    // reservations (CLA-95/119/121), so they never compact.
+    const leafRows = new Map<string, { id: string; height: number }[]>();
+    const boundaryIds = visibleChildren(projection, bundle);
+    for (const visualId of projection.visualNodeIds) {
+      const node = bundle.visualNodeById[visualId];
+      const bounds = layout.nodes[visualId];
+      const entity = node && entities.get(node.entity.logicalId);
+      if (targetAspect !== undefined || !node || !bounds || !entity || boundaryIds.has(visualId) || semanticBandForKind(node.kind) !== band) continue;
+      const copy = band === 'code' ? codeCardCopy(entity) : undefined;
+      const content = c4CardContentLayout(band, false, bounds.width, copy?.kicker ?? node.kind.toUpperCase(), node.name,
+        copy?.description ?? cardSupportCopy(entity.responsibility));
+      const rowKey = `${node.parentVisualId ?? 'root'}:${bounds.y.toFixed(6)}`;
+      const row = leafRows.get(rowKey) ?? [];
+      row.push({ id: visualId, height: ownerIds.has(entity.id) ? bounds.height : Math.min(bounds.height, content.height) });
+      leafRows.set(rowKey, row);
+    }
+    for (const row of leafRows.values()) {
+      const height = Math.max(...row.map(item => item.height));
+      for (const item of row) layout.nodes[item.id] = { ...layout.nodes[item.id]!, height };
+    }
+    for (const visualId of projection.visualNodeIds) {
+      const node = bundle.visualNodeById[visualId];
+      if (!node || boundaryIds.has(visualId)) continue;
+      const ownBand = semanticBandForKind(node.kind);
+      if (C4_BANDS.indexOf(ownBand) >= C4_BANDS.indexOf(band)) continue;
+      const ownLayout = bundle.bandLayoutById[bundle.projectionById[bundle.family.projectionIds[ownBand]]!.layoutId]!;
+      if (ownLayout.nodes[visualId]) layout.nodes[visualId] = { ...ownLayout.nodes[visualId]! };
     }
     const focusZoom = C4_ZOOM_BANDS.find(value => value.detail === band)!.focusZoom;
     const routed = routeC4BandEdgesDetailed(

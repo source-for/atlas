@@ -1,24 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="801.3" height="276.6" viewBox="0 0 801.3 276.6" font-family="sans-serif" font-size="11">
-<defs><clipPath id="frame"><rect x="0" y="24" width="801.3" height="216.6"/></clipPath></defs>
+<svg xmlns="http://www.w3.org/2000/svg" width="801.3" height="156.8" viewBox="0 0 801.3 156.8" font-family="sans-serif" font-size="11">
+<defs><clipPath id="frame"><rect x="0" y="24" width="801.3" height="96.8"/></clipPath></defs>
 <rect width="100%" height="100%" fill="#fff"/>
-<rect x="0" y="24" width="801.3" height="216.6" fill="#f1f2f5"/>
+<rect x="0" y="24" width="801.3" height="96.8" fill="#f1f2f5"/>
 <g clip-path="url(#frame)">
 <rect x="-1303.3" y="-826" width="3408" height="1775" fill="none" stroke="#9aa3b5" stroke-width="1"/>
 <rect x="-786.5" y="-354.5" width="2374.2" height="1017.5" fill="none" stroke="#9aa3b5" stroke-width="1"/>
 <rect x="-136.8" y="-79.4" width="1074.8" height="537.4" fill="none" stroke="#9aa3b5" stroke-width="1"/>
-<rect x="32" y="56" width="364.6" height="148.5" fill="#fff" stroke="#5c6680" stroke-width="1"/>
+<rect x="32" y="56" width="364.6" height="28.7" fill="#fff" stroke="#5c6680" stroke-width="1"/>
 <text x="36" y="67" font-size="9" fill="#5c6680">alpha</text>
-<rect x="404.7" y="56" width="364.6" height="148.5" fill="#fff" stroke="#5c6680" stroke-width="1"/>
+<rect x="404.7" y="56" width="364.6" height="28.7" fill="#fff" stroke="#5c6680" stroke-width="1"/>
 <text x="408.7" y="67" font-size="9" fill="#5c6680">beta</text>
-<rect x="32" y="212.7" width="364.6" height="148.5" fill="#fff" stroke="#5c6680" stroke-width="1"/>
+<rect x="32" y="212.7" width="364.6" height="28.7" fill="#fff" stroke="#5c6680" stroke-width="1"/>
 <text x="36" y="223.7" font-size="9" fill="#5c6680">delta</text>
-<rect x="404.7" y="212.7" width="364.6" height="148.5" fill="#fff" stroke="#5c6680" stroke-width="1"/>
+<rect x="404.7" y="212.7" width="364.6" height="28.7" fill="#fff" stroke="#5c6680" stroke-width="1"/>
 <text x="408.7" y="223.7" font-size="9" fill="#5c6680">gamma</text>
-<polyline points="214.3,204.5 214.3,208.6 587,208.6 587,204.5" fill="none" stroke="#445" stroke-width="1.5"/>
-<polyline points="214.3,204.5 214.3,208.6" fill="none" stroke="#0a3d91" stroke-width="4" stroke-opacity="0.75"/>
-<polyline points="587,204.5 587,208.6" fill="none" stroke="#0a3d91" stroke-width="4" stroke-opacity="0.75"/>
+<polyline points="214.3,84.7 214.3,88.8 587,88.8 587,84.7" fill="none" stroke="#445" stroke-width="1.5"/>
+<polyline points="214.3,84.7 214.3,88.8" fill="none" stroke="#0a3d91" stroke-width="4" stroke-opacity="0.75"/>
+<polyline points="587,84.7 587,88.8" fill="none" stroke="#0a3d91" stroke-width="4" stroke-opacity="0.75"/>
 </g>
 <text x="8" y="16">cla68-after-tight · code @ enter (zoom 7.1) · render scale 100% of screen px</text>
-<text x="8" y="254.6" font-size="10" fill="#555">edge-crossing: 0   shared-corridor: 0   label-clearance: 0   container-border-run: 0</text>
-<text x="8" y="268.6" font-size="10" fill="#555">endpoint-crowding: 0   short-route: 0   short-leg: 2</text>
+<text x="8" y="134.8" font-size="10" fill="#555">edge-crossing: 0   shared-corridor: 0   label-clearance: 0   container-border-run: 0</text>
+<text x="8" y="148.8" font-size="10" fill="#555">endpoint-crowding: 0   short-route: 0   short-leg: 2</text>
 </svg>
