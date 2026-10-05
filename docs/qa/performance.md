@@ -461,3 +461,18 @@ The usable timestamp requires first draw submission, a populated matching inspec
 Reverse semantic zoom now asynchronously prepares the adjacent source endpoint through the retained scene worker while leaving the deep scene visible and accepting live camera samples. The semantic branch stays fixed until an owned bridge is ready; publication samples the latest rendered camera and compensates it once using the existing morph geometry. Exact compiled graph generation, fixture, scene, session and selection ownership guard publication. Inward reversal, real pan start and new foreground navigation cancel pending preparation. Delayed effects and stale finalizers cannot clear a newer reverse request's loading cue.
 
 Review identified that the shared asynchronous fixture API could fall back to synchronous compilation on unsupported/failed/timed-out workers. Reverse gestures now request an explicit worker-required policy that retains the current map in those cases; explicit navigation retains its previous fallback. Tests use the real fixture and an actual compileScanScene spy to verify zero synchronous compiler calls, unchanged visible scene, and preserved default navigation fallback for unsupported/error/timeout worker sessions. Bridge stitching/projection and renderer publication still occur on the main thread.
+
+Ported onto current main (after #183–#194). It merges with main's level-preparation ownership, the generation-checked `compileCurrentGeneration`, and `ScanWorkerUnavailableError`. Explicit navigation keeps main's policy: a synchronous fallback below `SCAN_BAND_DEPTH_MIN_ENTITIES`, and an error above it. Reverse publication now records a `reverse-publication` lens diagnostic, so the dev panel and the mounted #191 cold-compile test see the rebuilt L2/L3 bridge.
+
+**Browser comparison.**
+- **Setup:** local production build, published `source-for/atlas` pin, headed Chrome at 1280×720.
+- **Gesture:** L2 rail, double-click `atlas-protocol` (Open inside → container root at L3), then 90 ctrl+wheel steps outward, 12 px every 16 ms, pointer at the viewport centre.
+- **Long tasks after the gesture starts:**
+  - main: one task of 889 / 867 / 895 ms (three runs), the synchronous source compile.
+  - this branch: one task of 71 / 76 / 77 ms.
+- **What you see:**
+  - main shows L2 briefly, then L1, but input is blocked for about 0.9 s.
+  - this branch keeps the shrinking L3 scene under "Loading view…" while the worker prepares the source. At this synthetic gesture speed the camera has passed L2 by publication, so the bridge publishes straight to L1. A slower, real gesture still lands inside the bridge.
+  - Both end with L1 in the same pointer-anchored position.
+- **Frame strips:** [main](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla357-reverse-morph-main-strip.jpg), [branch](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla357-reverse-morph-branch-strip.jpg).
+- **Caveats:** small sequential samples on a loaded machine, so this is not a p95 claim. The golden atlas is authored, not a scan, so it doesn't take this path.
