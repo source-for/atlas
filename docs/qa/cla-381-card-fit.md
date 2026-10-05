@@ -97,7 +97,8 @@ through the L1–L4 rail. The images are on the `qa-screenshots` release only.
 - **Known nit:** below the L1/L2 12 px Canvas title floor (zoom ≲ 0.4 at L1), the
   floored title pushes the support lines down by a few px. On a compacted face, the
   last line can then clip into the bottom inset. The text is 2–4 px tall at those
-  zooms.
+  zooms. Away from the focus zoom, Canvas's fixed 2 px kicker clearance can also put
+  its title up to about 1 px lower than the compiler's; they match at focus.
 - **Load-sensitive test (existing, not from this PR):** under heavy machine load (load
   average 15–26), `AppRestore.mounted` fails in the full `pnpm test` on main too
   (18/20). It passes alone and in the web suite run by itself.

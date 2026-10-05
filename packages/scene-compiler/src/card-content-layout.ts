@@ -21,12 +21,14 @@ export function wrapDisplayText(text: string, width: number, size: number, maxLi
     if (lines.length === maxLines - 1) {
       const rest = remaining.filter(word => word !== '\n').join(' ');
       const last = fitDisplayText(rest, width, size, 'word', metrics);
-      if (last !== '…') { lines.push(last); break; }
+      if (last && last !== '…') { lines.push(last); break; }
       // The first word alone overflows: cut it at a grapheme rather than dropping it.
       const cut = ellipsizeGraphemes(rest, width, size, metrics);
-      if (cut) lines.push(cut);
-      // Not even one glyph fits: mark the omission on the previous line, never alone.
-      else if (lines.length) lines.push(ellipsizeGraphemes(`${lines.pop()!} ${rest}`, width, size, metrics) || '…');
+      if (cut) { lines.push(cut); break; }
+      // Not even one glyph plus an ellipsis fits: mark the omission on the previous line
+      // when it can hold one; otherwise keep that line as is. Never a lone or empty line.
+      const previous = lines.pop();
+      if (previous !== undefined) lines.push(ellipsizeGraphemes(`${previous} ${rest}`, width, size, metrics) || previous);
       break;
     }
     let line = '';

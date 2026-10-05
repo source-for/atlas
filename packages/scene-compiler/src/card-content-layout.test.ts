@@ -66,3 +66,11 @@ test('cuts an overflowing final word at a grapheme instead of dropping fitted li
     assert.ok(displayTextWidth(line, 11, signature.includes(line) ? 'mono-regular' : 'sans-regular') <= 120 + 1e-9);
   }
 });
+
+test('a one-glyph width never paints an empty or lone-ellipsis line', () => {
+  for (const [text, width] of [['👍🏽👍🏽👍🏽 ok', displayTextWidth('👍🏽', 11, 'sans-regular') + .01], ['a b', displayTextWidth('a', 11, 'sans-regular') + .01]] as const) {
+    const lines = wrapDisplayText(text, width, 11, 3);
+    assert.ok(lines.length > 0, JSON.stringify(lines));
+    assert.ok(lines.every(line => line !== '' && line !== '…'), JSON.stringify(lines));
+  }
+});
