@@ -463,7 +463,7 @@ The staging attribution put the long tail inside the worker's compile, mostly la
 - Routing runs twice per compile: once in `bandLayout`, then again in `applyIntrinsicOwnerGeometry`.
 
 The fix is exact:
-- `orthogonalGridBlockage` marks the blocked points and edges once per route. Grid lines include every obstacle edge, so each obstacle covers a contiguous index range. The bounds use the same strict EPSILON comparisons as `pointInsideRect` and `segmentIntersectsRectInterior`.
+- `orthogonalGridBlockage` marks the blocked points and edges once per route. `xs`/`ys` are strictly ascending (`dedupeSorted`), so the grid lines strictly inside an obstacle form one contiguous index range. The bounds use the same strict EPSILON comparisons as `pointInsideRect` and `segmentIntersectsRectInterior`.
 - The A* loop reads coordinates directly instead of allocating points, and keeps the same neighbour order.
 - `goldenC4Scene`'s code-window `ownsCode` builds one entity index per compile (`scanSubtreeMembership`) instead of one per object and edge.
 - Non-finite obstacles fall back to the original per-test path.

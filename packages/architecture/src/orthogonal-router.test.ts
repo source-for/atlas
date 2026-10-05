@@ -162,6 +162,23 @@ test('invalid and stale guidance deterministically degrades to the automatic saf
   assert.deepEqual(empty.points, automatic.points);
 });
 
+test('CLA-385: a one-column grid blocks vertical steps through an obstacle like the per-obstacle path', () => {
+  // xs.length === 1, so node ± 1 is a vertical neighbour; review of #196 found the
+  // indexed lookup read it as horizontal. Values pinned from main c3e9d0f.
+  const options = {
+    source: { x: 0, y: 0, width: 0, height: 10 },
+    target: { x: 0, y: 100, width: 0, height: 10 },
+    obstacles: [],
+    clearance: 1,
+    domain: { x: 0, y: -50, width: 0, height: 200 },
+  };
+  const result = routeOrthogonal(options);
+  assert.equal(result.exploredStates, 2);
+  const walled = routeOrthogonal({ ...options, obstacles: [{ id: 'wall', bounds: { x: -10, y: 40, width: 20, height: 20 } }] });
+  assert.equal(walled.diagnostic, 'direct-fallback');
+  assert.equal(walled.exploredStates, 0);
+});
+
 test('CLA-385: indexed grid blockage marks exactly what the per-obstacle predicates reject', () => {
   const EPSILON = 1e-9;
   const inside = (point: Point, rect: NodeLayout) => point.x > rect.x + EPSILON && point.x < rect.x + rect.width - EPSILON

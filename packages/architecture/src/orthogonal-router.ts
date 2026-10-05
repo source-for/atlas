@@ -209,8 +209,8 @@ function firstIndex(values: readonly number[], test: (value: number) => boolean)
 /**
  * Grid points strictly inside an obstacle, and grid edges crossing an obstacle's
  * interior, marked once per route instead of testing every obstacle on every A*
- * expansion. Grid lines include every obstacle edge, so each obstacle covers a
- * contiguous index range; the bounds use the same strict EPSILON comparisons as
+ * expansion. xs and ys are strictly ascending (dedupeSorted), so the grid lines
+ * strictly inside an obstacle form one contiguous index range; the bounds use the same strict EPSILON comparisons as
  * pointInsideRect and segmentIntersectsRectInterior, so the marks are identical.
  * Non-finite obstacles return undefined and keep the direct per-test path.
  * Exported for the equivalence test against those predicates.
@@ -305,8 +305,8 @@ function findGridPath(
   }
   const edgeBlocked = (node: number, next: number) => {
     if (!blocked) return obstacles.some(obstacle => segmentIntersectsRectInterior(pointFor(node), pointFor(next), obstacle));
-    if (next === node + 1) return blocked.right[node] === 1;
-    if (next === node - 1) return blocked.right[next] === 1;
+    // Same row is a horizontal step; compare rows, since in a one-column grid node ± 1 is vertical.
+    if (Math.floor(node / xs.length) === Math.floor(next / xs.length)) return blocked.right[Math.min(node, next)] === 1;
     return blocked.down[Math.min(node, next)] === 1;
   };
   const startIndex = indexFor(start);
