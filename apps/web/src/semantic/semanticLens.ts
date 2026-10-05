@@ -580,6 +580,15 @@ export function validateRestoredSemanticLensPath(
   const structural = validateSemanticLensPath(scene, baseDetail, targetIds);
   if (!Number.isFinite(zoom)) return structural;
   const entries: SemanticLensPathEntry[] = [];
+  const final = structural.entries.at(-1);
+  const focusedCode = scene.targetAspect !== undefined && scene.scanCodeSafeWidth !== undefined
+    && final !== undefined && final.targetId === scene.rootEntityId && final.nextDetail === 'code'
+    ? scene.projection?.semanticTransitionsByEntityId?.[final.targetId]?.code : undefined;
+  // A narrow map can reveal the focused code face before an ancestor's desktop
+  // runway. Structural validation still applies; the exact deeper endpoint's
+  // authored leave threshold owns its already traversed ancestors on restoration.
+  const ownsFocusedCode = focusedCode?.minZoom !== undefined
+    && zoom + (focusedCode.hysteresis ?? 0) + 1e-9 >= focusedCode.minZoom;
   for (const entry of structural.entries) {
     const authored = scene.projection?.semanticTransitionsByEntityId?.[entry.targetId]?.[entry.nextDetail];
     const protocol = scene.protocolSnapshot as ProtocolProjectionScene | undefined;
@@ -591,7 +600,7 @@ export function validateRestoredSemanticLensPath(
     // representation LOD, then the shared C4 band policy for sparse imports.
     const minZoom = authored?.minZoom ?? representation?.lod?.minZoom ?? band?.enterZoom;
     const hysteresis = authored?.hysteresis ?? representation?.lod?.hysteresis ?? band?.hysteresis ?? 0;
-    if (minZoom !== undefined && zoom + hysteresis + 1e-9 < minZoom) break;
+    if (!ownsFocusedCode && minZoom !== undefined && zoom + hysteresis + 1e-9 < minZoom) break;
     entries.push(entry);
   }
   return { entries, truncated: structural.truncated || entries.length !== structural.entries.length };

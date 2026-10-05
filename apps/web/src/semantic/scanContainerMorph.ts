@@ -112,7 +112,7 @@ export function createScanDetailMorph(
   if (!sourceBounds || !targetBounds || entry?.targetId !== focusId || entry.currentDetail !== sourceDetail
     || semanticLensSessionDetail(resolvedSourceSession) !== sourceDetail) return undefined;
   const codeWindow = targetDetail === 'code' && target.targetAspect !== undefined
-    ? frozenWindow ?? scanCodeRevealWindow(sourceBounds) : undefined;
+    ? frozenWindow ?? scanCodeRevealWindow(sourceBounds, target.scanCodeSafeWidth) : undefined;
   if (codeWindow) startZoom = codeWindow.startZoom;
   const fullZoom = codeWindow?.fullZoom ?? Math.min(C4_CAMERA_LIMITS.maxZoom, Math.max(C4_ZOOM_BANDS[targetIndex]!.enterZoom, startZoom * 1.65));
   if (fullZoom <= startZoom) return undefined;
@@ -192,13 +192,13 @@ export function scanContainerMorphCamera(morph: ScanDetailMorph, progress: numbe
 }
 
 /** Same geometric blend in either direction; stopping the wheel never advances it. */
-export function sampleScanContainerMorph(morph: ScanDetailMorph, zoom: number): { progress: number; session: SemanticLensSession } {
+export function sampleScanContainerMorph(morph: ScanDetailMorph, zoom: number, progressCeiling = 1): { progress: number; session: SemanticLensSession } {
   const entering = semanticLensZoomProgress(zoom, morph.startZoom, morph.fullZoom);
   const leaving = morph.codeWindow
     ? semanticLensZoomProgress(zoom, morph.codeWindow.leaveStartZoom, morph.codeWindow.leaveFullZoom) : entering;
   // A continuous play operator: reversals within the frozen deadband retain the
   // same geometry, opacity and ownership; only scan L3→L4 opts into this memory.
-  const progress = Math.max(entering, Math.min(morph.progress, leaving));
+  const progress = Math.min(progressCeiling, Math.max(entering, Math.min(morph.progress, leaving)));
   if (progress <= 0) return { progress: 0, session: morph.sourceSession };
   return {
     progress,

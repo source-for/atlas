@@ -383,6 +383,8 @@ type CanvasViewportProps = {
   onSemanticZoomBurstStart: (camera: Camera) => Camera;
   /** CLA-104: neighborhood swap changes world space; consume as the burst raw camera. */
   scanZoomAdoptRawRef: { current: Camera | undefined };
+  /** Lens cancellation outside the canvas (window Escape, breadcrumbs) must stop the zoom assist too. */
+  semanticAssistCancelRef: { current: (() => void) | undefined };
   onLodState: (state: RendererLodState | undefined) => void;
   visibilityMode: 'all' | 'dim' | 'isolate';
   flowActive: boolean;
@@ -409,7 +411,7 @@ type CanvasViewportProps = {
   }) => void;
 };
 
-function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, semanticRenderPacketRef, semanticLensSession, scene, camera, setCamera, selectedId, onPick, onOpenInside, focusedIds, relationFocusIds, activeRelationIds, flowRelationIds, requestedBackend, reduceMotion, animationActive, inspectorFlightActive, flowActive, projectionOverride, onSemanticZoom, cinematicTransition, onDiagnostics, onViewportChange, onCameraSettled, onCameraInput, onNavigationFlush, onInteractionStart, onSemanticEditStart, onCameraFlightCancel, onLensCancel, onLensPan, onSemanticZoomBurstStart, onLodState, scanZoomAdoptRawRef, visibilityMode, authoringTool, authoringEnabled, authoringDetail, authoringEntityIds, selectedRelationId, onCreateRelationship, onGuideRelationship }: CanvasViewportProps) {
+function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, semanticRenderPacketRef, semanticLensSession, scene, camera, setCamera, selectedId, onPick, onOpenInside, focusedIds, relationFocusIds, activeRelationIds, flowRelationIds, requestedBackend, reduceMotion, animationActive, inspectorFlightActive, flowActive, projectionOverride, onSemanticZoom, cinematicTransition, onDiagnostics, onViewportChange, onCameraSettled, onCameraInput, onNavigationFlush, onInteractionStart, onSemanticEditStart, onCameraFlightCancel, onLensCancel, onLensPan, onSemanticZoomBurstStart, onLodState, scanZoomAdoptRawRef, semanticAssistCancelRef, visibilityMode, authoringTool, authoringEnabled, authoringDetail, authoringEntityIds, selectedRelationId, onCreateRelationship, onGuideRelationship }: CanvasViewportProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<AtlasRenderer | undefined>(undefined);
   const liveCameraRef = useRef(camera);
@@ -507,6 +509,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
   onSemanticEditStartRef.current = onSemanticEditStart;
   onCameraFlightCancelRef.current = onCameraFlightCancel;
   onLensCancelRef.current = onLensCancel;
+  semanticAssistCancelRef.current = cancelAssistAnimation;
   onLensPanRef.current = onLensPan;
   onSemanticZoomBurstStartRef.current = onSemanticZoomBurstStart;
   onLodStateRef.current = onLodState;
@@ -1639,6 +1642,7 @@ export function App() {
   const zoomHandoffInflightRef = useRef<{ detail: SemanticDetail; compileFocus: string } | undefined>(undefined);
   const scanZoomPointerRef = useRef<LensPoint | undefined>(undefined);
   const scanZoomAdoptRawRef = useRef<Camera | undefined>(undefined);
+  const semanticAssistCancelRef = useRef<(() => void) | undefined>(undefined);
   const [detailsOpen, setDetailsOpen] = useState(() => initialInspectorOpen());
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>(() => scanFixture ? 'overview' : 'details');
   const [inspectorHistory, setInspectorHistory] = useState<InspectorHistorySubject[]>([]);
@@ -1719,7 +1723,11 @@ export function App() {
   const askThreadRef = useRef<AskThreadView | undefined>(undefined);
   askThreadRef.current = askThread;
   const [viewport, setViewport] = useState<ViewportSize>(() => ({ width: Math.max(1, window.innerWidth), height: Math.max(1, window.innerHeight - 68) }));
-  useEffect(() => { cancelGestureSceneRequests(); }, [viewport.width, viewport.height]);
+  useEffect(() => {
+    cancelGestureSceneRequests(); stopLateScanReveal();
+    // An already published code endpoint keeps its frozen authored window until
+    // fresh preparation; changing thresholds mid-gesture would jump geometry.
+  }, [viewport.width, viewport.height]);
   const [measuredSafeArea, setMeasuredSafeArea] = useState<SafeArea>(() => storySafeArea({ width: Math.max(1, window.innerWidth), height: Math.max(1, window.innerHeight - 68) }));
   const [safeAreaEpoch, setSafeAreaEpoch] = useState(0);
   const [pickedRelationId, setPickedRelationId] = useState<string>();
@@ -1774,6 +1782,9 @@ export function App() {
   const semanticMorphStateRef = useRef<SemanticLensState | undefined>(undefined);
   const semanticMorphBaselineRef = useRef(0);
   const scanContainerMorphRef = useRef<ScanDetailMorph | undefined>(undefined);
+  const scanLateRevealRef = useRef<{ morph: ScanDetailMorph; startedAt: number; from: number; stopped: boolean } | undefined>(undefined);
+  const scanLateRevealRafRef = useRef<number | undefined>(undefined);
+  const lensDiagnosticsSampleRef = useRef<{ stage: string; time: number } | undefined>(undefined);
   const scanViewportInteractionRef = useRef<'zoom' | 'pan' | undefined>(undefined);
   const semanticRenderPacketRef = useRef<SemanticRenderPacket | undefined>(undefined);
   const semanticRenderRevisionRef = useRef(0);
@@ -1799,6 +1810,7 @@ export function App() {
   }, [scene, selectedId, scanFixture]);
   useEffect(() => () => {
     cancelForegroundSceneRequest();
+    if (scanLateRevealRafRef.current !== undefined) window.cancelAnimationFrame(scanLateRevealRafRef.current);
     initialEnrichmentAbortRef.current?.abort();
     cancelGestureSceneRequests();
   }, []);
@@ -2986,6 +2998,15 @@ export function App() {
   }
 
   function cancelSemanticLensAt(reason: string, reachedCamera: Camera) {
+    // A queued assist frame, settle sample or in-flight handoff would otherwise re-arm the
+    // cancelled branch: the scan bridge restores its lens path from the live morph.
+    semanticAssistCancelRef.current?.();
+    scanZoomAdoptRawRef.current = undefined;
+    cancelGestureSceneRequests();
+    scanContainerMorphRef.current = undefined;
+    semanticRenderPacketRef.current = undefined;
+    stopLateScanReveal();
+    scanLateRevealRef.current = undefined;
     const current = semanticLensSessionRef.current;
     if (current.active.phase === 'idle' && current.settled.length === 0) return;
     const idle = idleSemanticLensSession(current.baseDetail);
@@ -3096,11 +3117,15 @@ export function App() {
   }
 
   function recordSemanticLensDiagnostics(
-    stage: 'level-preparing' | 'foreground-preparing' | 'disabled' | 'scan-bridge' | 'scan-handoff' | 'handoff-publication' | 'semantic-policy',
+    stage: 'level-preparing' | 'foreground-preparing' | 'disabled' | 'scan-bridge' | 'scan-handoff' | 'handoff-publication' | 'late-publication' | 'semantic-policy',
     sample: Parameters<typeof handleSemanticZoomReady>[0],
     targetsInput: { candidate?: ReturnType<typeof findSemanticLensTarget>; active?: ReturnType<typeof measureSemanticLensTarget>; safeArea?: SafeArea } = {},
   ) {
     if (!devMode) return;
+    const now = performance.now();
+    const last = lensDiagnosticsSampleRef.current;
+    if (last?.stage === stage && now - last.time < 32) return;
+    lensDiagnosticsSampleRef.current = { stage, time: now };
     try {
       const current = semanticLensSessionRef.current;
       const currentDetail = current.active.currentDetail ?? semanticLensSessionDetail(current);
@@ -3198,7 +3223,15 @@ export function App() {
     const containerMorph = scanContainerMorphRef.current;
     if (containerMorph && containerMorph.scene === sceneRef.current
       && scanContainerMorphOwnsSession(containerMorph, semanticLensSessionRef.current)) {
-      const frame = sampleScanContainerMorph(containerMorph, sample.camera.zoom);
+      const late = scanLateRevealRef.current;
+      if (late?.morph === containerMorph && sample.direction === 'outward') stopLateScanReveal();
+      if (late?.morph === containerMorph && late.stopped && sample.direction === 'inward') {
+        late.from = containerMorph.progress; late.startedAt = performance.now(); late.stopped = false;
+        animateLateScanReveal(containerMorph);
+      }
+      const ceiling = late?.morph === containerMorph
+        ? late.stopped ? containerMorph.progress : Math.min(1, late.from + (1 - late.from) * (performance.now() - late.startedAt) / 180) : 1;
+      const frame = sampleScanContainerMorph(containerMorph, sample.camera.zoom, ceiling);
       // A completed expansion can continue into L4. Until then the same retained
       // L2/L3 representations own both zoom directions, including wheel settle.
       if (frame.progress < 1 || containerMorph.progress < 1 || sample.direction !== 'inward') {
@@ -3408,9 +3441,6 @@ export function App() {
     }, navigationDefaults);
     historyControllerRef.current?.commitSettledCamera(next, base);
     prefetchCommittedBox(semanticLensSessionRef.current.settled.at(-1)?.targetId ?? selected.id);
-    // The measured code bridge owns idle as well as wheel samples; neither the
-    // legacy global band floor nor a viewport refresh may replace its endpoints.
-    if (scanCodeBridgeOwnsCurrentScene(next)) return;
     if (maybeScanZoomHandoff(next, updateCamera, scanZoomPointerRef.current)) return;
     // L3 wheel motion must keep the complete component peer layout available
     // for a later L3→L4 bridge. Pan is still allowed to refresh its resident
@@ -3825,6 +3855,8 @@ export function App() {
   }
 
   function beginForegroundScanNavigation(reason: string, historyRestore = false, storyPreparation = false) {
+    stopLateScanReveal();
+    scanLateRevealRef.current = undefined;
     cancelGestureSceneRequests();
     cancelForegroundSceneRequest(!historyRestore);
     foregroundPreparationKindRef.current = historyRestore ? 'history-restore' : storyPreparation ? 'story-step' : 'navigation';
@@ -3873,6 +3905,8 @@ export function App() {
     viewportRequestedTileRef.current = undefined;
     zoomHandoffGenerationRef.current++;
     zoomHandoffInflightRef.current = undefined;
+    const late = scanLateRevealRef.current;
+    if (late && late.morph.scene !== sceneRef.current) { stopLateScanReveal(); scanLateRevealRef.current = undefined; }
   }
 
   function requireForegroundSceneRequest(request: ReturnType<typeof beginForegroundScanNavigation>) {
@@ -3906,7 +3940,15 @@ export function App() {
     return { scene: prepared, detail };
   }
 
-  function scanSceneRequest(focusEntityId: string, cameraOverride?: Camera, keepEntityIds?: readonly string[]) {
+  function currentScanCodeSafeWidth() {
+    // Boot restoration may run before the renderer publishes the map dimensions.
+    const rect = document.querySelector<HTMLElement>('[data-testid="atlas-canvas"]')?.getBoundingClientRect();
+    const safe = rect && rect.width > 0 ? measureCurrentMapSafeArea(false) : measuredSafeArea;
+    return Math.max(1, (rect && rect.width > 0 ? rect.width : viewport.width) - safe.left - safe.right);
+  }
+
+  function scanSceneRequest(focusEntityId: string, cameraOverride?: Camera, keepEntityIds?: readonly string[], frozenSafeWidth?: number) {
+    const scanCodeSafeWidth = frozenSafeWidth ?? currentScanCodeSafeWidth();
     const generation = scanFixture!.getSceneGeneration();
     if (!ownsNeighborhoodSceneCache(neighborhoodSceneGenerationRef.current, scanFixture, generation)) {
       neighborhoodScenesRef.current.clear();
@@ -3921,18 +3963,20 @@ export function App() {
       residency: {
         ...(windowCamera ? { worldBounds: expandRectByTileRing(cameraWorldRect(windowCamera, viewport)) } : {}),
         keepEntityIds: retainedEntityIds.length ? retainedEntityIds : undefined,
+        scanCodeSafeWidth,
       },
       cacheKey: [generation, focusEntityId,
         viewportNeighborhoodCacheKey(focusEntityId, windowCamera, windowCamera ? viewport : undefined),
         retainedEntityIds.join(','),
+        scanCodeSafeWidth,
       ].join(':'),
     };
   }
 
-  async function composeScanSceneAsync(focusEntityId: string, previous: AtlasScene | undefined, signal: AbortSignal, cameraOverride?: Camera, keepEntityIds?: readonly string[], generationFence?: ReturnType<typeof createSceneGenerationFence>) {
+  async function composeScanSceneAsync(focusEntityId: string, previous: AtlasScene | undefined, signal: AbortSignal, cameraOverride?: Camera, keepEntityIds?: readonly string[], generationFence?: ReturnType<typeof createSceneGenerationFence>, frozenSafeWidth?: number) {
     const fixture = scanFixture!;
     const prepared = await compileCurrentGeneration(() => fixture.getSceneGeneration(), async () => {
-      const { residency, cacheKey } = scanSceneRequest(focusEntityId, cameraOverride, keepEntityIds);
+      const { residency, cacheKey } = scanSceneRequest(focusEntityId, cameraOverride, keepEntityIds, frozenSafeWidth);
       const cached = readNeighborhoodScene(neighborhoodScenesRef.current, cacheKey);
       if (cached) return cached;
       const generation = fixture.getSceneGeneration();
@@ -3945,6 +3989,46 @@ export function App() {
       generationFence?.capture(generation);
     });
     return prepared;
+  }
+
+  /** A slow prepared scene gets a short continuous reveal, never a one-frame L4 pop.
+   * Raw zoom/pan remain input-owned; each frame consumes only its structural delta. */
+  function stopLateScanReveal() {
+    if (scanLateRevealRafRef.current !== undefined) window.cancelAnimationFrame(scanLateRevealRafRef.current);
+    scanLateRevealRafRef.current = undefined;
+    if (scanLateRevealRef.current) scanLateRevealRef.current.stopped = true;
+  }
+
+  function animateLateScanReveal(morph: ScanDetailMorph) {
+    if (scanLateRevealRafRef.current !== undefined) return;
+    const tick = (now: number) => {
+      scanLateRevealRafRef.current = undefined;
+      const late = scanLateRevealRef.current;
+      if (!late || late.morph !== morph || late.stopped || scanContainerMorphRef.current !== morph
+        || sceneRef.current !== morph.scene || !scanContainerMorphOwnsSession(morph, semanticLensSessionRef.current)
+        || foregroundSceneRequestRef.current.pending()) return;
+      const ceiling = Math.min(1, late.from + (1 - late.from) * Math.max(0, now - late.startedAt) / 180);
+      const frame = sampleScanContainerMorph(morph, renderedCameraRef.current.zoom, ceiling);
+      // The latest rendered camera includes intervening pan/pinch, not the camera captured by the request.
+      morph.baselineProgress = morph.progress;
+      const next = scanContainerMorphCamera(morph, frame.progress, renderedCameraRef.current);
+      morph.progress = frame.progress;
+      morph.baselineProgress = frame.progress;
+      renderedCameraRef.current = next;
+      scanZoomAdoptRawRef.current = next;
+      semanticLensSessionRef.current = frame.session;
+      setSemanticLensSession(frame.session);
+      updateCamera(next);
+      publishSemanticRenderPacket(next);
+      recordSemanticLensDiagnostics('late-publication', { camera: next, pointer: scanZoomPointerRef.current ?? { x: viewport.width / 2, y: viewport.height / 2 }, direction: 'none', gestureSettled: false, mobile: false });
+      if (ceiling < 1) scanLateRevealRafRef.current = window.requestAnimationFrame(tick);
+      else {
+        scanLateRevealRef.current = undefined;
+        commitNavigation({ ...navigationRef.current, camera: next, detail: frame.session.baseDetail,
+          lensPath: semanticLensCanonicalPathIds(frame.session) }, 'replace');
+      }
+    };
+    scanLateRevealRafRef.current = window.requestAnimationFrame(tick);
   }
 
   /** Recompile the current C4 neighborhood for the camera tile window. Not a full-graph compile. */
@@ -4036,7 +4120,9 @@ export function App() {
         : undefined;
     scanContainerMorphRef.current = containerMorph;
     if (containerMorph) {
-      const initial = sampleScanContainerMorph(containerMorph, liveCamera.zoom);
+      const late = Boolean(containerMorph.codeWindow && liveCamera.zoom >= containerMorph.fullZoom);
+      scanLateRevealRef.current = late ? { morph: containerMorph, startedAt: performance.now(), from: 0, stopped: false } : undefined;
+      const initial = sampleScanContainerMorph(containerMorph, liveCamera.zoom, late ? 0 : 1);
       // The first outward input must retain the already published deadband state.
       containerMorph.progress = initial.progress;
       semanticLensSessionRef.current = initial.session;
@@ -4055,6 +4141,7 @@ export function App() {
         lensPath: semanticLensCanonicalPathIds(initial.session),
       }, 'replace');
       publishSemanticRenderPacket(liveCamera, containerMorph.scene, initial.session);
+      if (late) animateLateScanReveal(containerMorph);
       recordSemanticLensDiagnostics('handoff-publication', { camera: liveCamera, pointer: scanZoomPointerRef.current ?? { x: viewport.width / 2, y: viewport.height / 2 }, direction: 'none', gestureSettled: false, mobile: false });
       return liveCamera;
     }
@@ -4107,7 +4194,7 @@ export function App() {
     if (!scanFixture || liveScene.targetAspect === undefined
       || semanticLensSessionDetail(semanticLensSessionRef.current) !== 'code') return false;
     const focusId = liveScene.rootEntityId;
-    const window = focusId ? scanCodeRevealWindow(semanticBounds(liveScene, focusId, 'component')) : undefined;
+    const window = focusId ? scanCodeRevealWindow(semanticBounds(liveScene, focusId, 'component'), liveScene.scanCodeSafeWidth) : undefined;
     return Boolean(window && camera.zoom >= window.leaveStartZoom);
   }
 
@@ -4144,9 +4231,10 @@ export function App() {
       ? scanZoomHandoffPreferredId(sceneRef.current, activeSnapshot, viewRootId, 'code', currentCompileFocus,
         camera, viewport, pointer, currentDetail, inspectorSelectionRef.current ?? selected.id) : undefined;
     const codeHandoff = codePreferredId ? scanZoomCompileHandoff(sceneRef.current, activeSnapshot, codePreferredId, viewRootId, 'code', currentCompileFocus) : undefined;
+    const codeSafeWidth = currentScanCodeSafeWidth();
     const codeWindow = codeHandoff?.detail === 'code'
-      ? scanCodeRevealWindow(semanticBounds(sceneRef.current, codeHandoff.compileFocus, 'component')) : undefined;
-    const measuredCodeEligible = codeWindow && camera.zoom >= codeWindow.startZoom;
+      ? scanCodeRevealWindow(semanticBounds(sceneRef.current, codeHandoff.compileFocus, 'component'), codeSafeWidth) : undefined;
+    const measuredCodeEligible = codeWindow && camera.zoom >= codeWindow.armZoom;
     const handoff = measuredCodeEligible ? codeHandoff : scanZoomCompileHandoff(
       sceneRef.current, activeSnapshot, preferredId, viewRootId,
       currentDetail === 'component' && codeWindow ? 'component' : zoomDetail, currentCompileFocus,
@@ -4179,8 +4267,11 @@ export function App() {
     zoomHandoffInflightRef.current = handoff;
     void fixture.ensureNeighborhood(handoff.compileFocus, request.signal).then(async () => {
       if (!owns()) return;
-      const prepared = await composeScanSceneAsync(handoff.compileFocus, sourceScene, request.signal);
+      const prepared = await composeScanSceneAsync(handoff.compileFocus, sourceScene, request.signal, undefined, undefined, undefined, handoff.detail === 'code' ? codeSafeWidth : undefined);
       if (!owns()) return;
+      // Keep the prepared scene cached without an idle RAF loop or premature L4 publication.
+      // The next eligible input reuses the cache at the frozen safe-width key.
+      if (handoff.detail === 'code' && codeWindow && renderedCameraRef.current.zoom < codeWindow.startZoom) return;
       const liveCamera = renderedCameraRef.current;
       const liveLevel = semanticDetails.indexOf(semanticLensSessionDetail(semanticLensSessionRef.current));
       const liveActive = semanticLensSessionRef.current.active;
@@ -4998,7 +5089,7 @@ export function App() {
     return safe;
   }
 
-  function measureCurrentMapSafeArea() {
+  function measureCurrentMapSafeArea(publish = true) {
     const canvas = document.querySelector<HTMLElement>('[data-testid="atlas-canvas"]');
     if (!canvas) return { top: 0, right: 0, bottom: 0, left: 0 };
     const rect = (selector: string) => document.querySelector<HTMLElement>(selector)?.getBoundingClientRect();
@@ -5029,7 +5120,7 @@ export function App() {
       } : {}),
       safeInsets: browserSafeAreaInsets(),
     });
-    setMeasuredSafeArea(safe);
+    if (publish) setMeasuredSafeArea(safe);
     return safe;
   }
 
@@ -6485,7 +6576,11 @@ export function App() {
             focusedIds={focusedIds}
             relationFocusIds={relationFocus.endpointIds}
             onCameraSettled={settleCamera}
-            onCameraInput={next => { renderedCameraRef.current = next; }}
+            onCameraInput={next => {
+              // Wheel, pinch, pan and assist share this synchronous camera owner.
+              // Worker publication sees input before RAF/state reconciliation.
+              renderedCameraRef.current = next;
+            }}
             onCameraFlightCancel={handleDirectCameraInput}
             onCreateRelationship={createRelationship}
             onDiagnostics={setDiagnostics}
@@ -6501,6 +6596,7 @@ export function App() {
             onSemanticZoom={handleSemanticZoom}
             onSemanticZoomBurstStart={beginSemanticZoomBurst}
             scanZoomAdoptRawRef={scanZoomAdoptRawRef}
+            semanticAssistCancelRef={semanticAssistCancelRef}
             onViewportChange={setViewport}
             projectionOverride={relationFocus.projectionOverride}
             reduceMotion={reduceMotion}

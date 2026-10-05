@@ -627,8 +627,8 @@
           "path": "apps/web/src/App.tsx",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "App",
-          "startLine": 1462,
-          "endLine": 1467
+          "startLine": 1465,
+          "endLine": 1470
         }
       ],
       "sourceExcerpts": [
@@ -636,9 +636,9 @@
           "path": "apps/web/src/App.tsx",
           "symbol": "App",
           "language": "tsx",
-          "startLine": 1462,
-          "endLine": 1467,
-          "highlightLine": 1462,
+          "startLine": 1465,
+          "endLine": 1470,
+          "highlightLine": 1465,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "export function App() {",
@@ -669,8 +669,8 @@
           "path": "apps/web/src/App.tsx",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "CanvasViewport",
-          "startLine": 6469,
-          "endLine": 6474
+          "startLine": 6560,
+          "endLine": 6565
         }
       ],
       "sourceExcerpts": [
@@ -678,9 +678,9 @@
           "path": "apps/web/src/App.tsx",
           "symbol": "CanvasViewport",
           "language": "tsx",
-          "startLine": 6469,
-          "endLine": 6474,
-          "highlightLine": 6469,
+          "startLine": 6560,
+          "endLine": 6565,
+          "highlightLine": 6560,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "          <CanvasViewport",

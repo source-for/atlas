@@ -211,6 +211,7 @@ export type C4SceneOptions = {
    *  so its compile stays byte-identical. Applied at all repo sizes (a per-mode opt-in,
    *  independent of the scoped-compile size gates). */
   targetAspect?: number;
+  scanCodeSafeWidth?: number;
   /** Size gate value for the dev diagnostics line (scan mode); display-only. */
   bandDepthThreshold?: number;
   /** Published child counts so owners reserve nested footprints (CLA-81). */
@@ -432,7 +433,7 @@ export function createC4Scene(options: C4SceneOptions): AtlasScene {
       previous?.rootEntityId === snapshot.entities.find(entity => entity.id === options.focusEntityId)?.parentId
         ? previous?.projection?.boundsByEntityIdAndDetail[options.focusEntityId]?.component
           ?? c4ScanComponentCardFace(options.targetAspect)
-        : c4ScanComponentCardFace(options.targetAspect)) : undefined;
+        : c4ScanComponentCardFace(options.targetAspect), options.scanCodeSafeWidth) : undefined;
   if (focusedCodeWindow) {
     const ownsCode = (id: string) => scanEntityIsInSubtree(snapshot, id, options.focusEntityId);
     for (const object of compiled.scene.objects) {
@@ -553,6 +554,7 @@ export function createC4Scene(options: C4SceneOptions): AtlasScene {
     ...(omittedNodes.length ? { omittedNodes } : {}),
     ...(scopedCompile ? { scopedCompile } : {}),
     ...(options.targetAspect !== undefined ? { targetAspect: options.targetAspect } : {}),
+    ...(options.scanCodeSafeWidth !== undefined ? { scanCodeSafeWidth: options.scanCodeSafeWidth } : {}),
     entities,
     relations: snapshot.relations.map(relation => ({
       id: relation.id,
