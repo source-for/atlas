@@ -418,10 +418,15 @@ it('enters code from the touch-pinch settle (control for the Escape case)', asyn
 });
 
 it('does not enter code from the pending touch-pinch settle after a window Escape', async () => {
+  const schedule = vi.spyOn(window, 'setTimeout');
   await pinchPastCodeWindowAndLift();
-  // Escape lands before the 120ms pinch settle fires. The cancelled lens session alone keeps the
-  // late settle out of code today; the pinch-timer clear in the Escape cancel is defence in depth.
+  // Escape lands before the 120ms pinch settle fires. The cancelled lens session alone keeps a late
+  // settle out of code today, so the timer clear is pinned directly as defence in depth.
+  const pinchCall = schedule.mock.calls.findLastIndex(call => call[1] === 120);
+  const pinchSettle = schedule.mock.results[pinchCall]!.value as number;
+  const clear = vi.spyOn(window, 'clearTimeout');
   await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))); await settle();
+  expect(clear).toHaveBeenCalledWith(pinchSettle);
   await runSettleAndFrames();
   expect(new URL(window.location.href).searchParams.getAll('lens')).not.toContain('component:web-navigation');
   expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-detail')).not.toBe('code');
