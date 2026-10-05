@@ -48,7 +48,7 @@
 ## Frozen fixture and test changes
 
 - **Regenerated fixtures:** demo snapshot, scene and timeline. The evidence pin
-  `1d984293` → `268e575a` follows the moved Canvas2D source anchors. Stable golden IDs
+  `a93163c8` → `4f53a15d` (after merging #193) follows the moved Canvas2D source anchors. Stable golden IDs
   are unchanged.
 - **CLA-67 cost table:** only `payloadBytes` changes (≤1.7%, from multi-line text).
   The rest of the committed table, including `selfScan`, is untouched.

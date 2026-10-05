@@ -715,11 +715,12 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
       applyLiveCameraRef.current(settled);
       rawCameraRef.current = { ...settled };
     };
-    wheelSettleCancelRef.current = () => {
+    const cancelSemanticZoomSettle = () => {
       if (semanticZoomSettleTimer !== undefined) window.clearTimeout(semanticZoomSettleTimer);
       semanticZoomSettleTimer = undefined;
       lastSemanticPointer = undefined;
     };
+    wheelSettleCancelRef.current = cancelSemanticZoomSettle;
     const semanticWheelZoom = (pointer: LensPoint, zoomFactor: number, direction: 'inward' | 'outward') => {
       if (semanticZoomSettleTimer === undefined) {
         cancelAssistAnimation();
@@ -913,11 +914,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
     const inspectorFlightSink = createInspectorFlightFrameSink({
       readLiveCamera: () => liveCameraRef.current,
       cancelPublishedCamera: () => publisher.cancel(),
-      cancelSemanticZoomSettle: () => {
-        if (semanticZoomSettleTimer !== undefined) window.clearTimeout(semanticZoomSettleTimer);
-        semanticZoomSettleTimer = undefined;
-        lastSemanticPointer = undefined;
-      },
+      cancelSemanticZoomSettle,
       cancelSemanticAssist: cancelAssistAnimation,
       cancelSettleGlide,
       cancelGestureSettles: () => {
