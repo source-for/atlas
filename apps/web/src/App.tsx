@@ -3202,6 +3202,7 @@ export function App() {
         navigationRef.current = navigation;
         historyControllerRef.current?.replace(navigation);
         publishSemanticRenderPacket(next);
+        recordSemanticLensDiagnostics('reverse-publication', { camera: next, pointer: scanZoomPointerRef.current ?? { x: viewport.width / 2, y: viewport.height / 2 }, direction: 'none', gestureSettled: false, mobile: false });
       },
     }).catch(() => { /* Keep the current map; never compile synchronously on stale/failure. */ }).finally(() => {
       if (reverseScenePendingRef.current === intent) { reverseScenePendingRef.current = undefined; setReverseViewLoading(false); }
@@ -3210,7 +3211,7 @@ export function App() {
   }
 
   function recordSemanticLensDiagnostics(
-    stage: 'level-preparing' | 'foreground-preparing' | 'disabled' | 'scan-bridge' | 'scan-handoff' | 'handoff-publication' | 'late-publication' | 'semantic-policy',
+    stage: 'level-preparing' | 'foreground-preparing' | 'disabled' | 'scan-bridge' | 'scan-handoff' | 'handoff-publication' | 'late-publication' | 'reverse-publication' | 'semantic-policy',
     sample: Parameters<typeof handleSemanticZoomReady>[0],
     targetsInput: { candidate?: ReturnType<typeof findSemanticLensTarget>; active?: ReturnType<typeof measureSemanticLensTarget>; safeArea?: SafeArea } = {},
   ) {
