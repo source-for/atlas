@@ -466,7 +466,8 @@ Ported onto current main (after #183–#194). It merges with main's level-prepar
 **Failure handling (after PR #195 review).**
 - While a preparation is pending, settle is deferred, not dropped. When the preparation ends (published, failed, stale or abandoned), the deferred settle runs at the live camera, so the URL, prefetch, handoff and neighbourhood refresh catch up.
 - The neighbourhood fetch receives the request signal. An 8 s deadline abandons a stalled preparation, so "Loading view…" and settle can't wait on the worker's 20 s timeout.
-- A failed preparation backs off for 2 s for that endpoint pair instead of re-requesting on every outward tick.
+- After a failure, the same endpoint pair isn't re-requested for 2 s. Outward ticks in that window take the generic zoom path (no morph) rather than waiting to retry; a later outward gesture prepares again.
+- The 8 s deadline also bounds a slow worker compile. An atlas whose parent compile takes longer would never morph outward; today's published atlas takes about 0.9 s.
 - A worker that is unavailable (latched until reload) on a large atlas stops outward preparation for the session and shows the reload message. Outward zoom out of a deep scene then no longer morphs, though the rail and breadcrumb still navigate. Below the threshold, the synchronous fallback still applies.
 - Mounted regressions in `ReverseScenePreparation.mounted.test.tsx` cover each case. Removing settle replay, the backoff, the latch or the deadline fails the matching test.
 

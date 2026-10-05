@@ -1663,6 +1663,9 @@ export function App() {
   const reverseScenePendingRef = useRef<{ scene: AtlasScene; session: SemanticLensSession; focusId: string; owns(): boolean } | undefined>(undefined);
   const reverseSceneDeadlineRef = useRef<number | undefined>(undefined);
   const reverseSettleDeferredRef = useRef(false);
+  // A replayed settle runs from a request started in an earlier render; read the latest.
+  const settleCameraRef = useRef(settleCamera);
+  settleCameraRef.current = settleCamera;
   const reverseSceneFailureRef = useRef<{ focusId: string; sourceFocusId: string; at: number } | undefined>(undefined);
   const reverseWorkerUnavailableRef = useRef(false);
   const gestureSceneRequestRef = useRef(createSceneRequestOwner());
@@ -3159,7 +3162,7 @@ export function App() {
     clearReverseScenePreparation();
     if (!reverseSettleDeferredRef.current) return;
     reverseSettleDeferredRef.current = false;
-    settleCamera(renderedCameraRef.current);
+    settleCameraRef.current(renderedCameraRef.current);
   }
 
   /** Prepare adjacent endpoints without blocking live outward camera samples. */

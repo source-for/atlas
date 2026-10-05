@@ -91,6 +91,9 @@ async function zoomOut(steps = 2) { for (let i = 0; i < steps; i++) { await zoom
 async function idle(ms = 1000) { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
 
 it('replays a settle suppressed by a failed outward preparation and backs off instead of re-requesting', async () => {
+  // Fake timers don't cover performance.now; freeze it so the 2 s backoff can't lapse on a slow runner.
+  const frozen = performance.now();
+  vi.spyOn(performance, 'now').mockImplementation(() => frozen);
   let reject!: (error: unknown) => void;
   const compile = vi.spyOn(fixture, 'createSceneAsync').mockImplementation((focus, previous, residency) => isReverse(focus, residency)
     ? new Promise<AtlasScene>((_done, fail) => { reject = fail; })
