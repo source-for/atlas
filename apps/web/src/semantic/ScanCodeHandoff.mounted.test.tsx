@@ -422,7 +422,8 @@ it('does not enter code from the pending touch-pinch settle after a window Escap
   await pinchPastCodeWindowAndLift();
   // Escape lands before the 120ms pinch settle fires. The cancelled lens session alone keeps a late
   // settle out of code today, so the timer clear is pinned directly as defence in depth.
-  const pinchCall = schedule.mock.calls.findLastIndex(call => call[1] === 120);
+  const pinchCall = schedule.mock.calls.map(call => call[1]).lastIndexOf(120);
+  expect(pinchCall).toBeGreaterThanOrEqual(0);
   const pinchSettle = schedule.mock.results[pinchCall]!.value as number;
   const clear = vi.spyOn(window, 'clearTimeout');
   await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))); await settle();
