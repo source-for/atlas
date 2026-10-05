@@ -36,7 +36,7 @@ test('content height ends at one padding inset, with separated header and title'
 
 test('world/CSS layout scales identically, including wrap lines and baselines', () => {
   const world = c4CardContentLayout('component', false, 85, 'COMPONENT', 'History controller', 'Coordinates browser history and asynchronous neighborhood restoration.');
-  const scaled = cardContentLayout({ width: 85 * 5.27, inset:18 *1.1, top:12 *1.1, bottom:10 *1.1, gap:4 *1.1, kicker:'COMPONENT', title:'History controller', description:'Coordinates browser history and asynchronous neighborhood restoration.', descriptionLines:2, kickerSize:10,titleSize:16.5,titleFloor:12,descriptionSize:11 });
+  const scaled = cardContentLayout({ width: 85 * 5.27, inset:18 *1.1, top:12 *1.1, bottom:10 *1.1, gap:4 *1.1, kicker:'COMPONENT', title:'History controller', description:'Coordinates browser history and asynchronous neighborhood restoration.', descriptionLines:2, kickerSize:10,titleSize:16.5,titleFloor:12,descriptionSize:11, kickerClearance: 10 * .25 + 2 });
   assert.deepEqual(world.lines.map(line => line.content), scaled.lines.map(line => line.content));
   world.lines.forEach((line,index) => assert.ok(Math.abs(line.baseline * 5.27 - scaled.lines[index]!.baseline) < 1e-8));
 });
@@ -50,9 +50,19 @@ test('preserves explicit paragraph breaks and whole graphemes, with honest no-fi
   assert.deepEqual(wrapDisplayText('Wider', .1, 11, 3), []);
 });
 
-test('never paints a lone ellipsis line when the next word cannot fit', () => {
-  const lines = wrapDisplayText('export function selectScopedArchitectureViewFromNormalizedSnapshotWithEvidence(view)', 120, 11, 2, 'mono-regular');
-  assert.ok(lines.length >= 1 && lines.length <= 2);
-  assert.ok(lines.every(line => line !== '…'), JSON.stringify(lines));
-  for (const line of lines) assert.ok(displayTextWidth(line, 11, 'mono-regular') <= 120 + 1e-9);
+test('cuts an overflowing final word at a grapheme instead of dropping fitted lines', () => {
+  // Reviewer repros: the fitted first line survives and the long word is cut, not lost.
+  const signature = wrapDisplayText('export function selectScopedArchitectureViewFromNormalizedSnapshotWithEvidence(view)', 120, 11, 2, 'mono-regular');
+  assert.equal(signature[0], 'export function');
+  assert.ok(signature[1]!.startsWith('selectScoped') && signature[1]!.endsWith('…'), JSON.stringify(signature));
+  const words = wrapDisplayText('aaaa bbbbbbbbbbbbbbbbbbbbbbbbbb', 40, 11, 2);
+  assert.equal(words[0], 'aaaa');
+  assert.ok(words[1]!.startsWith('b') && words[1]!.endsWith('…'), JSON.stringify(words));
+  const single = wrapDisplayText('bbbbbbbbbbbbbbbbbbbbbbbbbb', 40, 11, 1);
+  assert.equal(single.length, 1);
+  assert.ok(single[0]!.length > 1 && single[0]!.endsWith('…'), JSON.stringify(single));
+  for (const line of [...signature, ...words, ...single]) {
+    assert.notEqual(line, '…');
+    assert.ok(displayTextWidth(line, 11, signature.includes(line) ? 'mono-regular' : 'sans-regular') <= 120 + 1e-9);
+  }
 });

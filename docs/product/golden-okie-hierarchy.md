@@ -161,7 +161,7 @@ Semantic detail and hierarchy scope are separate state. Wheel or pinch changes d
 
 Global density rules:
 
-- At L1–L3 focus zoom, primary titles render at least 12 CSS px, supporting copy at least 10 CSS px, and short uppercase kind kickers at least 9 CSS px. L4 is an overview preset: its 11.2/7.2/7.4 px symbol/kicker/path grows to a comfortable 25.7/16.5/17 px in the explicit owner runway. Measure projected glyph height, not world-space `fontSize`.
+- At L1–L3 focus zoom, primary titles render at least 12 CSS px, supporting copy at least 10 CSS px, and short uppercase kind kickers at least 9 CSS px. L4 is an overview preset: its 14/10/11 px symbol/kicker/signature (raised from 11.2/7.2/7.4 px by CLA-381) grows to about 32/23/25 px in the explicit owner runway. Measure projected glyph height, not world-space `fontSize`.
 - A viewport may present at most 12 peer nodes with readable primary labels at once without clustering or progressive reveal. A larger scope may continue beyond the viewport or nest those peers inside labelled parent boundaries.
 - Edge labels are a scarce annotation layer: selected adjacency, story traces, and hovered edges outrank the rest.
 - External relations terminate at a labelled boundary portal below L1; they do not stretch across every nested layer.
@@ -176,14 +176,14 @@ The GPU renderer must honor the authored font role; a single bitmap or monospace
 
 | Role | Face and weight | L1 focus px | L2 focus px | L3 focus px | L4 focus px |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Kind kicker | IBM Plex Sans, 600, uppercase | 13.5 | 10 | 10 | 7.2 |
+| Kind kicker | IBM Plex Sans, 600, uppercase | 13.5 | 10 | 10 | 10 |
 | Primary name | IBM Plex Sans, 600 | 20 | 15.5 | 16.5 | — |
 | Responsibility | IBM Plex Sans, 400 | 15.5 | 11 | 11 | — |
 | Edge label | IBM Plex Sans, 500 | ≥ 10 | ≥ 10 | selected/story only | selected/story only |
-| Code symbol | IBM Plex Mono, 600 | — | — | — | 11.2 |
-| Repository path | IBM Plex Mono, 400 | — | — | — | 7.4 |
+| Code symbol | IBM Plex Mono, 600 | — | — | — | 14 |
+| Signature excerpt | IBM Plex Mono, 400 | — | — | — | 11 |
 
-The compiler converts these focus targets to world units using each band's authored preset. At the `32` camera maximum, L4 projects to about 16.5 px kickers, 25.7 px symbols, and 17 px paths rather than growing without a bound. Non-code titles, responsibilities, kind labels, and relation labels never use the code font. Single-line baselines reserve at least `1.2 × fontSize` for kickers/titles and `1.35 × fontSize` for supporting copy; no glyph box may intersect another line or a node edge.
+The compiler converts these focus targets to world units using each band's authored preset. At the `32` camera maximum, L4 projects to about 23 px kickers, 32 px symbols, and 25 px signatures rather than growing without a bound. Non-code titles, responsibilities, kind labels, and relation labels never use the code font. Baselines reserve at least `1.2 × fontSize` for kickers/titles and `1.35 × fontSize` for each supporting-copy line (`cardTitleStep` / `cardDescriptionStep`). Support copy wraps to 3 lines at L1/L2 and 2 at L3/L4 (CLA-381); no glyph box may intersect another line or a node edge.
 
 The selected UI and diagram family is IBM Plex Sans with IBM Plex Mono. Identical 1540×754 L1 and scoped L4 trials rejected Geist Sans/Mono as too generic and Source Sans 3/Source Code Pro as too soft for the architectural hierarchy. The browser pins `@fontsource/ibm-plex-sans@5.2.8` and `@fontsource/ibm-plex-mono@5.2.7`. The GPU pins the official `IBM/plex` `v6.4.2` tag at commit `242c4cccd37e87985a5337815c99b960ef13c65c`, vendors the OFL-1.1 license, and derives its raster atlas and compiler advance table from the same five TTF files:
 

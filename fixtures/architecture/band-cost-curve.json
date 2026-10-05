@@ -32,7 +32,7 @@
       "bandOmittedEdgeCount": 2,
       "objectCount": 27,
       "pathCount": 24,
-      "payloadBytes": 47659,
+      "payloadBytes": 47732,
       "directFallbackCount": 0,
       "compileOptions": {
         "maxBand": "component",
@@ -49,7 +49,7 @@
         "bandOmittedEdgeCount": 0,
         "objectCount": 28,
         "pathCount": 26,
-        "payloadBytes": 51510,
+        "payloadBytes": 51511,
         "directFallbackCount": 0,
         "compileOptions": {
           "maxBand": "code"
@@ -65,7 +65,7 @@
         "bandOmittedEdgeCount": 0,
         "objectCount": 27,
         "pathCount": 26,
-        "payloadBytes": 48789,
+        "payloadBytes": 48868,
         "directFallbackCount": 0,
         "compileOptions": {
           "maxBand": "component"
@@ -82,7 +82,7 @@
       "bandOmittedEdgeCount": 27,
       "objectCount": 52,
       "pathCount": 24,
-      "payloadBytes": 76473,
+      "payloadBytes": 76491,
       "directFallbackCount": 0,
       "compileOptions": {
         "maxBand": "component",
@@ -99,7 +99,7 @@
         "bandOmittedEdgeCount": 0,
         "objectCount": 28,
         "pathCount": 26,
-        "payloadBytes": 51510,
+        "payloadBytes": 51511,
         "directFallbackCount": 0,
         "compileOptions": {
           "maxBand": "code"
@@ -115,7 +115,7 @@
         "bandOmittedEdgeCount": 0,
         "objectCount": 52,
         "pathCount": 51,
-        "payloadBytes": 90152,
+        "payloadBytes": 90170,
         "directFallbackCount": 0,
         "compileOptions": {
           "maxBand": "component"
@@ -132,7 +132,7 @@
       "bandOmittedEdgeCount": 77,
       "objectCount": 102,
       "pathCount": 24,
-      "payloadBytes": 132028,
+      "payloadBytes": 132052,
       "directFallbackCount": 0,
       "compileOptions": {
         "maxBand": "component",
@@ -149,7 +149,7 @@
         "bandOmittedEdgeCount": 0,
         "objectCount": 28,
         "pathCount": 26,
-        "payloadBytes": 51510,
+        "payloadBytes": 51511,
         "directFallbackCount": 0,
         "compileOptions": {
           "maxBand": "code"
@@ -165,7 +165,7 @@
         "bandOmittedEdgeCount": 0,
         "objectCount": 102,
         "pathCount": 101,
-        "payloadBytes": 170930,
+        "payloadBytes": 170954,
         "directFallbackCount": 0,
         "compileOptions": {
           "maxBand": "component"
@@ -182,7 +182,7 @@
       "bandOmittedEdgeCount": 177,
       "objectCount": 202,
       "pathCount": 24,
-      "payloadBytes": 248071,
+      "payloadBytes": 248080,
       "directFallbackCount": 0,
       "compileOptions": {
         "maxBand": "component",
@@ -199,7 +199,7 @@
         "bandOmittedEdgeCount": 0,
         "objectCount": 28,
         "pathCount": 26,
-        "payloadBytes": 51510,
+        "payloadBytes": 51511,
         "directFallbackCount": 0,
         "compileOptions": {
           "maxBand": "code"
@@ -215,7 +215,7 @@
         "bandOmittedEdgeCount": 0,
         "objectCount": 202,
         "pathCount": 201,
-        "payloadBytes": 337347,
+        "payloadBytes": 337356,
         "directFallbackCount": 0,
         "compileOptions": {
           "maxBand": "component"
@@ -232,7 +232,7 @@
       "bandOmittedEdgeCount": 377,
       "objectCount": 402,
       "pathCount": 24,
-      "payloadBytes": 477623,
+      "payloadBytes": 477634,
       "directFallbackCount": 0,
       "compileOptions": {
         "maxBand": "component",
@@ -249,7 +249,7 @@
         "bandOmittedEdgeCount": 0,
         "objectCount": 28,
         "pathCount": 26,
-        "payloadBytes": 51510,
+        "payloadBytes": 51511,
         "directFallbackCount": 0,
         "compileOptions": {
           "maxBand": "code"
@@ -283,7 +283,7 @@
         "bandOmittedEdgeCount": 0,
         "objectCount": 28,
         "pathCount": 26,
-        "payloadBytes": 51510,
+        "payloadBytes": 51511,
         "directFallbackCount": 0,
         "compileOptions": {
           "maxBand": "code"
@@ -298,7 +298,7 @@
       {
         "childCount": 25,
         "compileMs": 57.2225,
-        "payloadBytes": 47659,
+        "payloadBytes": 47732,
         "cpuFirstFrameMs": 0.011875000000031832,
         "cpuPanMs": 0.011791000000016538,
         "cpuZoomMs": 0.010834000000045307,
@@ -309,7 +309,7 @@
       {
         "childCount": 50,
         "compileMs": 111.57204200000001,
-        "payloadBytes": 76473,
+        "payloadBytes": 76491,
         "cpuFirstFrameMs": 0.012666000000081112,
         "cpuPanMs": 0.012208999999984371,
         "cpuZoomMs": 0.01262500000007094,
@@ -320,7 +320,7 @@
       {
         "childCount": 100,
         "compileMs": 279.0008339999995,
-        "payloadBytes": 132028,
+        "payloadBytes": 132052,
         "cpuFirstFrameMs": 0.004125000000385626,
         "cpuPanMs": 0.004584000000249944,
         "cpuZoomMs": 0.003958999999667867,
@@ -331,7 +331,7 @@
       {
         "childCount": 200,
         "compileMs": 844.9794999999995,
-        "payloadBytes": 248071,
+        "payloadBytes": 248080,
         "cpuFirstFrameMs": 0.006457999999838648,
         "cpuPanMs": 0.008207999999285676,
         "cpuZoomMs": 0.006417000000510598,
@@ -342,7 +342,7 @@
       {
         "childCount": 400,
         "compileMs": 1430.8720410000024,
-        "payloadBytes": 477623,
+        "payloadBytes": 477634,
         "cpuFirstFrameMs": 0.012875000000349246,
         "cpuPanMs": 0.01745899999514222,
         "cpuZoomMs": 0.012875000000349246,

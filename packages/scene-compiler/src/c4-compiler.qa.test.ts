@@ -250,7 +250,9 @@ test('intrinsic hierarchy sizing preserves readable headers, cards, padding, gap
     const visualId = normalized.index.visualNodeIdsByEntityId[code.id]![0]!;
     const representation = compiled.scene.objects.find(object => object.id === visualId)!.representations.find(value => value.id.endsWith(':code'))!;
     const text = representation.primitives.filter(value => value.kind === 'text');
-    assert.ok(bounds.height >= text.at(-1)!.position.y - bounds.y, `${code.id} face contains all wrapped text`);
+    const bottomPadding = 10 * C4_PRESENTATION_AT_FOCUS.code.geometryScale / codeFocusZoom;
+    assert.ok(bounds.height >= text.at(-1)!.position.y - bounds.y + bottomPadding - 1e-9,
+      `${code.id} face keeps one bottom padding below its last wrapped line`);
   }
   const threeCodeComponent = boundsByEntity['component:model-validation']!.code!;
   assert.ok(threeCodeComponent.width >= 504 / codeFocusZoom && threeCodeComponent.height >= 356 / codeFocusZoom,

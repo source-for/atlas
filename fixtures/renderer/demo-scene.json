@@ -6,7 +6,7 @@
     "x": -40,
     "y": 0,
     "width": 2300,
-    "height": 682.3733333333333
+    "height": 686.2333333333333
   },
   "objects": [
     {
@@ -110,7 +110,7 @@
       "zIndex": 30,
       "bounds": {
         "x": 1412.2328533333334,
-        "y": 227.13333333333335,
+        "y": 229.06333333333336,
         "width": 146.20096,
         "height": 24.8
       },
@@ -126,7 +126,7 @@
           },
           "bounds": {
             "x": 1412.2328533333334,
-            "y": 227.13333333333335,
+            "y": 229.06333333333336,
             "width": 146.20096,
             "height": 24.8
           },
@@ -135,7 +135,7 @@
               "kind": "text",
               "position": {
                 "x": 1485.3333333333335,
-                "y": 249.45333333333335
+                "y": 251.38333333333335
               },
               "maxWidth": 347.2,
               "content": "renders through",
@@ -158,7 +158,7 @@
       "zIndex": 30,
       "bounds": {
         "x": 651.6053333333334,
-        "y": 360.6933333333334,
+        "y": 361.65833333333336,
         "width": 147.808,
         "height": 24.8
       },
@@ -174,7 +174,7 @@
           },
           "bounds": {
             "x": 651.6053333333334,
-            "y": 360.6933333333334,
+            "y": 361.65833333333336,
             "width": 147.808,
             "height": 24.8
           },
@@ -183,7 +183,7 @@
               "kind": "text",
               "position": {
                 "x": 725.5093333333334,
-                "y": 383.0133333333334
+                "y": 383.97833333333335
               },
               "maxWidth": 347.2,
               "content": "source evidence",
@@ -208,7 +208,7 @@
         "x": 80,
         "y": 180,
         "width": 480,
-        "height": 150.48000000000002
+        "height": 154.34000000000003
       },
       "pickable": true,
       "representations": [
@@ -224,7 +224,7 @@
             "x": 80,
             "y": 180,
             "width": 480,
-            "height": 150.48000000000002
+            "height": 154.34000000000003
           },
           "primitives": [
             {
@@ -233,7 +233,7 @@
                 "x": 80,
                 "y": 180,
                 "width": 480,
-                "height": 150.48000000000002
+                "height": 154.34000000000003
               },
               "radius": 11.573333333333334,
               "fill": [
@@ -274,7 +274,7 @@
               "kind": "text",
               "position": {
                 "x": 94.88,
-                "y": 237.89333333333335
+                "y": 241.75333333333333
               },
               "maxWidth": 450.24,
               "content": "Developer / maintainer",
@@ -292,7 +292,7 @@
               "kind": "text",
               "position": {
                 "x": 94.88,
-                "y": 266
+                "y": 269.86
               },
               "maxWidth": 450.24,
               "content": "Explores an unfamiliar codebase from system",
@@ -310,7 +310,7 @@
               "kind": "text",
               "position": {
                 "x": 94.88,
-                "y": 294.1066666666667
+                "y": 297.9666666666667
               },
               "maxWidth": 450.24,
               "content": "context to source evidence.",
@@ -338,7 +338,7 @@
             "x": 80,
             "y": 180,
             "width": 480,
-            "height": 150.48000000000002
+            "height": 154.34000000000003
           },
           "primitives": [
             {
@@ -347,7 +347,7 @@
                 "x": 80,
                 "y": 180,
                 "width": 480,
-                "height": 150.48000000000002
+                "height": 154.34000000000003
               },
               "radius": 5.4874371859296485,
               "fill": [
@@ -388,7 +388,7 @@
               "kind": "text",
               "position": {
                 "x": 87.05527638190955,
-                "y": 199.0854271356784
+                "y": 199.7788944723618
               },
               "maxWidth": 465.8894472361809,
               "content": "Developer / maintainer",
@@ -406,7 +406,7 @@
               "kind": "text",
               "position": {
                 "x": 87.05527638190955,
-                "y": 207.28643216080403
+                "y": 207.97989949748745
               },
               "maxWidth": 465.8894472361809,
               "content": "Explores an unfamiliar codebase from system context to source evidence.",
@@ -434,7 +434,7 @@
             "x": 80,
             "y": 180,
             "width": 480,
-            "height": 150.48000000000002
+            "height": 154.34000000000003
           },
           "primitives": [
             {
@@ -443,7 +443,7 @@
                 "x": 80,
                 "y": 180,
                 "width": 480,
-                "height": 150.48000000000002
+                "height": 154.34000000000003
               },
               "radius": 2.9222011385199247,
               "fill": [
@@ -484,7 +484,7 @@
               "kind": "text",
               "position": {
                 "x": 83.75711574952561,
-                "y": 188.36812144212524
+                "y": 188.38709677419354
               },
               "maxWidth": 472.4857685009488,
               "content": "Developer / maintainer",
@@ -502,7 +502,7 @@
               "kind": "text",
               "position": {
                 "x": 83.75711574952561,
-                "y": 191.70777988614802
+                "y": 191.7267552182163
               },
               "maxWidth": 472.4857685009488,
               "content": "Explores an unfamiliar codebase from system context to source evidence.",
@@ -530,7 +530,7 @@
             "x": 80,
             "y": 180,
             "width": 480,
-            "height": 150.48000000000002
+            "height": 154.34000000000003
           },
           "primitives": [
             {
@@ -539,7 +539,7 @@
                 "x": 80,
                 "y": 180,
                 "width": 480,
-                "height": 150.48000000000002
+                "height": 154.34000000000003
               },
               "radius": 0.6267908309455587,
               "fill": [
@@ -2193,7 +2193,25 @@
                 "y": 240.41491616398244
               },
               "maxWidth": 12.822349570200574,
-              "content": "export function…",
+              "content": "export function",
+              "fontFamily": "IBM Plex Mono",
+              "fontSize": 0.7879656160458453,
+              "color": [
+                0.573,
+                0.616,
+                0.718,
+                1
+              ],
+              "align": "start"
+            },
+            {
+              "kind": "text",
+              "position": {
+                "x": 894.2381023110023,
+                "y": 241.7186410923492
+              },
+              "maxWidth": 12.822349570200574,
+              "content": "selectArchitectureSnapshot…",
               "fontFamily": "IBM Plex Mono",
               "fontSize": 0.7879656160458453,
               "color": [
@@ -4353,7 +4371,25 @@
                 "y": 286.7290415830287
               },
               "maxWidth": 12.822349570200574,
-              "content": "export function…",
+              "content": "export function",
+              "fontFamily": "IBM Plex Mono",
+              "fontSize": 0.7879656160458453,
+              "color": [
+                0.573,
+                0.616,
+                0.718,
+                1
+              ],
+              "align": "start"
+            },
+            {
+              "kind": "text",
+              "position": {
+                "x": 1021.5961696097751,
+                "y": 288.03276651139544
+              },
+              "maxWidth": 12.822349570200574,
+              "content": "createNavigationHistoryCon…",
               "fontFamily": "IBM Plex Mono",
               "fontSize": 0.7879656160458453,
               "color": [
@@ -4683,7 +4719,7 @@
                 "y": 284.4152880013668
               },
               "maxWidth": 12.822349570200574,
-              "content": "CLASS · 137–142",
+              "content": "CLASS · 175–180",
               "fontFamily": "IBM Plex Sans SemiBold",
               "fontSize": 0.7163323782234956,
               "color": [
@@ -5686,7 +5722,7 @@
               "kind": "text",
               "position": {
                 "x": 1172.33888754186,
-                "y": 210.45060991391762
+                "y": 210.4695852459859
               },
               "maxWidth": 30.038359513825597,
               "content": "Scoped scene and patch c…",
@@ -5704,7 +5740,7 @@
               "kind": "text",
               "position": {
                 "x": 1172.33888754186,
-                "y": 213.79026835794036
+                "y": 213.80924369000869
               },
               "maxWidth": 30.038359513825597,
               "content": "Selects a root-scoped view and",
@@ -5722,7 +5758,7 @@
               "kind": "text",
               "position": {
                 "x": 1172.33888754186,
-                "y": 217.12992680196314
+                "y": 217.14890213403146
               },
               "maxWidth": 30.038359513825597,
               "content": "diffs retained scenes into…",
@@ -5892,7 +5928,7 @@
               "kind": "text",
               "position": {
                 "x": 1212.9275316856667,
-                "y": 210.59292490442994
+                "y": 210.61190023649826
               },
               "maxWidth": 30.038359513825597,
               "content": "TypeScript protocol mirror",
@@ -5910,7 +5946,7 @@
               "kind": "text",
               "position": {
                 "x": 1212.9275316856667,
-                "y": 213.9325833484527
+                "y": 213.95155868052103
               },
               "maxWidth": 30.038359513825597,
               "content": "Defines the TypeScript scene,",
@@ -5928,7 +5964,7 @@
               "kind": "text",
               "position": {
                 "x": 1212.9275316856667,
-                "y": 217.27224179247548
+                "y": 217.29121712454378
               },
               "maxWidth": 30.038359513825597,
               "content": "patch, primitive, LOD, and…",
@@ -6098,7 +6134,7 @@
               "kind": "text",
               "position": {
                 "x": 1172.33888754186,
-                "y": 233.11684849435983
+                "y": 233.13582382642812
               },
               "maxWidth": 30.038359513825597,
               "content": "Scene compilation",
@@ -6116,7 +6152,7 @@
               "kind": "text",
               "position": {
                 "x": 1172.33888754186,
-                "y": 236.4565069383826
+                "y": 236.4754822704509
               },
               "maxWidth": 30.038359513825597,
               "content": "Maps visible semantic entities",
@@ -6134,7 +6170,7 @@
               "kind": "text",
               "position": {
                 "x": 1172.33888754186,
-                "y": 239.79616538240538
+                "y": 239.81514071447367
               },
               "maxWidth": 30.038359513825597,
               "content": "and relations to bounded…",
@@ -6304,7 +6340,7 @@
               "kind": "text",
               "position": {
                 "x": 1212.9275316856667,
-                "y": 233.11684849435983
+                "y": 233.13582382642812
               },
               "maxWidth": 30.038359513825597,
               "content": "Story compilation",
@@ -6322,7 +6358,7 @@
               "kind": "text",
               "position": {
                 "x": 1212.9275316856667,
-                "y": 236.4565069383826
+                "y": 236.4754822704509
               },
               "maxWidth": 30.038359513825597,
               "content": "Converts narrated focus steps",
@@ -6340,7 +6376,7 @@
               "kind": "text",
               "position": {
                 "x": 1212.9275316856667,
-                "y": 239.79616538240538
+                "y": 239.81514071447367
               },
               "maxWidth": 30.038359513825597,
               "content": "into deterministic camera and…",
@@ -6510,7 +6546,7 @@
               "kind": "text",
               "position": {
                 "x": 877.0341088005079,
-                "y": 207.9419312778326
+                "y": 207.9609066099009
               },
               "maxWidth": 30.038359513825597,
               "content": "Normalized state",
@@ -6528,7 +6564,7 @@
               "kind": "text",
               "position": {
                 "x": 877.0341088005079,
-                "y": 211.28158972185537
+                "y": 211.30056505392366
               },
               "maxWidth": 30.038359513825597,
               "content": "Stores qualified identities and",
@@ -6546,7 +6582,7 @@
               "kind": "text",
               "position": {
                 "x": 877.0341088005079,
-                "y": 214.62124816587814
+                "y": 214.64022349794644
               },
               "maxWidth": 30.038359513825597,
               "content": "indexed rows for snapshots,…",
@@ -6716,7 +6752,7 @@
               "kind": "text",
               "position": {
                 "x": 917.6227529443145,
-                "y": 204.57936269867358
+                "y": 204.59833803074187
               },
               "maxWidth": 30.038359513825597,
               "content": "Semantic schema",
@@ -6734,7 +6770,7 @@
               "kind": "text",
               "position": {
                 "x": 917.6227529443145,
-                "y": 207.91902114269635
+                "y": 207.93799647476465
               },
               "maxWidth": 30.038359513825597,
               "content": "Defines entities, relations,",
@@ -6752,7 +6788,7 @@
               "kind": "text",
               "position": {
                 "x": 917.6227529443145,
-                "y": 211.25867958671913
+                "y": 211.27765491878742
               },
               "maxWidth": 30.038359513825597,
               "content": "evidence, snapshots, views,…",
@@ -6922,7 +6958,7 @@
               "kind": "text",
               "position": {
                 "x": 877.0341088005079,
-                "y": 236.47941707351885
+                "y": 236.49839240558714
               },
               "maxWidth": 30.038359513825597,
               "content": "Hierarchy selectors",
@@ -6940,7 +6976,7 @@
               "kind": "text",
               "position": {
                 "x": 877.0341088005079,
-                "y": 239.81907551754162
+                "y": 239.8380508496099
               },
               "maxWidth": 30.038359513825597,
               "content": "Reconstructs snapshots and",
@@ -6958,7 +6994,7 @@
               "kind": "text",
               "position": {
                 "x": 877.0341088005079,
-                "y": 243.1587339615644
+                "y": 243.1777092936327
               },
               "maxWidth": 30.038359513825597,
               "content": "selects a view scoped to a…",
@@ -7128,7 +7164,7 @@
               "kind": "text",
               "position": {
                 "x": 917.6227529443145,
-                "y": 232.78478018316437
+                "y": 232.8037555152327
               },
               "maxWidth": 30.038359513825597,
               "content": "Architecture validation",
@@ -7146,7 +7182,7 @@
               "kind": "text",
               "position": {
                 "x": 917.6227529443145,
-                "y": 236.12443862718715
+                "y": 236.14341395925547
               },
               "maxWidth": 30.038359513825597,
               "content": "Rejects invalid snapshots,",
@@ -7164,7 +7200,7 @@
               "kind": "text",
               "position": {
                 "x": 917.6227529443145,
-                "y": 239.46409707120992
+                "y": 239.48307240327824
               },
               "maxWidth": 30.038359513825597,
               "content": "views, stories, geometry,…",
@@ -7334,7 +7370,7 @@
               "kind": "text",
               "position": {
                 "x": 1024.686498171184,
-                "y": 207.9419312778326
+                "y": 207.9609066099009
               },
               "maxWidth": 30.038359513825597,
               "content": "Scene engine",
@@ -7352,7 +7388,7 @@
               "kind": "text",
               "position": {
                 "x": 1024.686498171184,
-                "y": 211.28158972185537
+                "y": 211.30056505392366
               },
               "maxWidth": 30.038359513825597,
               "content": "Owns retained scene state,",
@@ -7370,7 +7406,7 @@
               "kind": "text",
               "position": {
                 "x": 1024.686498171184,
-                "y": 214.62124816587814
+                "y": 214.64022349794644
               },
               "maxWidth": 30.038359513825597,
               "content": "semantic LOD, visibility,…",
@@ -7540,7 +7576,7 @@
               "kind": "text",
               "position": {
                 "x": 1065.2751423149907,
-                "y": 207.9419312778326
+                "y": 207.9609066099009
               },
               "maxWidth": 30.038359513825597,
               "content": "GPU renderer",
@@ -7558,7 +7594,7 @@
               "kind": "text",
               "position": {
                 "x": 1065.2751423149907,
-                "y": 211.28158972185537
+                "y": 211.30056505392366
               },
               "maxWidth": 30.038359513825597,
               "content": "Builds mesh and glyph data,",
@@ -7576,7 +7612,7 @@
               "kind": "text",
               "position": {
                 "x": 1065.2751423149907,
-                "y": 214.62124816587814
+                "y": 214.64022349794644
               },
               "maxWidth": 30.038359513825597,
               "content": "initializes WebGPU/WebGL2,…",
@@ -7746,7 +7782,7 @@
               "kind": "text",
               "position": {
                 "x": 1024.686498171184,
-                "y": 235.62552713044485
+                "y": 235.64450246251315
               },
               "maxWidth": 30.038359513825597,
               "content": "Versioned renderer protocol",
@@ -7764,7 +7800,7 @@
               "kind": "text",
               "position": {
                 "x": 1024.686498171184,
-                "y": 238.9651855744676
+                "y": 238.98416090653592
               },
               "maxWidth": 30.038359513825597,
               "content": "Validates scene objects,",
@@ -7782,7 +7818,7 @@
               "kind": "text",
               "position": {
                 "x": 1024.686498171184,
-                "y": 242.30484401849037
+                "y": 242.3238193505587
               },
               "maxWidth": 30.038359513825597,
               "content": "representations, paths,…",
@@ -7952,7 +7988,7 @@
               "kind": "text",
               "position": {
                 "x": 1065.2751423149907,
-                "y": 236.24222542266494
+                "y": 236.26120075473327
               },
               "maxWidth": 30.038359513825597,
               "content": "Browser WASM bridge",
@@ -7970,7 +8006,7 @@
               "kind": "text",
               "position": {
                 "x": 1065.2751423149907,
-                "y": 239.58188386668772
+                "y": 239.60085919875604
               },
               "maxWidth": 30.038359513825597,
               "content": "Deserializes host payloads and",
@@ -7988,7 +8024,7 @@
               "kind": "text",
               "position": {
                 "x": 1065.2751423149907,
-                "y": 242.9215423107105
+                "y": 242.94051764277881
               },
               "maxWidth": 30.038359513825597,
               "content": "exposes scene, patch,…",
@@ -8158,7 +8194,7 @@
               "kind": "text",
               "position": {
                 "x": 877.0341088005079,
-                "y": 290.84092482530576
+                "y": 290.85990015737406
               },
               "maxWidth": 30.038359513825597,
               "content": "Fixture generator",
@@ -8176,7 +8212,7 @@
               "kind": "text",
               "position": {
                 "x": 877.0341088005079,
-                "y": 294.1805832693285
+                "y": 294.19955860139686
               },
               "maxWidth": 30.038359513825597,
               "content": "Compiles the checked semantic",
@@ -8194,7 +8230,7 @@
               "kind": "text",
               "position": {
                 "x": 877.0341088005079,
-                "y": 297.5202417133513
+                "y": 297.5392170454196
               },
               "maxWidth": 30.038359513825597,
               "content": "fixture into renderer scene…",
@@ -8364,7 +8400,7 @@
               "kind": "text",
               "position": {
                 "x": 917.6227529443145,
-                "y": 290.50885651411033
+                "y": 290.52783184617863
               },
               "maxWidth": 30.038359513825597,
               "content": "Stress scene generator",
@@ -8382,7 +8418,7 @@
               "kind": "text",
               "position": {
                 "x": 917.6227529443145,
-                "y": 293.8485149581331
+                "y": 293.8674902902014
               },
               "maxWidth": 30.038359513825597,
               "content": "Generates seeded large scenes",
@@ -8400,7 +8436,7 @@
               "kind": "text",
               "position": {
                 "x": 917.6227529443145,
-                "y": 297.1881734021558
+                "y": 297.2071487342242
               },
               "maxWidth": 30.038359513825597,
               "content": "for renderer profiling.",
@@ -8570,7 +8606,7 @@
               "kind": "text",
               "position": {
                 "x": 877.0341088005079,
-                "y": 312.65327346267395
+                "y": 312.67224879474225
               },
               "maxWidth": 30.038359513825597,
               "content": "WASM build driver",
@@ -8588,7 +8624,7 @@
               "kind": "text",
               "position": {
                 "x": 877.0341088005079,
-                "y": 315.9929319066967
+                "y": 316.01190723876505
               },
               "maxWidth": 30.038359513825597,
               "content": "Selects release, profiling, or",
@@ -8606,7 +8642,7 @@
               "kind": "text",
               "position": {
                 "x": 877.0341088005079,
-                "y": 319.3325903507195
+                "y": 319.3515656827878
               },
               "maxWidth": 30.038359513825597,
               "content": "debug wasm-pack builds and…",
@@ -8776,7 +8812,7 @@
               "kind": "text",
               "position": {
                 "x": 1004.3921760992806,
-                "y": 283.83115768596303
+                "y": 283.8501330180314
               },
               "maxWidth": 30.038359513825597,
               "content": "Navigation and history",
@@ -8794,7 +8830,7 @@
               "kind": "text",
               "position": {
                 "x": 1004.3921760992806,
-                "y": 287.17081612998584
+                "y": 287.18979146205413
               },
               "maxWidth": 30.038359513825597,
               "content": "Canonicalizes shareable URL",
@@ -8812,7 +8848,7 @@
               "kind": "text",
               "position": {
                 "x": 1004.3921760992806,
-                "y": 290.5104745740086
+                "y": 290.52944990607693
               },
               "maxWidth": 30.038359513825597,
               "content": "state and separates pushed…",
@@ -8982,7 +9018,7 @@
               "kind": "text",
               "position": {
                 "x": 1044.9808202430872,
-                "y": 287.19372626512205
+                "y": 287.2127015971904
               },
               "maxWidth": 30.038359513825597,
               "content": "Evidence presentation",
@@ -9000,7 +9036,7 @@
               "kind": "text",
               "position": {
                 "x": 1044.9808202430872,
-                "y": 290.53338470914485
+                "y": 290.55236004121315
               },
               "maxWidth": 30.038359513825597,
               "content": "Distinguishes observed facts,",
@@ -9018,7 +9054,7 @@
               "kind": "text",
               "position": {
                 "x": 1044.9808202430872,
-                "y": 293.8730431531676
+                "y": 293.89201848523595
               },
               "maxWidth": 30.038359513825597,
               "content": "deterministic inference, and…",
@@ -9188,7 +9224,7 @@
               "kind": "text",
               "position": {
                 "x": 1085.569464386894,
-                "y": 284.1157876669877
+                "y": 284.134762999056
               },
               "maxWidth": 30.038359513825597,
               "content": "Renderer host",
@@ -9206,7 +9242,7 @@
               "kind": "text",
               "position": {
                 "x": 1085.569464386894,
-                "y": 287.4554461110105
+                "y": 287.4744214430788
               },
               "maxWidth": 30.038359513825597,
               "content": "Creates GPU or Canvas2D",
@@ -9224,7 +9260,7 @@
               "kind": "text",
               "position": {
                 "x": 1085.569464386894,
-                "y": 290.7951045550333
+                "y": 290.81407988710157
               },
               "maxWidth": 30.038359513825597,
               "content": "backends and forwards…",
@@ -9394,7 +9430,7 @@
               "kind": "text",
               "position": {
                 "x": 1004.3921760992806,
-                "y": 316.01584204183297
+                "y": 316.03481737390126
               },
               "maxWidth": 30.038359513825597,
               "content": "Application shell",
@@ -9412,7 +9448,7 @@
               "kind": "text",
               "position": {
                 "x": 1004.3921760992806,
-                "y": 319.3555004858557
+                "y": 319.37447581792406
               },
               "maxWidth": 30.038359513825597,
               "content": "Composes the canvas, level rail,",
@@ -9430,7 +9466,7 @@
               "kind": "text",
               "position": {
                 "x": 1004.3921760992806,
-                "y": 322.6951589298785
+                "y": 322.7141342619468
               },
               "maxWidth": 30.038359513825597,
               "content": "search, inspector,…",
@@ -9600,7 +9636,7 @@
               "kind": "text",
               "position": {
                 "x": 1044.9808202430872,
-                "y": 312.65327346267395
+                "y": 312.67224879474225
               },
               "maxWidth": 30.038359513825597,
               "content": "Guided story player",
@@ -9618,7 +9654,7 @@
               "kind": "text",
               "position": {
                 "x": 1044.9808202430872,
-                "y": 315.9929319066967
+                "y": 316.01190723876505
               },
               "maxWidth": 30.038359513825597,
               "content": "Frames story entities,",
@@ -9636,7 +9672,7 @@
               "kind": "text",
               "position": {
                 "x": 1044.9808202430872,
-                "y": 319.3325903507195
+                "y": 319.3515656827878
               },
               "maxWidth": 30.038359513825597,
               "content": "interpolates camera flights,…",
@@ -9806,7 +9842,7 @@
               "kind": "text",
               "position": {
                 "x": 849.596792828408,
-                "y": 201.63442930304268
+                "y": 202.32789663972608
               },
               "maxWidth": 125.50163560183188,
               "content": "Architecture model",
@@ -9824,7 +9860,7 @@
               "kind": "text",
               "position": {
                 "x": 849.596792828408,
-                "y": 209.8354343281683
+                "y": 210.52890166485173
               },
               "maxWidth": 125.50163560183188,
               "content": "Defines versioned architecture claims, evidence,",
@@ -9842,7 +9878,7 @@
               "kind": "text",
               "position": {
                 "x": 849.596792828408,
-                "y": 218.03643935329393
+                "y": 218.72990668997733
               },
               "maxWidth": 125.50163560183188,
               "content": "views, hierarchy, zoom policy, and story state.",
@@ -9920,7 +9956,7 @@
               "kind": "text",
               "position": {
                 "x": 847.1335468070298,
-                "y": 190.91712360948952
+                "y": 190.93609894155782
               },
               "maxWidth": 130.42812764458836,
               "content": "Architecture model",
@@ -10090,7 +10126,7 @@
               "kind": "text",
               "position": {
                 "x": 997.2491821990841,
-                "y": 204.9969978822017
+                "y": 205.6904652188851
               },
               "maxWidth": 125.50163560183188,
               "content": "Rust / WASM renderer",
@@ -10108,7 +10144,7 @@
               "kind": "text",
               "position": {
                 "x": 997.2491821990841,
-                "y": 213.19800290732732
+                "y": 213.89147024401075
               },
               "maxWidth": 125.50163560183188,
               "content": "Validates, culls, hit-tests, animates, and draws",
@@ -10126,7 +10162,7 @@
               "kind": "text",
               "position": {
                 "x": 997.2491821990841,
-                "y": 221.39900793245295
+                "y": 222.09247526913634
               },
               "maxWidth": 125.50163560183188,
               "content": "scene-protocol objects through GPU-backed",
@@ -10144,7 +10180,7 @@
               "kind": "text",
               "position": {
                 "x": 997.2491821990841,
-                "y": 229.60001295757857
+                "y": 230.293480294262
               },
               "maxWidth": 125.50163560183188,
               "content": "browser rendering.",
@@ -10222,7 +10258,7 @@
               "kind": "text",
               "position": {
                 "x": 994.7859361777059,
-                "y": 194.27969218864854
+                "y": 194.29866752071683
               },
               "maxWidth": 130.42812764458836,
               "content": "Rust / WASM renderer",
@@ -10392,7 +10428,7 @@
               "kind": "text",
               "position": {
                 "x": 1144.9015715697603,
-                "y": 207.46564377776198
+                "y": 208.15911111444538
               },
               "maxWidth": 125.50163560183188,
               "content": "Scene compiler",
@@ -10410,7 +10446,7 @@
               "kind": "text",
               "position": {
                 "x": 1144.9015715697603,
-                "y": 215.6666488028876
+                "y": 216.360116139571
               },
               "maxWidth": 125.50163560183188,
               "content": "Deterministically converts semantic architecture",
@@ -10428,7 +10464,7 @@
               "kind": "text",
               "position": {
                 "x": 1144.9015715697603,
-                "y": 223.86765382801323
+                "y": 224.56112116469666
               },
               "maxWidth": 125.50163560183188,
               "content": "and stories into renderer scenes, patches, and",
@@ -10446,7 +10482,7 @@
               "kind": "text",
               "position": {
                 "x": 1144.9015715697603,
-                "y": 232.06865885313886
+                "y": 232.76212618982225
               },
               "maxWidth": 125.50163560183188,
               "content": "timelines.",
@@ -10524,7 +10560,7 @@
               "kind": "text",
               "position": {
                 "x": 1142.438325548382,
-                "y": 196.74833808420883
+                "y": 196.76731341627712
               },
               "maxWidth": 130.42812764458836,
               "content": "Scene compiler",
@@ -10694,7 +10730,7 @@
               "kind": "text",
               "position": {
                 "x": 849.596792828408,
-                "y": 287.0020687460761
+                "y": 287.6955360827595
               },
               "maxWidth": 125.50163560183188,
               "content": "Build and fixture tooling",
@@ -10712,7 +10748,7 @@
               "kind": "text",
               "position": {
                 "x": 849.596792828408,
-                "y": 295.2030737712017
+                "y": 295.8965411078851
               },
               "maxWidth": 125.50163560183188,
               "content": "Builds the WASM package and generates",
@@ -10730,7 +10766,7 @@
               "kind": "text",
               "position": {
                 "x": 849.596792828408,
-                "y": 303.4040787963273
+                "y": 304.0975461330107
               },
               "maxWidth": 125.50163560183188,
               "content": "deterministic demo and stress fixtures.",
@@ -10808,7 +10844,7 @@
               "kind": "text",
               "position": {
                 "x": 847.1335468070298,
-                "y": 276.2847630525229
+                "y": 276.3037383845912
               },
               "maxWidth": 130.42812764458836,
               "content": "Build and fixture tooling",
@@ -10978,7 +11014,7 @@
               "kind": "text",
               "position": {
                 "x": 997.2491821990841,
-                "y": 281.1708542713568
+                "y": 281.8643216080402
               },
               "maxWidth": 125.50163560183188,
               "content": "Atlas web app",
@@ -10996,7 +11032,7 @@
               "kind": "text",
               "position": {
                 "x": 997.2491821990841,
-                "y": 289.3718592964824
+                "y": 290.06532663316585
               },
               "maxWidth": 125.50163560183188,
               "content": "Owns the browser shell, navigation, inspection,",
@@ -11014,7 +11050,7 @@
               "kind": "text",
               "position": {
                 "x": 997.2491821990841,
-                "y": 297.57286432160805
+                "y": 298.26633165829145
               },
               "maxWidth": 125.50163560183188,
               "content": "search, camera controls, and guided-story",
@@ -11032,7 +11068,7 @@
               "kind": "text",
               "position": {
                 "x": 997.2491821990841,
-                "y": 305.7738693467337
+                "y": 306.4673366834171
               },
               "maxWidth": 125.50163560183188,
               "content": "experience.",
@@ -11110,7 +11146,7 @@
               "kind": "text",
               "position": {
                 "x": 994.7859361777059,
-                "y": 270.45354857780364
+                "y": 270.47252390987194
               },
               "maxWidth": 130.42812764458836,
               "content": "Atlas web app",
@@ -11213,7 +11249,7 @@
         "x": 1660,
         "y": 180,
         "width": 480,
-        "height": 150.48000000000002
+        "height": 154.34000000000003
       },
       "pickable": true,
       "representations": [
@@ -11229,7 +11265,7 @@
             "x": 1660,
             "y": 180,
             "width": 480,
-            "height": 150.48000000000002
+            "height": 154.34000000000003
           },
           "primitives": [
             {
@@ -11238,7 +11274,7 @@
                 "x": 1660,
                 "y": 180,
                 "width": 480,
-                "height": 150.48000000000002
+                "height": 154.34000000000003
               },
               "radius": 11.573333333333334,
               "fill": [
@@ -11279,7 +11315,7 @@
               "kind": "text",
               "position": {
                 "x": 1674.88,
-                "y": 237.89333333333335
+                "y": 241.75333333333333
               },
               "maxWidth": 450.24,
               "content": "Browser graphics platform",
@@ -11297,7 +11333,7 @@
               "kind": "text",
               "position": {
                 "x": 1674.88,
-                "y": 266
+                "y": 269.86
               },
               "maxWidth": 450.24,
               "content": "Provides the canvas, WebAssembly runtime,",
@@ -11315,7 +11351,7 @@
               "kind": "text",
               "position": {
                 "x": 1674.88,
-                "y": 294.1066666666667
+                "y": 297.9666666666667
               },
               "maxWidth": 450.24,
               "content": "and WebGPU or WebGL2 surface used to render",
@@ -11333,7 +11369,7 @@
               "kind": "text",
               "position": {
                 "x": 1674.88,
-                "y": 322.21333333333337
+                "y": 326.0733333333334
               },
               "maxWidth": 450.24,
               "content": "the atlas.",
@@ -11361,7 +11397,7 @@
             "x": 1660,
             "y": 180,
             "width": 480,
-            "height": 150.48000000000002
+            "height": 154.34000000000003
           },
           "primitives": [
             {
@@ -11370,7 +11406,7 @@
                 "x": 1660,
                 "y": 180,
                 "width": 480,
-                "height": 150.48000000000002
+                "height": 154.34000000000003
               },
               "radius": 5.4874371859296485,
               "fill": [
@@ -11411,7 +11447,7 @@
               "kind": "text",
               "position": {
                 "x": 1667.0552763819096,
-                "y": 199.0854271356784
+                "y": 199.7788944723618
               },
               "maxWidth": 465.8894472361809,
               "content": "Browser graphics platform",
@@ -11429,7 +11465,7 @@
               "kind": "text",
               "position": {
                 "x": 1667.0552763819096,
-                "y": 207.28643216080403
+                "y": 207.97989949748745
               },
               "maxWidth": 465.8894472361809,
               "content": "Provides the canvas, WebAssembly runtime, and WebGPU or WebGL2 surface used to render the atlas.",
@@ -11457,7 +11493,7 @@
             "x": 1660,
             "y": 180,
             "width": 480,
-            "height": 150.48000000000002
+            "height": 154.34000000000003
           },
           "primitives": [
             {
@@ -11466,7 +11502,7 @@
                 "x": 1660,
                 "y": 180,
                 "width": 480,
-                "height": 150.48000000000002
+                "height": 154.34000000000003
               },
               "radius": 2.9222011385199247,
               "fill": [
@@ -11507,7 +11543,7 @@
               "kind": "text",
               "position": {
                 "x": 1663.7571157495256,
-                "y": 188.36812144212524
+                "y": 188.38709677419354
               },
               "maxWidth": 472.4857685009488,
               "content": "Browser graphics platform",
@@ -11525,7 +11561,7 @@
               "kind": "text",
               "position": {
                 "x": 1663.7571157495256,
-                "y": 191.70777988614802
+                "y": 191.7267552182163
               },
               "maxWidth": 472.4857685009488,
               "content": "Provides the canvas, WebAssembly runtime, and WebGPU or WebGL2 surface used to render the atlas.",
@@ -11553,7 +11589,7 @@
             "x": 1660,
             "y": 180,
             "width": 480,
-            "height": 150.48000000000002
+            "height": 154.34000000000003
           },
           "primitives": [
             {
@@ -11562,7 +11598,7 @@
                 "x": 1660,
                 "y": 180,
                 "width": 480,
-                "height": 150.48000000000002
+                "height": 154.34000000000003
               },
               "radius": 0.6267908309455587,
               "fill": [
@@ -11646,7 +11682,7 @@
         "x": 80,
         "y": 440,
         "width": 480,
-        "height": 122.37333333333333
+        "height": 126.23333333333335
       },
       "pickable": true,
       "representations": [
@@ -11662,7 +11698,7 @@
             "x": 80,
             "y": 440,
             "width": 480,
-            "height": 122.37333333333333
+            "height": 126.23333333333335
           },
           "primitives": [
             {
@@ -11671,7 +11707,7 @@
                 "x": 80,
                 "y": 440,
                 "width": 480,
-                "height": 122.37333333333333
+                "height": 126.23333333333335
               },
               "radius": 11.573333333333334,
               "fill": [
@@ -11712,7 +11748,7 @@
               "kind": "text",
               "position": {
                 "x": 94.88,
-                "y": 497.8933333333333
+                "y": 501.75333333333333
               },
               "maxWidth": 450.24,
               "content": "Source repository",
@@ -11730,7 +11766,7 @@
               "kind": "text",
               "position": {
                 "x": 94.88,
-                "y": 526
+                "y": 529.86
               },
               "maxWidth": 450.24,
               "content": "Supplies source references used to support",
@@ -11748,7 +11784,7 @@
               "kind": "text",
               "position": {
                 "x": 94.88,
-                "y": 554.1066666666667
+                "y": 557.9666666666667
               },
               "maxWidth": 450.24,
               "content": "architecture claims.",
@@ -11776,7 +11812,7 @@
             "x": 80,
             "y": 440,
             "width": 480,
-            "height": 122.37333333333333
+            "height": 126.23333333333335
           },
           "primitives": [
             {
@@ -11785,7 +11821,7 @@
                 "x": 80,
                 "y": 440,
                 "width": 480,
-                "height": 122.37333333333333
+                "height": 126.23333333333335
               },
               "radius": 5.4874371859296485,
               "fill": [
@@ -11826,7 +11862,7 @@
               "kind": "text",
               "position": {
                 "x": 87.05527638190955,
-                "y": 459.0854271356784
+                "y": 459.7788944723618
               },
               "maxWidth": 465.8894472361809,
               "content": "Source repository",
@@ -11844,7 +11880,7 @@
               "kind": "text",
               "position": {
                 "x": 87.05527638190955,
-                "y": 467.286432160804
+                "y": 467.97989949748745
               },
               "maxWidth": 465.8894472361809,
               "content": "Supplies source references used to support architecture claims.",
@@ -11872,7 +11908,7 @@
             "x": 80,
             "y": 440,
             "width": 480,
-            "height": 122.37333333333333
+            "height": 126.23333333333335
           },
           "primitives": [
             {
@@ -11881,7 +11917,7 @@
                 "x": 80,
                 "y": 440,
                 "width": 480,
-                "height": 122.37333333333333
+                "height": 126.23333333333335
               },
               "radius": 2.9222011385199247,
               "fill": [
@@ -11922,7 +11958,7 @@
               "kind": "text",
               "position": {
                 "x": 83.75711574952561,
-                "y": 448.36812144212524
+                "y": 448.38709677419354
               },
               "maxWidth": 472.4857685009488,
               "content": "Source repository",
@@ -11940,7 +11976,7 @@
               "kind": "text",
               "position": {
                 "x": 83.75711574952561,
-                "y": 451.707779886148
+                "y": 451.72675521821634
               },
               "maxWidth": 472.4857685009488,
               "content": "Supplies source references used to support architecture claims.",
@@ -11968,7 +12004,7 @@
             "x": 80,
             "y": 440,
             "width": 480,
-            "height": 122.37333333333333
+            "height": 126.23333333333335
           },
           "primitives": [
             {
@@ -11977,7 +12013,7 @@
                 "x": 80,
                 "y": 440,
                 "width": 480,
-                "height": 122.37333333333333
+                "height": 126.23333333333335
               },
               "radius": 0.6267908309455587,
               "fill": [
@@ -12127,7 +12163,7 @@
               "kind": "text",
               "position": {
                 "x": 834.88,
-                "y": 177.89333333333335
+                "y": 181.75333333333333
               },
               "maxWidth": 450.24,
               "content": "Okie",
@@ -12145,7 +12181,7 @@
               "kind": "text",
               "position": {
                 "x": 834.88,
-                "y": 206
+                "y": 209.86
               },
               "maxWidth": 450.24,
               "content": "Evidence-backed architecture atlas with",
@@ -12163,7 +12199,7 @@
               "kind": "text",
               "position": {
                 "x": 834.88,
-                "y": 234.10666666666668
+                "y": 237.9666666666667
               },
               "maxWidth": 450.24,
               "content": "semantic zoom and deterministic guided stories.",
@@ -12241,7 +12277,7 @@
               "kind": "text",
               "position": {
                 "x": 828.6231155778894,
-                "y": 137.3718592964824
+                "y": 138.06532663316582
               },
               "maxWidth": 462.7537688442211,
               "content": "Okie",
@@ -12319,7 +12355,7 @@
               "kind": "text",
               "position": {
                 "x": 824.5920303605313,
-                "y": 128.36812144212524
+                "y": 128.38709677419354
               },
               "maxWidth": 470.8159392789374,
               "content": "Okie",
@@ -13952,11 +13988,11 @@
       "points": [
         {
           "x": 560,
-          "y": 255.24
+          "y": 257.17
         },
         {
           "x": 570.6666666666666,
-          "y": 255.24
+          "y": 257.17
         },
         {
           "x": 570.6666666666666,
@@ -13999,11 +14035,11 @@
         },
         {
           "x": 1310.6666666666667,
-          "y": 255.24
+          "y": 257.17
         },
         {
           "x": 1660,
-          "y": 255.24
+          "y": 257.17
         }
       ],
       "stroke": [
@@ -14038,11 +14074,11 @@
         },
         {
           "x": 809.3333333333334,
-          "y": 501.18666666666667
+          "y": 503.1166666666667
         },
         {
           "x": 560,
-          "y": 501.18666666666667
+          "y": 503.1166666666667
         }
       ],
       "stroke": [

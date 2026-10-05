@@ -916,8 +916,8 @@
           "path": "apps/web/src/renderer/Canvas2DRenderer.ts",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "Canvas2DRenderer",
-          "startLine": 137,
-          "endLine": 142
+          "startLine": 175,
+          "endLine": 180
         }
       ],
       "sourceExcerpts": [
@@ -925,9 +925,9 @@
           "path": "apps/web/src/renderer/Canvas2DRenderer.ts",
           "symbol": "Canvas2DRenderer",
           "language": "typescript",
-          "startLine": 137,
-          "endLine": 142,
-          "highlightLine": 137,
+          "startLine": 175,
+          "endLine": 180,
+          "highlightLine": 175,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "export class Canvas2DRenderer implements AtlasRenderer {",

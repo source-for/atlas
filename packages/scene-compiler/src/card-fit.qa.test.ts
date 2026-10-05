@@ -93,3 +93,25 @@ test('scan L4 retains symbol containment and readable fonts beneath a separated 
     assert.ok(title.fontSize * C4_BAND_FOCUS_ZOOM.code >= 10.9, 'symbol title must reach ~11 CSS pixels at code focus');
   }
 });
+
+test('scan geometry never compacts: summaries change no rect, and L3 siblings stay off the expanded owner', () => {
+  const scanPacket = (blank: boolean): ArchitectureSnapshot => {
+    const base = packet(blank);
+    const extra = (id: string, kind: ArchitectureEntity['kind'], parentId: string): ArchitectureEntity => ({ id, kind, name: id.split(':')[1]!, sourceRefs: [], parentId, ...(blank ? {} : { responsibility: summary }) });
+    return { ...base, entities: [...base.entities, extra('container:api', 'container', 'system:atlas'), extra('dataStore:db', 'dataStore', 'system:atlas'),
+      extra('component:route', 'component', 'container:api')] };
+  };
+  for (const [focus, maxBand] of [['container:web', 'component'], ['component:file1', 'code'], ['component:file9', 'code']] as const) {
+    const withSummaries = compile(scanPacket(false), focus, maxBand, true).projections;
+    const blank = compile(scanPacket(true), focus, maxBand, true).projections;
+    assert.deepEqual(withSummaries.index.boundsByEntityIdAndBand, blank.index.boundsByEntityIdAndBand, `${focus} scan rects must not depend on summaries`);
+  }
+  const scoped = compile(scanPacket(false), 'container:web', 'component', true).projections;
+  const owner = scoped.index.boundsByEntityIdAndBand['container:web']!.component!;
+  for (const sibling of ['container:api', 'dataStore:db']) {
+    const box = scoped.index.boundsByEntityIdAndBand[sibling]?.component;
+    if (!box) continue;
+    const overlaps = box.x < owner.x + owner.width && owner.x < box.x + box.width && box.y < owner.y + owner.height && owner.y < box.y + box.height;
+    assert.equal(overlaps, false, `${sibling} must stay off the expanded L3 owner shell`);
+  }
+});

@@ -6,20 +6,26 @@
   line, using the existing frozen Plex font advances (`wrapDisplayText`,
   `cardContentLayout`). Canvas2D lays out text with the same helper.
   - L1/L2 descriptions wrap to at most three lines; L3/L4 to at most two.
-  - Only the last capped line ellipsizes, and never as a lone `…` line: a final word
-    that cannot fit folds the ellipsis into the previous line.
+  - Only the last capped line ellipsizes. A final word too long for the line is cut at
+    a grapheme (`selectScopedArchi…`) rather than dropped. If no glyph fits at all, the
+    previous line takes the ellipsis. A lone `…` line is never painted.
   - Long tokens split at grapheme boundaries, and explicit paragraph breaks are kept.
   - Missing support text paints no invented line.
-- **Header baselines.** The kicker, title and description baselines come from font sizes
-  and gaps, not fixed offsets. This fixes the kicker overlapping the title on owner
-  shells (for example "CONTAINER" over "Architecture model").
+- **Header baselines.** The kicker, title and description baselines come from font sizes,
+  not fixed offsets. `cardTitleStep` and `cardDescriptionStep` reserve ≥1.2× and ≥1.35×
+  line height, matching the product spec, and keep the title clear of the kicker's
+  descenders. This fixes the kicker overlapping the title on owner shells (for example
+  "CONTAINER" over "Architecture model"). The compiler, Canvas2D painting, the Canvas
+  metrics and the hover HUD all read the same layout (`canvasCardTextLayout`).
 - **L4 type.** At the code focus zoom, kicker / title / signature are now 10 / 14 / 11
   CSS px, up from 7.2 / 11.2 / 7.4 (ticket item 3). At the maximum camera runway that
   is 22.9 / 32.1 / 25.2 px, so the frozen comfort caps rise to 24 / 33 / 26 px.
 - **Content-fit faces (authored atlases only).**
-  - A leaf face (no published children) shrinks to kicker + title + wrapped support +
-    one padding inset. It never grows past its authored face.
-  - Peers in a row share the row's maximum height.
+  - A leaf face (no children in the snapshot) shrinks to kicker + title + wrapped
+    support + one padding inset. It never grows past its authored face.
+  - Peers in a row share the row's maximum height, capped at each face's own authored
+    height.
+  - Finer bands take only the compacted height, never the coarser band's position.
   - Owner faces keep their height, so a prior-depth ancestor still encloses its
     expanded branch (frozen 0.32 lineage context, CLA-81 owner equality).
 
@@ -42,22 +48,24 @@
 ## Frozen fixture and test changes
 
 - **Regenerated fixtures:** demo snapshot, scene and timeline. The evidence pin
-  `1d984293` → `42ac0aaa` follows the moved Canvas2D source anchors. Stable golden IDs
+  `1d984293` → `268e575a` follows the moved Canvas2D source anchors. Stable golden IDs
   are unchanged.
-- **CLA-67 cost table:** only `payloadBytes` changes (≤1.5%, from multi-line text).
+- **CLA-67 cost table:** only `payloadBytes` changes (≤1.7%, from multi-line text).
   The rest of the committed table, including `selfScan`, is untouched.
 - **CLA-140 geometry baseline:** visible problems go from 355 to 356.
   - Golden L1 enter: 3 → 5.
   - Golden L4 enter: 17 → 16.
 - **CLA-114 / c4-compiler typography:** assertions now rejoin the wrapped lines before
   checking prefix and word-boundary truncation.
-- **Canvas route parity:** compact golden L3 leaves route the parallel `calls` and
-  `uses` edges between `web-shell` and `web-renderer-host` through one shared middle
-  corridor. The test now accepts either relation at the sampled pixel. Its invariant is
-  unchanged: a deep-band route beats its enclosing owner shell. This is a small visual
-  regression and is tracked as a follow-up.
+- **Canvas metrics / CLA-119:** the metric `titleBaseline` is now asserted equal to the
+  baseline Canvas actually paints, not the old fixed 50-unit offset. Source guards
+  follow the code into `canvasCardTextLayout`.
+- **Scan regression test:** summaries change no scan rect in any band, and L3 siblings
+  stay off the expanded owner. This test fails without the authored-only copy-forward
+  fix.
 - **Restored strict:** owner face equality, the 504×356 three-code grid, the L1 root
-  face and the CLA-111 Canvas title-floor source guard. The WIP had loosened all four.
+  face, the CLA-111 title-floor guard and the exact route-parity pick. The WIP had
+  loosened all five; the route change only came from its 64 px header.
 
 ## Native browser comparison
 
@@ -86,3 +94,10 @@ through the L1–L4 rail. The images are on the `qa-screenshots` release only.
   L4 kickers (for example `FN ? 219?224`). Main shows the same. Tracked separately.
 - **Published L3 capture:** it landed mid lens-reversal. That is a capture-timing
   artefact, not a layout change.
+- **Known nit:** below the L1/L2 12 px Canvas title floor (zoom ≲ 0.4 at L1), the
+  floored title pushes the support lines down by a few px. On a compacted face, the
+  last line can then clip into the bottom inset. The text is 2–4 px tall at those
+  zooms.
+- **Load-sensitive test (existing, not from this PR):** under heavy machine load (load
+  average 15–26), `AppRestore.mounted` fails in the full `pnpm test` on main too
+  (18/20). It passes alone and in the web suite run by itself.

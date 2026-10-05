@@ -105,14 +105,14 @@ export function cardSupportCopy(responsibility?: string): string | undefined {
  * L1–L3 primary titles must project to at least 12 CSS px (golden-okie-hierarchy).
  * Compiler shrink-to-fit and the Canvas fallback use this as the truncation floor
  * for context/container/component so scoped names stay readable before they ellipsize.
- * L4 authored size is 11.2px, so this floor cannot shrink code titles (CLA-111).
+ * L4 code titles (14px authored since CLA-381) use the 0.65× ratio below instead (CLA-111).
  */
 export const C4_LABEL_MIN_TITLE_PX = 12;
 
 /**
  * L4 titles may shrink to this fraction of the authored size before identifier
  * truncation. L1–L3 use `C4_LABEL_MIN_TITLE_PX` instead; 0.65× is the L4 path
- * because a 12px floor sits above the 11.2px authored size.
+ * (CLA-111; originally because a 12px floor sat above the old 11.2px L4 size).
  */
 export const C4_LABEL_TITLE_SHRINK_RATIO = 0.65;
 
@@ -291,6 +291,18 @@ function expand(rect: Rect, padding: number): Rect {
   };
 }
 
+const C4_KIND_LABEL: Record<VisualNode['kind'], string> = {
+  person: 'PERSON',
+  softwareSystem: 'SOFTWARE SYSTEM',
+  externalSystem: 'EXTERNAL SYSTEM',
+  container: 'CONTAINER',
+  dataStore: 'DATA STORE',
+  queue: 'QUEUE',
+  component: 'COMPONENT',
+  code: 'SOURCE',
+  boundary: 'BOUNDARY',
+};
+
 export function c4CardContentLayout(band: C4Band, boundary: boolean, width: number, kicker: string, title: string, description?: string, referenceZoom = C4_ZOOM_BANDS.find(value => value.detail === band)!.focusZoom) {
   const style = C4_PRESENTATION_AT_FOCUS[band];
   const scale = style.geometryScale / referenceZoom;
@@ -300,6 +312,7 @@ export function c4CardContentLayout(band: C4Band, boundary: boolean, width: numb
     kicker, title, description: boundary ? undefined : description,
     descriptionLines: band === 'context' || band === 'container' ? 3 : 2,
     kickerSize: style.kickerFontSize / referenceZoom, titleSize,
+    kickerClearance: (style.kickerFontSize * .25 + 2) / referenceZoom,
     titleFloor: c4TitleFitFloor(band, titleSize, C4_LABEL_MIN_TITLE_PX / referenceZoom), titleFitStep: .25 / referenceZoom,
     descriptionSize: style.descriptionFontSize / referenceZoom, mono: band === 'code' });
 }
@@ -313,9 +326,8 @@ function presentation(
   theme: SceneTheme,
   revealLod?: LodRange,
   shell = false,
-  referenceZoom?: number,
 ): Representation {
-  const visualScale = referenceZoom !== undefined ? C4_PRESENTATION_AT_FOCUS[band].geometryScale / referenceZoom : visualScaleByBand[band];
+  const visualScale = visualScaleByBand[band];
   const fill = theme.entityFill[node.kind];
   const bodyFill: typeof fill = boundary ? [fill[0], fill[1], fill[2], 0.14] : fill;
   const left = bounds.x + (boundary ? 22 : 18) * visualScale;
@@ -327,19 +339,8 @@ function presentation(
     : codeCopy
       ? codeCopy.description
       : cardSupportCopy(entity?.responsibility);
-  const kindLabel: Record<VisualNode['kind'], string> = {
-    person: 'PERSON',
-    softwareSystem: 'SOFTWARE SYSTEM',
-    externalSystem: 'EXTERNAL SYSTEM',
-    container: 'CONTAINER',
-    dataStore: 'DATA STORE',
-    queue: 'QUEUE',
-    component: 'COMPONENT',
-    code: 'SOURCE',
-    boundary: 'BOUNDARY',
-  };
   const textLayout = c4CardContentLayout(band, boundary, bounds.width,
-    codeCopy?.kicker ?? kindLabel[node.kind], node.name, description, referenceZoom);
+    codeCopy?.kicker ?? C4_KIND_LABEL[node.kind], node.name, description);
   return {
     id: `${node.id}:${band}`,
     lod: revealLod ?? lodFor(band),
@@ -1439,7 +1440,7 @@ function applyIntrinsicOwnerGeometry(
     // share the row maximum. Owner faces keep their height so a prior-depth ancestor
     // still encloses its expanded branch. Scan tiles are proportional child-count
     // reservations (CLA-95/119/121), so they never compact.
-    const leafRows = new Map<string, { id: string; height: number }[]>();
+    const leafRows = new Map<string, { id: string; height: number; authored: number }[]>();
     const boundaryIds = visibleChildren(projection, bundle);
     for (const visualId of projection.visualNodeIds) {
       const node = bundle.visualNodeById[visualId];
@@ -1447,24 +1448,28 @@ function applyIntrinsicOwnerGeometry(
       const entity = node && entities.get(node.entity.logicalId);
       if (targetAspect !== undefined || !node || !bounds || !entity || boundaryIds.has(visualId) || semanticBandForKind(node.kind) !== band) continue;
       const copy = band === 'code' ? codeCardCopy(entity) : undefined;
-      const content = c4CardContentLayout(band, false, bounds.width, copy?.kicker ?? node.kind.toUpperCase(), node.name,
+      const content = c4CardContentLayout(band, false, bounds.width, copy?.kicker ?? C4_KIND_LABEL[node.kind], node.name,
         copy?.description ?? cardSupportCopy(entity.responsibility));
       const rowKey = `${node.parentVisualId ?? 'root'}:${bounds.y.toFixed(6)}`;
       const row = leafRows.get(rowKey) ?? [];
-      row.push({ id: visualId, height: ownerIds.has(entity.id) ? bounds.height : Math.min(bounds.height, content.height) });
+      row.push({ id: visualId, authored: bounds.height, height: ownerIds.has(entity.id) ? bounds.height : Math.min(bounds.height, content.height) });
       leafRows.set(rowKey, row);
     }
     for (const row of leafRows.values()) {
       const height = Math.max(...row.map(item => item.height));
-      for (const item of row) layout.nodes[item.id] = { ...layout.nodes[item.id]!, height };
+      for (const item of row) layout.nodes[item.id] = { ...layout.nodes[item.id]!, height: Math.min(item.authored, height) };
     }
-    for (const visualId of projection.visualNodeIds) {
+    // A compacted authored leaf keeps its fitted height in finer bands; its finer-band
+    // position and width are left alone. Scan geometry is never touched here.
+    for (const visualId of targetAspect === undefined ? projection.visualNodeIds : []) {
       const node = bundle.visualNodeById[visualId];
-      if (!node || boundaryIds.has(visualId)) continue;
+      const current = layout.nodes[visualId];
+      const entity = node && entities.get(node.entity.logicalId);
+      if (!node || !current || !entity || ownerIds.has(entity.id) || boundaryIds.has(visualId)) continue;
       const ownBand = semanticBandForKind(node.kind);
       if (C4_BANDS.indexOf(ownBand) >= C4_BANDS.indexOf(band)) continue;
-      const ownLayout = bundle.bandLayoutById[bundle.projectionById[bundle.family.projectionIds[ownBand]]!.layoutId]!;
-      if (ownLayout.nodes[visualId]) layout.nodes[visualId] = { ...ownLayout.nodes[visualId]! };
+      const own = bundle.bandLayoutById[bundle.projectionById[bundle.family.projectionIds[ownBand]]!.layoutId]!.nodes[visualId];
+      if (own && own.height < current.height) layout.nodes[visualId] = { ...current, height: own.height };
     }
     const focusZoom = C4_ZOOM_BANDS.find(value => value.detail === band)!.focusZoom;
     const routed = routeC4BandEdgesDetailed(

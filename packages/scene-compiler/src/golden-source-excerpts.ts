@@ -597,9 +597,9 @@ export const GOLDEN_SOURCE_EXCERPTS = {
     "path": "apps/web/src/renderer/Canvas2DRenderer.ts",
     "symbol": "Canvas2DRenderer",
     "language": "typescript",
-    "startLine": 137,
-    "endLine": 142,
-    "highlightLine": 137,
+    "startLine": 175,
+    "endLine": 180,
+    "highlightLine": 175,
     "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
     "lines": [
       "export class Canvas2DRenderer implements AtlasRenderer {",

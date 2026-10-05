@@ -358,7 +358,8 @@ describe('Canvas2D band-normalized typography', () => {
     expect(SCAN_BAND_DEPTH_MIN_ENTITIES).toBe(2000);
     expect(C4_LABEL_TITLE_SHRINK_RATIO).toBe(0.65);
     const renderer = readFileSync(new URL('./Canvas2DRenderer.ts', import.meta.url), 'utf8');
-    expect(renderer).toContain('c4TitleFitFloor(renderedDetail, metrics.titleFontSize, C4_LABEL_MIN_TITLE_PX)');
+    // CLA-381 moved card text into the shared canvasCardTextLayout; the floor rule is unchanged.
+    expect(renderer).toContain('c4TitleFitFloor(detail, metrics.titleFontSize, C4_LABEL_MIN_TITLE_PX)');
     expect(renderer).not.toContain('renderedDetail === \'context\' || renderedDetail === \'container\'');
   });
 

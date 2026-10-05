@@ -284,8 +284,7 @@ describe('golden C4 web projection contract', () => {
       renderer.setCamera({ x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2, zoom });
       renderer.render(0);
       return [...textCalls].reverse().find(call => call.content === entity.name
-        // A wrapped description can end in a lone ellipsis; that is never a title.
-        || (call.content !== '…' && call.content.endsWith('…') && entity.name.startsWith(call.content.slice(0, -1))));
+        || (call.content.endsWith('…') && entity.name.startsWith(call.content.slice(0, -1))));
     };
 
     expect(titleCall(ancestor, 'context')?.alpha).toBe(0);

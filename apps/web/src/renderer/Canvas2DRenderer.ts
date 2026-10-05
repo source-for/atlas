@@ -1,5 +1,5 @@
 import type { AtlasRenderer, AtlasScene, Camera, PickResult, RenderState, RendererDiagnostics, RendererLodState, SceneEntity, SceneRelation, SemanticDetail } from './types';
-import { C4_BOUNDARY_STROKE_ALPHA, C4_LABEL_MIN_TITLE_PX, C4_PRESENTATION_AT_FOCUS, C4_ZOOM_BANDS, c4TitleFitFloor, cardContentLayout, cardSupportCopy, codeCardCopy } from '@okie/scene-compiler';
+import { C4_BOUNDARY_STROKE_ALPHA, C4_LABEL_MIN_TITLE_PX, C4_PRESENTATION_AT_FOCUS, C4_ZOOM_BANDS, c4TitleFitFloor, cardContentLayout, cardDescriptionStep, cardSupportCopy, cardTitleStep, codeCardCopy } from '@okie/scene-compiler';
 import { roundedOrthogonalRoute, routeArrowHead, routeArrowHeads, routeShaft, type RouteArrowHead, type RoutePoint } from './routeGeometry';
 
 const palette = {
@@ -37,37 +37,38 @@ const focusZoomByDetail: Readonly<Record<SemanticDetail, number>> = Object.fromE
  * Canvas CSS pixels. Keeping this conversion in one place prevents camera zoom
  * from being applied to raw (already screen-targeted) font sizes.
  */
-export function canvasEntityPresentationMetrics(detail: SemanticDetail, boundary: boolean, zoom: number, referenceZoom?: number) {
-  const focusZoom = referenceZoom ?? focusZoomByDetail[detail];
+export function canvasEntityPresentationMetrics(detail: SemanticDetail, boundary: boolean, zoom: number) {
+  const focusZoom = focusZoomByDetail[detail];
   const screenScale = C4_PRESENTATION_AT_FOCUS[detail].geometryScale / focusZoom * zoom;
   const presentation = C4_PRESENTATION_AT_FOCUS[detail];
   const fontScale = zoom / focusZoom;
   const kickerFontSize = presentation.kickerFontSize * fontScale;
+  // L1/L2 titles hold a CSS-pixel readability floor while geometry shrinks with zoom.
   const titleFontSize = Math.max(detail === 'context' || detail === 'container' ? C4_LABEL_MIN_TITLE_PX : 0,
     presentation.titleFontSize
     * (boundary && (detail === 'context' || detail === 'container') ? 0.78 : 1) * fontScale);
-  const kickerBaseline = (detail === 'context' ? 30 : 24) * screenScale;
-  const authoredTitleBaseline = (detail === 'context' ? 68 : boundary ? 50 : detail === 'code' ? 42 : 50) * screenScale;
-  // Geometry shrinks with zoom while L1/L2 title text holds a CSS-pixel
-  // readability floor. A fixed world baseline can therefore collide with the
-  // kicker on the compact/outgoing half of a semantic morph.
-  const titleBaseline = Math.max(
-    authoredTitleBaseline,
-    kickerBaseline + titleFontSize + kickerFontSize * .25 + 2,
-  );
+  const descriptionFontSize = presentation.descriptionFontSize * fontScale;
+  const top = 12 * screenScale;
+  const gap = 4 * screenScale;
+  // Same rule as cardContentLayout, which paints the face: the title sits below the
+  // kicker's descenders even when its floor outgrows the scaled geometry.
+  const kickerClearance = kickerFontSize * .25 + 2;
+  const kickerBaseline = top + kickerFontSize;
+  const titleBaseline = kickerBaseline + cardTitleStep(gap, kickerClearance, titleFontSize);
   return {
     screenScale,
     leftInset: (boundary ? 22 : 18) * screenScale,
+    horizontalInsets: 2 * (boundary ? 22 : 18) * screenScale,
+    top,
+    gap,
+    bottom: 10 * screenScale,
+    kickerClearance,
     kickerBaseline,
-    // A context owner is both a boundary and a readable L1 card. Keep its
-    // title below the type kicker; the generic boundary baseline (36) placed
-    // “Okie” on top of “SOFTWARE SYSTEM” during an L1↔L2 projection morph.
     titleBaseline,
-    descriptionBaseline: (detail === 'context' ? 112 : detail === 'code' ? 68 : 76) * screenScale,
-    horizontalInsets: 36 * screenScale,
+    descriptionBaseline: titleBaseline + cardDescriptionStep(gap, descriptionFontSize),
     kickerFontSize,
     titleFontSize,
-    descriptionFontSize: presentation.descriptionFontSize * fontScale,
+    descriptionFontSize,
     radius: (boundary ? 20 : detail === 'code' ? 7 : 14) * screenScale,
     strokeWidth: (boundary ? 1.5 : 2) * screenScale,
   };
@@ -133,6 +134,43 @@ export function distanceToPolyline(point: RoutePoint, points: readonly RoutePoin
 }
 
 export const arrowHeadForPolyline = routeArrowHead;
+
+type CanvasCardTextLayout = ReturnType<typeof cardContentLayout> & { rawDescription: string | undefined };
+const cardTextLayoutCache = new WeakMap<SceneEntity, Map<string, CanvasCardTextLayout>>();
+const CARD_TEXT_LAYOUT_CACHE_LIMIT = 64;
+
+/** The exact lines Canvas paints on a card face (also read by the hover HUD). Wrapping
+ * measures every word, so still frames reuse the layout. Scene entities are replaced,
+ * never mutated, when their copy changes, so the entity object is the cache identity. */
+export function canvasCardTextLayout(entity: SceneEntity, detail: SemanticDetail, boundary: boolean, zoom: number, width: number): CanvasCardTextLayout {
+  let byInput = cardTextLayoutCache.get(entity);
+  if (!byInput) { byInput = new Map(); cardTextLayoutCache.set(entity, byInput); }
+  const key = `${detail}|${boundary ? 1 : 0}|${zoom}|${width}`;
+  const cached = byInput.get(key);
+  if (cached) return cached;
+  const layout = uncachedCanvasCardTextLayout(entity, detail, boundary, zoom, width);
+  if (byInput.size >= CARD_TEXT_LAYOUT_CACHE_LIMIT) byInput.clear();
+  byInput.set(key, layout);
+  return layout;
+}
+
+function uncachedCanvasCardTextLayout(entity: SceneEntity, detail: SemanticDetail, boundary: boolean, zoom: number, width: number): CanvasCardTextLayout {
+  const metrics = canvasEntityPresentationMetrics(detail, boundary, zoom);
+  const codeCopy = entity.detail === 'code' ? codeCardCopy(entity) : undefined;
+  const rawDescription = codeCopy ? codeCopy.description : cardSupportCopy(entity.responsibility);
+  const layout = cardContentLayout({
+    width, inset: metrics.leftInset, top: metrics.top,
+    bottom: metrics.bottom, gap: metrics.gap, kickerClearance: metrics.kickerClearance,
+    kicker: codeCopy?.kicker ?? (entity.kindLabel ?? entity.kind).toUpperCase(),
+    title: entity.name, description: boundary ? undefined : rawDescription,
+    descriptionLines: detail === 'component' || detail === 'code' ? 2 : 3,
+    kickerSize: metrics.kickerFontSize, titleSize: metrics.titleFontSize,
+    titleFloor: c4TitleFitFloor(detail, metrics.titleFontSize, C4_LABEL_MIN_TITLE_PX),
+    titleFitStep: .25 * zoom / focusZoomByDetail[detail],
+    descriptionSize: metrics.descriptionFontSize, mono: detail === 'code',
+  });
+  return { ...layout, rawDescription: boundary ? undefined : rawDescription };
+}
 
 export class Canvas2DRenderer implements AtlasRenderer {
   readonly kind = 'canvas2d-preview';
@@ -595,19 +633,7 @@ export class Canvas2DRenderer implements AtlasRenderer {
     ctx.beginPath();
     ctx.rect(origin.x, origin.y, width, height);
     ctx.clip();
-    const codeCopy = entity.detail === 'code' ? codeCardCopy(entity) : undefined;
-    const label = codeCopy?.kicker ?? (entity.kindLabel ?? entity.kind).toUpperCase();
-    const rawDescription = codeCopy ? codeCopy.description : cardSupportCopy(entity.responsibility);
-    const textLayout = cardContentLayout({
-      width, inset: metrics.leftInset, top: 12 * metrics.screenScale,
-      bottom: 10 * metrics.screenScale, gap: 4 * metrics.screenScale,
-      kicker: label, title: entity.name, description: boundary ? undefined : rawDescription,
-      descriptionLines: renderedDetail === 'component' || renderedDetail === 'code' ? 2 : 3,
-      kickerSize: metrics.kickerFontSize, titleSize: metrics.titleFontSize,
-      titleFloor: c4TitleFitFloor(renderedDetail, metrics.titleFontSize, C4_LABEL_MIN_TITLE_PX),
-      titleFitStep: .25 * this.camera.zoom / focusZoomByDetail[renderedDetail],
-      descriptionSize: metrics.descriptionFontSize, mono: renderedDetail === 'code',
-    });
+    const textLayout = canvasCardTextLayout(entity, renderedDetail, boundary, this.camera.zoom, width);
     ctx.globalAlpha = projectionContentOpacity * labelVisibility;
     for (const line of textLayout.lines) {
       ctx.fillStyle = line.role === 'kicker' ? colors.accent : line.role === 'title' ? '#ffffff' : '#9aa8b4';
