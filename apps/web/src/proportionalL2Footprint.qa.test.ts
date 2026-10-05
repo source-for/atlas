@@ -11,9 +11,9 @@ import {
 } from '@okie/architecture';
 import {
   BAND_COST_HANG_GUARD_ENTITIES,
-  C4_PRESENTATION_AT_FOCUS,
 } from '@okie/scene-compiler';
-import { canvasEntityPresentationMetrics } from './renderer/Canvas2DRenderer';
+import { canvasCardTextLayout, canvasEntityPresentationMetrics } from './renderer/Canvas2DRenderer';
+import type { SceneEntity } from './renderer/types';
 import { createC4Scene } from './renderer/goldenC4Scene';
 import { SCAN_BAND_DEPTH_MIN_ENTITIES } from './renderer/scanFixture';
 
@@ -98,10 +98,12 @@ describe('CLA-119: proportional L2 container footprints (soft √N, not a treema
     const metrics = canvasEntityPresentationMetrics('component', false, zoom);
     const titleBaselineWorld = metrics.titleBaseline / zoom;
     expect(shortest).toBeGreaterThan(titleBaselineWorld);
-    expect(metrics.titleBaseline).toBeCloseTo(
-      50 * (C4_PRESENTATION_AT_FOCUS.component.geometryScale / zoom) * zoom,
-      5,
+    // CLA-381: the metric is the baseline Canvas actually paints, not a fixed offset.
+    const painted = canvasCardTextLayout(
+      { id: 'component:probe', name: 'probe', kind: 'component', detail: 'component', x: 0, y: 0, width: 200, height: 100 } as SceneEntity,
+      'component', false, zoom, 200 * zoom,
     );
+    expect(metrics.titleBaseline).toBeCloseTo(painted.lines.find(line => line.role === 'title')!.baseline, 5);
   });
 
   it('Open inside @okie/web still lands on L3 file cards', () => {

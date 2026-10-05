@@ -65,13 +65,13 @@
               "exempt": 0
             },
             "short-leg": {
-              "visible": 3,
+              "visible": 5,
               "hidden": 0,
               "exempt": 0
             }
           },
           "totals": {
-            "visible": 3,
+            "visible": 5,
             "hidden": 0,
             "exempt": 2
           },
@@ -82,9 +82,11 @@
             "containment": 0,
             "own-endpoint": 0
           },
-          "geometryFingerprint": "2204b9ef",
+          "geometryFingerprint": "0179125e",
           "visibleProblems": [
             "short-leg visual-edge:context:visual-node%3Alineage%3Aactor%3Adeveloper>visual-node%3Alineage%3Asystem%3Aokie:uses [visual-node:lineage:actor:developer,visual-node:lineage:system:okie]",
+            "short-leg visual-edge:context:visual-node%3Alineage%3Aactor%3Adeveloper>visual-node%3Alineage%3Asystem%3Aokie:uses [visual-node:lineage:actor:developer,visual-node:lineage:system:okie]",
+            "short-leg visual-edge:context:visual-node%3Alineage%3Asystem%3Aokie>visual-node%3Alineage%3Aexternal%3Abrowser-graphics:uses [visual-node:lineage:external:browser-graphics,visual-node:lineage:system:okie]",
             "short-leg visual-edge:context:visual-node%3Alineage%3Asystem%3Aokie>visual-node%3Alineage%3Aexternal%3Abrowser-graphics:uses [visual-node:lineage:external:browser-graphics,visual-node:lineage:system:okie]",
             "short-leg visual-edge:context:visual-node%3Alineage%3Asystem%3Aokie>visual-node%3Alineage%3Aexternal%3Asource-repository:dependsOn [visual-node:lineage:external:source-repository,visual-node:lineage:system:okie]"
           ]
@@ -146,7 +148,7 @@
             "containment": 0,
             "own-endpoint": 0
           },
-          "geometryFingerprint": "2204b9ef",
+          "geometryFingerprint": "0179125e",
           "visibleProblems": []
         },
         {
@@ -206,7 +208,7 @@
             "containment": 1,
             "own-endpoint": 0
           },
-          "geometryFingerprint": "7d25d031",
+          "geometryFingerprint": "097b4d4a",
           "visibleProblems": [
             "edge-crossing visual-edge:container:visual-node%3Alineage%3Acontainer%3Atooling>visual-node%3Alineage%3Acontainer%3Ascene-compiler:calls,visual-edge:container:visual-node%3Alineage%3Acontainer%3Aweb-app>visual-node%3Alineage%3Acontainer%3Arust-renderer:calls",
             "short-route visual-edge:container:visual-node%3Alineage%3Acontainer%3Ascene-compiler>visual-node%3Alineage%3Acontainer%3Arust-renderer:dependsOn [visual-node:lineage:container:rust-renderer,visual-node:lineage:container:scene-compiler]",
@@ -276,7 +278,7 @@
             "containment": 1,
             "own-endpoint": 0
           },
-          "geometryFingerprint": "7d25d031",
+          "geometryFingerprint": "097b4d4a",
           "visibleProblems": [
             "edge-crossing visual-edge:container:visual-node%3Alineage%3Acontainer%3Atooling>visual-node%3Alineage%3Acontainer%3Ascene-compiler:calls,visual-edge:container:visual-node%3Alineage%3Acontainer%3Aweb-app>visual-node%3Alineage%3Acontainer%3Arust-renderer:calls"
           ]
@@ -338,7 +340,7 @@
             "containment": 0,
             "own-endpoint": 0
           },
-          "geometryFingerprint": "86db4d84",
+          "geometryFingerprint": "441ccdd3",
           "visibleProblems": [
             "shared-corridor visual-edge:component:visual-node%3Alineage%3Acomponent%3Acompiler-normalized>visual-node%3Alineage%3Acomponent%3Acompiler-story:calls,visual-edge:component:visual-node%3Alineage%3Acomponent%3Acompiler-scene>visual-node%3Alineage%3Acomponent%3Acompiler-protocol:dependsOn",
             "endpoint-crowding visual-edge:component:visual-node%3Alineage%3Acomponent%3Arenderer-gpu>visual-node%3Alineage%3Acomponent%3Arenderer-engine:reads,visual-edge:component:visual-node%3Alineage%3Acomponent%3Arenderer-wasm>visual-node%3Alineage%3Acomponent%3Arenderer-engine:calls [visual-node:lineage:component:renderer-engine]",
@@ -445,7 +447,7 @@
             "containment": 0,
             "own-endpoint": 0
           },
-          "geometryFingerprint": "86db4d84",
+          "geometryFingerprint": "441ccdd3",
           "visibleProblems": [
             "shared-corridor visual-edge:component:visual-node%3Alineage%3Acomponent%3Acompiler-normalized>visual-node%3Alineage%3Acomponent%3Acompiler-story:calls,visual-edge:component:visual-node%3Alineage%3Acomponent%3Acompiler-scene>visual-node%3Alineage%3Acomponent%3Acompiler-protocol:dependsOn",
             "endpoint-crowding visual-edge:component:visual-node%3Alineage%3Acomponent%3Arenderer-gpu>visual-node%3Alineage%3Acomponent%3Arenderer-engine:reads,visual-edge:component:visual-node%3Alineage%3Acomponent%3Arenderer-wasm>visual-node%3Alineage%3Acomponent%3Arenderer-engine:calls [visual-node:lineage:component:renderer-engine]",
@@ -491,7 +493,7 @@
               "exempt": 3
             },
             "short-route": {
-              "visible": 2,
+              "visible": 1,
               "hidden": 0,
               "exempt": 0
             },
@@ -502,7 +504,7 @@
             }
           },
           "totals": {
-            "visible": 17,
+            "visible": 16,
             "hidden": 0,
             "exempt": 7
           },
@@ -513,11 +515,10 @@
             "containment": 0,
             "own-endpoint": 0
           },
-          "geometryFingerprint": "5b7a4d21",
+          "geometryFingerprint": "efd8dfc2",
           "visibleProblems": [
             "edge-crossing visual-edge:code:visual-node%3Alineage%3Acode%3Aweb-shell%3Aapp>visual-node%3Alineage%3Acode%3Aweb-stories%3Acreate-flight:calls,visual-edge:code:visual-node%3Alineage%3Acode%3Aweb-shell%3Acanvas-viewport>visual-node%3Alineage%3Acode%3Aweb-renderer-host%3Acreate-renderer:calls",
             "short-route visual-edge:code:visual-node%3Alineage%3Acode%3Amodel-scoping%3Aselect-scoped-view>visual-node%3Alineage%3Acode%3Amodel-scoping%3Aselect-snapshot:calls [visual-node:lineage:code:model-scoping:select-scoped-view,visual-node:lineage:code:model-scoping:select-snapshot]",
-            "short-route visual-edge:code:visual-node%3Alineage%3Acode%3Arenderer-gpu%3Arenderer>visual-node%3Alineage%3Acode%3Arenderer-gpu%3Abuild-mesh:calls [visual-node:lineage:code:renderer-gpu:build-mesh,visual-node:lineage:code:renderer-gpu:renderer]",
             "short-leg visual-edge:code:visual-node%3Alineage%3Acode%3Acompiler-normalized%3Acompile-scene>visual-node%3Alineage%3Acode%3Acompiler-scene%3Acompile:calls [visual-node:lineage:code:compiler-normalized:compile-scene,visual-node:lineage:code:compiler-scene:compile]",
             "short-leg visual-edge:code:visual-node%3Alineage%3Acode%3Amodel-scoping%3Aselect-scoped-view>visual-node%3Alineage%3Acode%3Amodel-normalized%3Astate:dependsOn [visual-node:lineage:code:model-normalized:state,visual-node:lineage:code:model-scoping:select-scoped-view]",
             "short-leg visual-edge:code:visual-node%3Alineage%3Acode%3Amodel-scoping%3Aselect-scoped-view>visual-node%3Alineage%3Acode%3Amodel-normalized%3Astate:dependsOn [visual-node:lineage:code:model-normalized:state,visual-node:lineage:code:model-scoping:select-scoped-view]",
@@ -591,7 +592,7 @@
             "containment": 0,
             "own-endpoint": 0
           },
-          "geometryFingerprint": "5b7a4d21",
+          "geometryFingerprint": "efd8dfc2",
           "visibleProblems": [
             "edge-crossing visual-edge:code:visual-node%3Alineage%3Acode%3Aweb-shell%3Aapp>visual-node%3Alineage%3Acode%3Aweb-stories%3Acreate-flight:calls,visual-edge:code:visual-node%3Alineage%3Acode%3Aweb-shell%3Acanvas-viewport>visual-node%3Alineage%3Acode%3Aweb-renderer-host%3Acreate-renderer:calls"
           ]
@@ -1207,7 +1208,7 @@
             "shared-corridor": {
               "visible": 7,
               "hidden": 0,
-              "exempt": 21
+              "exempt": 23
             },
             "label-clearance": {
               "visible": 0,
@@ -1238,16 +1239,16 @@
           "totals": {
             "visible": 49,
             "hidden": 0,
-            "exempt": 42
+            "exempt": 44
           },
           "exemptions": {
             "bundle": 0,
-            "shared-endpoint": 21,
+            "shared-endpoint": 23,
             "shared-port": 21,
             "containment": 0,
             "own-endpoint": 0
           },
-          "geometryFingerprint": "c5621f65",
+          "geometryFingerprint": "f2030b9d",
           "visibleProblems": [
             "edge-crossing visual-edge:code:visual-node%3Acode%3A0003>visual-node%3Acode%3A0004:dependsOn,visual-edge:code:visual-node%3Acode%3A0024>visual-node%3Acode%3A0000:dependsOn",
             "edge-crossing visual-edge:code:visual-node%3Acode%3A0006>visual-node%3Acode%3A0007:dependsOn,visual-edge:code:visual-node%3Acode%3A0024>visual-node%3Acode%3A0000:dependsOn",
@@ -1317,7 +1318,7 @@
             "shared-corridor": {
               "visible": 7,
               "hidden": 0,
-              "exempt": 21
+              "exempt": 23
             },
             "label-clearance": {
               "visible": 0,
@@ -1348,16 +1349,16 @@
           "totals": {
             "visible": 14,
             "hidden": 0,
-            "exempt": 42
+            "exempt": 44
           },
           "exemptions": {
             "bundle": 0,
-            "shared-endpoint": 21,
+            "shared-endpoint": 23,
             "shared-port": 21,
             "containment": 0,
             "own-endpoint": 0
           },
-          "geometryFingerprint": "c5621f65",
+          "geometryFingerprint": "f2030b9d",
           "visibleProblems": [
             "edge-crossing visual-edge:code:visual-node%3Acode%3A0003>visual-node%3Acode%3A0004:dependsOn,visual-edge:code:visual-node%3Acode%3A0024>visual-node%3Acode%3A0000:dependsOn",
             "edge-crossing visual-edge:code:visual-node%3Acode%3A0006>visual-node%3Acode%3A0007:dependsOn,visual-edge:code:visual-node%3Acode%3A0024>visual-node%3Acode%3A0000:dependsOn",
@@ -1438,7 +1439,7 @@
             "containment": 0,
             "own-endpoint": 0
           },
-          "geometryFingerprint": "a1e7239a",
+          "geometryFingerprint": "2b12da9a",
           "visibleProblems": [
             "short-route visual-edge:code:visual-node%3Acode%3Aalpha>visual-node%3Acode%3Abeta:duplicates [visual-node:code:alpha,visual-node:code:beta]"
           ]
@@ -1500,7 +1501,7 @@
             "containment": 0,
             "own-endpoint": 0
           },
-          "geometryFingerprint": "a1e7239a",
+          "geometryFingerprint": "2b12da9a",
           "visibleProblems": []
         }
       ]
@@ -1566,7 +1567,7 @@
             "containment": 0,
             "own-endpoint": 0
           },
-          "geometryFingerprint": "c15918c0",
+          "geometryFingerprint": "73286a28",
           "visibleProblems": [
             "short-leg visual-edge:code:visual-node%3Acode%3Aalpha>visual-node%3Acode%3Abeta:duplicates [visual-node:code:alpha,visual-node:code:beta]",
             "short-leg visual-edge:code:visual-node%3Acode%3Aalpha>visual-node%3Acode%3Abeta:duplicates [visual-node:code:alpha,visual-node:code:beta]"
@@ -1629,7 +1630,7 @@
             "containment": 0,
             "own-endpoint": 0
           },
-          "geometryFingerprint": "c15918c0",
+          "geometryFingerprint": "73286a28",
           "visibleProblems": []
         }
       ]

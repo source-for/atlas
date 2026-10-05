@@ -58,7 +58,9 @@ describe('CLA-114 L4 card copy', () => {
   });
 
   it('paints L4 from codeCardCopy and keeps inspector source paths', () => {
-    expect(hud).toContain('codeCardCopy(entity)');
+    // CLA-381: the HUD reads the exact lines Canvas paints, which come from codeCardCopy.
+    expect(hud).toContain('canvasCardTextLayout(entity, detail, boundary, zoom, screenWidth)');
+    expect(readFileSync(new URL('./renderer/Canvas2DRenderer.ts', import.meta.url), 'utf8')).toContain('codeCardCopy(entity)');
     expect(app).toContain('source.path');
     expect(app).toContain('lines ${source.startLine}–${source.endLine}');
     expect(app).toContain('className="source-card"');

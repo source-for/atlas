@@ -1,14 +1,7 @@
-import {
-  C4_LABEL_MIN_TITLE_PX,
-  c4TitleFitFloor,
-  cardSupportCopy,
-  codeCardCopy,
-  fitDisplayText,
-  fitDisplayTextAtSize,
-} from '@okie/scene-compiler';
+import { cardSupportCopy } from '@okie/scene-compiler';
 import { authoringBoundsForDetail, worldToScreen } from './editor/relationshipInteraction';
 import { inspectorAcceptedSummary } from './inspector/inspectorPanel';
-import { canvasEntityPresentationMetrics } from './renderer/Canvas2DRenderer';
+import { canvasCardTextLayout } from './renderer/Canvas2DRenderer';
 import type { AtlasScene, Camera, PickResult, SceneEntity, SemanticDetail } from './renderer/types';
 
 export type CanvasHoverHudModel = {
@@ -63,35 +56,6 @@ function paintedBoundary(scene: AtlasScene, entityId: string, detail: SemanticDe
   return scene.entities.some(candidate => candidate.parentId === entityId && visible.has(candidate.id));
 }
 
-function paintedCardCopy(entity: SceneEntity, detail: SemanticDetail, boundary: boolean, zoom: number, screenWidth: number) {
-  const metrics = canvasEntityPresentationMetrics(detail, boundary, zoom);
-  const textMaxWidth = Math.max(1, screenWidth - metrics.horizontalInsets);
-  const titleMetrics = detail === 'code' ? 'mono-semibold' as const : 'sans-semibold' as const;
-  const titleFloor = c4TitleFitFloor(detail, metrics.titleFontSize, C4_LABEL_MIN_TITLE_PX);
-  const fittedTitle = fitDisplayTextAtSize(
-    entity.name,
-    textMaxWidth,
-    metrics.titleFontSize,
-    titleFloor,
-    'identifier',
-    titleMetrics,
-  );
-  const codeCopy = entity.detail === 'code' ? codeCardCopy(entity) : undefined;
-  const rawDescription = codeCopy
-    ? codeCopy.description
-    : cardSupportCopy(entity.responsibility);
-  const fittedDescription = !boundary && rawDescription
-    ? fitDisplayText(
-      rawDescription,
-      textMaxWidth,
-      metrics.descriptionFontSize,
-      codeCopy?.descriptionMode ?? 'word',
-      detail === 'code' ? 'mono-regular' : 'sans-regular',
-    )
-    : undefined;
-  return { fittedTitle, rawDescription, fittedDescription };
-}
-
 export function cardNeedsHoverHud(
   entity: SceneEntity,
   detail: SemanticDetail,
@@ -99,9 +63,13 @@ export function cardNeedsHoverHud(
   zoom: number,
   screenWidth: number,
 ) {
-  const painted = paintedCardCopy(entity, detail, boundary, zoom, screenWidth);
-  if (painted.fittedTitle.content !== entity.name) return true;
-  if (painted.rawDescription && painted.fittedDescription && painted.fittedDescription !== painted.rawDescription) return true;
+  // Read the exact wrapped lines Canvas paints, so a description shown in full across
+  // two or three lines is not reported as truncated.
+  const painted = canvasCardTextLayout(entity, detail, boundary, zoom, screenWidth);
+  const title = painted.lines.find(line => line.role === 'title')?.content;
+  if (title !== entity.name) return true;
+  const description = painted.lines.filter(line => line.role === 'description').map(line => line.content).join(' ');
+  if (painted.rawDescription && description !== painted.rawDescription.trim().replace(/\s+/gu, ' ')) return true;
   return !boundary && !painted.rawDescription && !cardSupportCopy(entity.responsibility);
 }
 
