@@ -376,3 +376,53 @@ it('finishes a published late reveal when the map resizes mid-reveal', async () 
   expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-detail')).toBe('code');
   expect(new URL(window.location.href).searchParams.getAll('lens')).toContain('component:web-navigation');
 });
+
+async function pinchPastCodeWindowAndLift() {
+  vi.spyOn(HTMLElement.prototype, 'setPointerCapture').mockImplementation(() => {});
+  const surface = host.querySelector<HTMLElement>('[data-testid="atlas-canvas"]')!;
+  const touch = (type: string, pointerId: number, clientX: number) => act(async () => {
+    surface.dispatchEvent(new PointerEvent(type, { pointerId, pointerType: 'touch', clientX, clientY: 450, bubbles: true }));
+  });
+  // Two fingers 100px apart, spread past the frozen reveal window, then lifted:
+  // touch commits the code handoff from the 120ms pinch settle.
+  const initialZoom = captured.camera.zoom;
+  const pinchTo = async (zoom: number) => {
+    const half = 100 * zoom / initialZoom / 2;
+    await touch('pointermove', 1, 720 - half); await touch('pointermove', 2, 720 + half); await settle();
+    return half;
+  };
+  await touch('pointerdown', 1, 670); await touch('pointerdown', 2, 770);
+  await pinchTo(reveal.startZoom * 1.01);
+  const half = await pinchTo(reveal.fullZoom * 1.05);
+  expect(captured.camera.zoom).toBeGreaterThan(reveal.fullZoom);
+  await touch('pointerup', 2, 720 + half); await touch('pointerup', 1, 720 - half);
+}
+
+async function runSettleAndFrames() {
+  // A deterministic clock, so the settle glide lands within the frames run here instead of
+  // depending on how much real time the suite has spent between frames.
+  let clock = performance.now();
+  vi.spyOn(performance, 'now').mockImplementation(() => clock);
+  for (let round = 0; round < 3; round++) {
+    await act(async () => { await vi.advanceTimersByTimeAsync(240); }); await settle();
+    clock += 400;
+    const frames = [...rafFrames.values()]; rafFrames.clear();
+    await act(async () => { for (const callback of frames) callback(clock); }); await settle();
+  }
+}
+
+it('enters code from the touch-pinch settle (control for the Escape case)', async () => {
+  await pinchPastCodeWindowAndLift();
+  await runSettleAndFrames();
+  expect(new URL(window.location.href).searchParams.getAll('lens')).toContain('component:web-navigation');
+});
+
+it('does not enter code from the pending touch-pinch settle after a window Escape', async () => {
+  await pinchPastCodeWindowAndLift();
+  // Escape lands before the 120ms pinch settle fires. The cancelled lens session alone keeps the
+  // late settle out of code today; the pinch-timer clear in the Escape cancel is defence in depth.
+  await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))); await settle();
+  await runSettleAndFrames();
+  expect(new URL(window.location.href).searchParams.getAll('lens')).not.toContain('component:web-navigation');
+  expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-detail')).not.toBe('code');
+});
