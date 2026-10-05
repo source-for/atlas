@@ -1,5 +1,5 @@
 import { scanCodeRevealWindow, type ScanCodeRevealWindow } from './semantic/scanCodeRevealWindow';
-import { scenePreparationFailureMessage } from './renderer/scanFixture';
+import { scenePreparationFailureMessage, ScanWorkerUnavailableError } from './renderer/scanFixture';
 import { completeFixturePreparation } from './renderer/fixturePreparation';
 import { inspectorEntityForFraming, resolveInspectorEntity, retainResidentInspectorEntity } from './inspector/inspectorEntity';
 import { navigationEntityReference } from './navigation/entityReferences';
@@ -270,6 +270,10 @@ function diagramTabDomId(surfaceId: string) {
 }
 
 const preservedNavigationParams = ['backend', 'embed', 'fixture', 'seed'] as const;
+/** Outward zoom keeps the deep map while the worker prepares its parent. A stalled
+ * preparation is abandoned after the deadline; a failed one is not retried for a while. */
+const REVERSE_SCENE_DEADLINE_MS = 8_000;
+const REVERSE_SCENE_RETRY_MS = 2_000;
 const zoomMotionTrace = createZoomMotionTrace({ maxSamples: 10_000 });
 const configuredRepositoryRoot = import.meta.env.VITE_OKIE_REPOSITORY_ROOT?.trim() || undefined;
 
@@ -1657,6 +1661,10 @@ export function App() {
   const [reverseViewLoading, setReverseViewLoading] = useState(false);
   const reverseSceneRequestRef = useRef(createSceneRequestOwner());
   const reverseScenePendingRef = useRef<{ scene: AtlasScene; session: SemanticLensSession; focusId: string; owns(): boolean } | undefined>(undefined);
+  const reverseSceneDeadlineRef = useRef<number | undefined>(undefined);
+  const reverseSettleDeferredRef = useRef(false);
+  const reverseSceneFailureRef = useRef<{ focusId: string; sourceFocusId: string; at: number } | undefined>(undefined);
+  const reverseWorkerUnavailableRef = useRef(false);
   const gestureSceneRequestRef = useRef(createSceneRequestOwner());
   const viewportSceneRequestRef = useRef(createSceneRequestOwner());
   const viewportRequestedTileRef = useRef<string | undefined>(undefined);
@@ -3133,13 +3141,30 @@ export function App() {
 
   function cancelReverseScenePreparation() {
     reverseSceneRequestRef.current.cancel();
+    clearReverseScenePreparation();
+    reverseSettleDeferredRef.current = false;
+  }
+
+  function clearReverseScenePreparation() {
+    if (reverseSceneDeadlineRef.current !== undefined) window.clearTimeout(reverseSceneDeadlineRef.current);
+    reverseSceneDeadlineRef.current = undefined;
     reverseScenePendingRef.current = undefined;
     setReverseViewLoading(false);
   }
 
+  /** End the owned request. A settle suppressed while it was pending runs now, at the
+   * live camera, so a failed or abandoned preparation never leaves the URL uncommitted. */
+  function finishReverseScenePreparation(intent: NonNullable<typeof reverseScenePendingRef.current>) {
+    if (reverseScenePendingRef.current !== intent) return;
+    clearReverseScenePreparation();
+    if (!reverseSettleDeferredRef.current) return;
+    reverseSettleDeferredRef.current = false;
+    settleCamera(renderedCameraRef.current);
+  }
+
   /** Prepare adjacent endpoints without blocking live outward camera samples. */
   function startScanContainerReverseMorph(camera: Camera, direction: 'inward' | 'outward' | 'none', arrivalZoom?: number) {
-    if (!scanFixture || importedAtlasRef.current || reduceMotion) return false;
+    if (!scanFixture || importedAtlasRef.current || reduceMotion || reverseWorkerUnavailableRef.current) return false;
     const target = sceneRef.current;
     const viewRootId = scanFixture.navigation.rootEntityId;
     const focusId = target.rootEntityId ?? viewRootId;
@@ -3160,6 +3185,11 @@ export function App() {
     const sourceFocusId = detail === 'code'
       ? activeSnapshot.entities.find(entity => entity.id === focusId)?.parentId : viewRootId;
     if (!sourceFocusId) return false;
+    // A failed preparation of this endpoint pair backs off instead of re-requesting on
+    // every tick (viewport refreshes replace the scene object, so key by entity ids).
+    const failure = reverseSceneFailureRef.current;
+    if (failure && failure.focusId === focusId && failure.sourceFocusId === sourceFocusId
+      && performance.now() - failure.at < REVERSE_SCENE_RETRY_MS) return false;
     const endpointZoom = arrivalZoom ?? camera.zoom;
     viewportSceneRequestRef.current.cancel();
     viewportRequestedTileRef.current = undefined;
@@ -3171,13 +3201,21 @@ export function App() {
     const intent = { scene: target, session, focusId, owns: () => false };
     reverseScenePendingRef.current = intent;
     setReverseViewLoading(true);
+    const fail = () => { reverseSceneFailureRef.current = { focusId, sourceFocusId, at: performance.now() }; };
+    // The worker's own timeout is longer; the map must not wait on it or a stalled fetch.
+    reverseSceneDeadlineRef.current = window.setTimeout(() => {
+      if (reverseScenePendingRef.current !== intent) return;
+      reverseSceneRequestRef.current.cancel();
+      fail();
+      finishReverseScenePreparation(intent);
+    }, REVERSE_SCENE_DEADLINE_MS);
     const owns = () => request.owns() && reverseScenePendingRef.current === intent
       && !foregroundSceneRequestRef.current.pending() && fixture === foregroundFixtureRef.current
       && target === sceneRef.current && session === semanticLensSessionRef.current && selection === inspectorSelectionRef.current;
     intent.owns = owns;
     void prepareReverseScene({ signal: request.signal, owns, generation: () => fixture.getSceneGeneration(),
-      ensure: () => fixture.ensureNeighborhood(sourceFocusId),
-      compile: () => composeScanSceneAsync(sourceFocusId, undefined, request.signal, undefined, [focusId], undefined, undefined, true),
+      ensure: () => fixture.ensureNeighborhood(sourceFocusId, request.signal),
+      compile: () => composeScanSceneAsync(sourceFocusId, undefined, request.signal, undefined, [focusId]),
       publish: source => {
         const bridge = createScanReverseMorph(source, target, focusId, detail, endpointZoom);
         if (!bridge) return;
@@ -3204,9 +3242,16 @@ export function App() {
         publishSemanticRenderPacket(next);
         recordSemanticLensDiagnostics('reverse-publication', { camera: next, pointer: scanZoomPointerRef.current ?? { x: viewport.width / 2, y: viewport.height / 2 }, direction: 'none', gestureSettled: false, mobile: false });
       },
-    }).catch(() => { /* Keep the current map; never compile synchronously on stale/failure. */ }).finally(() => {
-      if (reverseScenePendingRef.current === intent) { reverseScenePendingRef.current = undefined; setReverseViewLoading(false); }
-    });
+    }).catch(error => {
+      // Keep the current map. Stale work is silent; a real failure backs off, and an
+      // unavailable worker (latched until reload) stops outward preparation and says so.
+      if (isSceneRequestAbort(error) || reverseScenePendingRef.current !== intent) return;
+      fail();
+      if (error instanceof ScanWorkerUnavailableError) {
+        reverseWorkerUnavailableRef.current = true;
+        setLiveMessage(error.message);
+      } else console.warn('Outward zoom preparation failed', error);
+    }).finally(() => finishReverseScenePreparation(intent));
     return true;
   }
 
@@ -3529,7 +3574,8 @@ export function App() {
   }
 
   function settleCamera(next: Camera) {
-    if (foregroundSceneRequestRef.current.pending() || reverseScenePendingRef.current) return;
+    if (foregroundSceneRequestRef.current.pending()) return;
+    if (reverseScenePendingRef.current) { reverseSettleDeferredRef.current = true; return; }
     const base = canonicalNavigationState({
       ...navigationRef.current,
       camera: next,
@@ -4071,14 +4117,14 @@ export function App() {
     };
   }
 
-  async function composeScanSceneAsync(focusEntityId: string, previous: AtlasScene | undefined, signal: AbortSignal, cameraOverride?: Camera, keepEntityIds?: readonly string[], generationFence?: ReturnType<typeof createSceneGenerationFence>, frozenSafeWidth?: number, workerRequired = false) {
+  async function composeScanSceneAsync(focusEntityId: string, previous: AtlasScene | undefined, signal: AbortSignal, cameraOverride?: Camera, keepEntityIds?: readonly string[], generationFence?: ReturnType<typeof createSceneGenerationFence>, frozenSafeWidth?: number) {
     const fixture = scanFixture!;
     const prepared = await compileCurrentGeneration(() => fixture.getSceneGeneration(), async () => {
       const { residency, cacheKey } = scanSceneRequest(focusEntityId, cameraOverride, keepEntityIds, frozenSafeWidth);
       const cached = readNeighborhoodScene(neighborhoodScenesRef.current, cacheKey);
       if (cached) return cached;
       const generation = fixture.getSceneGeneration();
-      const compiled = await fixture.createSceneAsync(focusEntityId, previous, residency, signal, workerRequired ? { fallback: 'forbid' } : undefined);
+      const compiled = await fixture.createSceneAsync(focusEntityId, previous, residency, signal);
       if (signal.aborted || fixture !== scanFixture) throw new DOMException('Scene request superseded', 'AbortError');
       if (generation === fixture.getSceneGeneration()) retainNeighborhoodScene(neighborhoodScenesRef.current, cacheKey, cacheableNeighborhoodScene(compiled));
       return compiled;

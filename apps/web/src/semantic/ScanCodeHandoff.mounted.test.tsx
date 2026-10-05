@@ -153,14 +153,10 @@ it('aborts an obsolete cold code compile when input reverses before publication'
   inputMode = 'pinch';
   let resolve!: () => void;
   let signal!: AbortSignal;
-  // jsdom has no Worker; later requests stand in for a working scene worker, since
-  // outward preparation forbids the synchronous fallback.
-  const compile = vi.spyOn(fixture, 'createSceneAsync')
-    .mockImplementation(async (focus, previous, residency) => fixture.createScene(focus, previous, residency))
-    .mockImplementationOnce((focus, previous, residency, requestSignal) => {
-      signal = requestSignal!;
-      return new Promise<AtlasScene>(done => { resolve = () => done(fixture.createScene(focus, previous, residency)); });
-    });
+  const compile = vi.spyOn(fixture, 'createSceneAsync').mockImplementationOnce((focus, previous, residency, requestSignal) => {
+    signal = requestSignal!;
+    return new Promise<AtlasScene>(done => { resolve = () => done(fixture.createScene(focus, previous, residency)); });
+  });
   await zoomTo(reveal.startZoom * 1.01); await settle();
   expect(compile).toHaveBeenCalledTimes(1);
   expect(signal.aborted).toBe(false);
@@ -172,10 +168,8 @@ it('aborts an obsolete cold code compile when input reverses before publication'
   expect(captured.camera).toEqual(latest);
   expect(window.location.href).toBe(href);
   expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-root-entity-id')).toBe('container:web-app');
-  // Outward input may reconstruct the existing L2/L3 bridge (worker-prepared, never a
-  // synchronous fallback), but the stale compiled L4 branch must never replace that
-  // reached source session.
-  expect(compile.mock.calls.slice(1).some(call => call[4]?.fallback === 'forbid')).toBe(true);
+  // Outward input may reconstruct the existing L2/L3 bridge, but the stale
+  // compiled L4 branch must never replace that reached source session.
   expect(diagnostic().bridge).toMatchObject({ focusId: 'container:web-app', sourceDetail: 'container', targetDetail: 'component' });
 });
 

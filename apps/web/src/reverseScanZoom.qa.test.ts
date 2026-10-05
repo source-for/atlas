@@ -7,8 +7,8 @@ it('prepares the adjacent reverse endpoint through the async fixture seam and sa
   const reverse = app.slice(app.indexOf('function startScanContainerReverseMorph'), app.indexOf('function handleSemanticZoom'));
   expect(reverse).toContain('prepareReverseScene(');
   expect(reverse).toContain('composeScanSceneAsync(sourceFocusId, undefined, request.signal');
-  expect(reverse).toContain('[focusId], undefined, undefined, true)');
-  expect(app).toContain("workerRequired ? { fallback: 'forbid' } : undefined");
+  expect(reverse).toContain('fixture.ensureNeighborhood(sourceFocusId, request.signal)');
+  expect(reverse).toContain('REVERSE_SCENE_DEADLINE_MS');
   expect(reverse).not.toContain('composeScene(');
   expect(reverse).toContain('const liveCamera = renderedCameraRef.current;');
   expect(reverse).toContain('sampleScanContainerMorph(bridge, liveCamera.zoom)');
@@ -32,6 +32,8 @@ it('freezes pending semantic zoom while camera samples continue, and cancels at 
 it('retains a newer valid reverse owner during delayed scene effects and guards the loading cue', () => {
   expect(app).toContain('if (reverseScenePendingRef.current && !reverseScenePendingRef.current.owns()) cancelReverseScenePreparation();');
   expect(app).toContain('cancelGestureSceneRequests(false);');
-  expect(app).toContain('if (reverseScenePendingRef.current === intent) { reverseScenePendingRef.current = undefined; setReverseViewLoading(false); }');
+  expect(app).toContain('.finally(() => finishReverseScenePreparation(intent));');
+  const finish = app.slice(app.indexOf('function finishReverseScenePreparation'), app.indexOf('function startScanContainerReverseMorph'));
+  expect(finish).toContain('if (reverseScenePendingRef.current !== intent) return;');
   expect(app).toContain('foregroundViewLoading || reverseViewLoading');
 });
