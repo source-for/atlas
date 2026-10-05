@@ -11,7 +11,7 @@ function sliceBetween(source: string, startNeedle: string, endNeedle: string, la
 }
 
 const restoreRestore = (() => {
-  const start = app.indexOf('async restore(next, source)');
+  const start = app.indexOf('async restore(');
   const end = app.indexOf('onCommit(commit)', start);
   if (start < 0 || end < 0) throw new Error('Missing navigation restore()');
   return app.slice(start, end);
