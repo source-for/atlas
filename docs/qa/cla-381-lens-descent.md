@@ -66,9 +66,10 @@ motion during deferred compilation. If preparation finishes at or beyond the ful
 a 180ms late-publication reveal provides continuous geometry while consuming the
 latest input camera rather than the request's stale camera.
 
-Lens cancellation (window Escape, breadcrumbs, Mermaid import) now also stops the
-canvas zoom assist, drops the pending scan adopt camera, cancels in-flight gesture
-handoffs and clears the scan bridge morph. Previously a queued assist frame or the
+Lens cancellation (window Escape, breadcrumbs, Mermaid import) now also ends the
+canvas's pending gesture (zoom assist, settle glide, wheel and pinch settle timers),
+drops the pending scan adopt camera, cancels in-flight gesture handoffs and clears
+the scan bridge morph. These run only when there is a lens to cancel. Previously a queued assist frame or the
 next settle sample could restore the cancelled lens path from the live morph; the
 mounted Escape regression now uses a clock that keeps the queued assist frame live,
 and fails if the assist cancel is removed.
@@ -187,12 +188,13 @@ Escape with focus outside the canvas, 1280×720, at L4:
 | --- | --- |
 | settled (2 s) | lens cleared and stays cleared; next wheel re-enters L4 |
 | 100 ms | lens cleared and stays cleared |
-| < 60 ms | lens can be restored by the pre-Escape gesture's pending wheel-settle callback |
+| 0–30 ms (4 runs) | lens cleared and stays cleared; next wheel re-enters L4 |
 
-The < 60 ms case is the wheel listener's own settle timer, scoped inside the
-canvas wheel effect; it also reproduces intermittently on production (one of two
-runs at the same URL did not clear the lens). It is left as a follow-up rather
-than re-plumbing the wheel effect in this PR.
+Before the second review round, Escape within ~60 ms of the last wheel event was
+undone by the burst's pending 120 ms wheel-settle callback, which re-ran the zoom
+handoff. This also reproduces intermittently on production (one of two runs at the
+same URL did not clear the lens). The cancel now clears that timer; a mounted
+regression fails without it.
 
 Delayed publication beyond the window is covered by the mounted regressions
 (`animates a late code publication…`, `stops an owned late reveal…`,

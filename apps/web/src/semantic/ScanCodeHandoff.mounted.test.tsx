@@ -27,6 +27,7 @@ let inputTime = 0;
 let mapWidth = 1440;
 let mapHeight = 900;
 let rafFrames = new Map<number, FrameRequestCallback>();
+let resizeTargets: Array<{ callback: ResizeObserverCallback; element: Element }> = [];
 let rafId = 100000;
 let reveal: NonNullable<ReturnType<typeof scanCodeRevealWindow>>;
 async function settle() { await act(async () => { await vi.advanceTimersByTimeAsync(0); }); }
@@ -54,7 +55,8 @@ beforeEach(async () => {
   const cancel = (handle: number) => { rafFrames.delete(handle); };
   vi.stubGlobal('requestAnimationFrame', enqueue); vi.spyOn(window, 'requestAnimationFrame').mockImplementation(enqueue);
   vi.stubGlobal('cancelAnimationFrame', cancel); vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(cancel);
-  vi.stubGlobal('ResizeObserver', class { constructor(private callback: ResizeObserverCallback) {} observe(element: Element) { this.callback([{ target: element, contentRect: { width: mapWidth, height: mapHeight } } as ResizeObserverEntry], this as unknown as ResizeObserver); } disconnect() {} unobserve() {} });
+  resizeTargets = [];
+  vi.stubGlobal('ResizeObserver', class { constructor(private callback: ResizeObserverCallback) {} observe(element: Element) { resizeTargets.push({ callback: this.callback, element }); this.callback([{ target: element, contentRect: { width: mapWidth, height: mapHeight } } as ResizeObserverEntry], this as unknown as ResizeObserver); } disconnect() {} unobserve() {} });
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
     const map = this instanceof HTMLCanvasElement || this.getAttribute('data-testid') === 'atlas-canvas' || this.classList.contains('atlas-renderer-host');
     return new DOMRect(0, 0, map ? mapWidth : 0, map ? mapHeight : 0);
@@ -107,6 +109,21 @@ it.each(['mouse', 'pinch'] as const)('freezes the cold code reveal window while 
   expect(new URL(window.location.href).searchParams.getAll('lens')).toContain('component:web-navigation');
   expect(diagnostic().bridge).toMatchObject({ focusId: 'component:web-navigation', targetDetail: 'code', progress: 1 });
   expect(diagnostic().bridge.fullZoom).toBeCloseTo(reveal.fullZoom, 8);
+});
+
+it('starts code preparation at the arm zoom, before the reveal window opens', async () => {
+  inputMode = 'pinch';
+  expect(reveal.armZoom).toBeLessThan(reveal.startZoom);
+  await zoomTo(reveal.armZoom * .9); await settle();
+  await act(async () => { await vi.advanceTimersByTimeAsync(240); });
+  const compile = vi.spyOn(fixture, 'createSceneAsync').mockImplementation(() => new Promise<AtlasScene>(() => {}));
+  await zoomTo(reveal.armZoom * 1.02); await settle();
+  expect(captured.camera.zoom).toBeLessThan(reveal.startZoom);
+  expect(compile).toHaveBeenCalledTimes(1);
+  expect(compile.mock.calls[0]![0]).toBe('component:web-navigation');
+  // Preparation only: nothing is revealed or committed below startZoom.
+  expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-detail')).toBe('component');
+  expect(new URL(window.location.href).searchParams.getAll('lens')).not.toContain('component:web-navigation');
 });
 
 it('retains published reveal progress on the first outward pinch inside the deadband', async () => {
@@ -207,7 +224,7 @@ it('reveals code inside a narrow phone map instead of requiring a desktop-width 
   const measured = diagnostic();
   const prepared = narrowCompile.mock.calls.find(call => call[0] === 'component:web-navigation');
   expect(prepared).toBeDefined();
-  // The map is390px and every overlay has a zero rectangle in this fixture.
+  // The map is 390px and every overlay has a zero rectangle in this fixture.
   const safeWidth = prepared![2]!.scanCodeSafeWidth!;
   expect(safeWidth).toBe(mapWidth);
   expect(measured.bridge.fullZoom).toBeCloseTo(Math.min(330, safeWidth * .42) * 1.5 / bounds.width, 8);
@@ -317,4 +334,45 @@ it('does not publish a cancelled late code branch after Escape and a queued RAF 
   expect(window.location.href).toBe(href);
   expect(new URL(window.location.href).searchParams.getAll('lens')).not.toContain('component:web-navigation');
   expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-detail')).toBe(reachedDetail);
+});
+
+it('does not re-enter code from the pending wheel settle after a window Escape', async () => {
+  inputMode = 'mouse';
+  await zoomTo(reveal.startZoom * 1.01); await settle();
+  await zoomTo(reveal.fullZoom * 1.01); await settle();
+  await act(async () => { await vi.advanceTimersByTimeAsync(80); });
+  expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-detail')).toBe('code');
+  // Escape lands before the burst's 120ms wheel-settle callback fires.
+  await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))); await settle();
+  expect(new URL(window.location.href).searchParams.getAll('lens')).toEqual([]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(240); }); await settle();
+  const frames = [...rafFrames.values()]; rafFrames.clear();
+  await act(async () => { for (const callback of frames) callback(performance.now()); }); await settle();
+  expect(new URL(window.location.href).searchParams.getAll('lens')).toEqual([]);
+  expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-detail')).not.toBe('code');
+});
+
+it('finishes a published late reveal when the map resizes mid-reveal', async () => {
+  inputMode = 'pinch';
+  let resolve!: () => void;
+  vi.spyOn(fixture, 'createSceneAsync').mockImplementationOnce((focus, previous, residency) => new Promise<AtlasScene>(done => {
+    resolve = () => done(fixture.createScene(focus, previous, residency));
+  }));
+  await zoomTo(reveal.startZoom * 1.01); await settle();
+  await zoomTo(reveal.fullZoom * 1.2);
+  let clock = 1;
+  vi.spyOn(performance, 'now').mockImplementation(() => clock);
+  await act(async () => resolve()); await settle();
+  expect(diagnostic().bridge.progress).toBeLessThan(1);
+  // Opening the inspector or resizing the window changes the canvas size mid-reveal.
+  mapWidth = 1200; mapHeight = 800;
+  await act(async () => { for (const target of resizeTargets) target.callback([{ target: target.element, contentRect: { width: mapWidth, height: mapHeight } } as ResizeObserverEntry], {} as ResizeObserver); }); await settle();
+  for (let step = 0; step < 4 && diagnostic().bridge.progress < 1; step++) {
+    clock += 100;
+    const pending = [...rafFrames.values()]; rafFrames.clear();
+    await act(async () => { for (const callback of pending) callback(clock); }); await settle();
+  }
+  expect(diagnostic().bridge.progress).toBe(1);
+  expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-detail')).toBe('code');
+  expect(new URL(window.location.href).searchParams.getAll('lens')).toContain('component:web-navigation');
 });

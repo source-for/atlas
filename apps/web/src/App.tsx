@@ -383,7 +383,7 @@ type CanvasViewportProps = {
   onSemanticZoomBurstStart: (camera: Camera) => Camera;
   /** CLA-104: neighborhood swap changes world space; consume as the burst raw camera. */
   scanZoomAdoptRawRef: { current: Camera | undefined };
-  /** Lens cancellation outside the canvas (window Escape, breadcrumbs) must stop the zoom assist too. */
+  /** Lens cancellation outside the canvas (window Escape, breadcrumbs) must end the pending gesture too. */
   semanticAssistCancelRef: { current: (() => void) | undefined };
   onLodState: (state: RendererLodState | undefined) => void;
   visibilityMode: 'all' | 'dim' | 'isolate';
@@ -427,6 +427,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
   const pinchRef = useRef<{ distance: number; centroid: LensPoint; startZoom: number; moved: boolean } | undefined>(undefined);
   const pinchSettleTimerRef = useRef<number | undefined>(undefined);
   const panSettleTimerRef = useRef<number | undefined>(undefined);
+  const wheelSettleCancelRef = useRef<(() => void) | undefined>(undefined);
   const semanticAssistRafRef = useRef<number | undefined>(undefined);
   const semanticAssistUntilRef = useRef(0);
   const semanticAssistSampleRef = useRef<{ pointer: LensPoint; mobile: boolean; gestureStartZoom?: number } | undefined>(undefined);
@@ -509,7 +510,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
   onSemanticEditStartRef.current = onSemanticEditStart;
   onCameraFlightCancelRef.current = onCameraFlightCancel;
   onLensCancelRef.current = onLensCancel;
-  semanticAssistCancelRef.current = cancelAssistAnimation;
+  semanticAssistCancelRef.current = cancelPendingSemanticGesture;
   onLensPanRef.current = onLensPan;
   onSemanticZoomBurstStartRef.current = onSemanticZoomBurstStart;
   onLodStateRef.current = onLodState;
@@ -712,6 +713,11 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
       }
       applyLiveCameraRef.current(settled);
       rawCameraRef.current = { ...settled };
+    };
+    wheelSettleCancelRef.current = () => {
+      if (semanticZoomSettleTimer !== undefined) window.clearTimeout(semanticZoomSettleTimer);
+      semanticZoomSettleTimer = undefined;
+      lastSemanticPointer = undefined;
     };
     const semanticWheelZoom = (pointer: LensPoint, zoomFactor: number, direction: 'inward' | 'outward') => {
       if (semanticZoomSettleTimer === undefined) {
@@ -973,6 +979,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
       abortController.abort();
       window.clearInterval(diagnosticsTimer);
       if (semanticZoomSettleTimer !== undefined) window.clearTimeout(semanticZoomSettleTimer);
+      wheelSettleCancelRef.current = undefined;
       window.removeEventListener('atlas:flush-navigation', flushNavigation);
       scheduler.dispose();
       publisher.cancel();
@@ -1012,6 +1019,15 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
     semanticAssistUntilRef.current = 0;
     semanticAssistSampleRef.current = undefined;
     semanticZoomBurstActiveRef.current = false;
+  }
+
+  /** An external lens cancel ends the pending gesture: its settle would re-run the zoom handoff. */
+  function cancelPendingSemanticGesture() {
+    cancelAssistAnimation();
+    cancelSettleGlide();
+    wheelSettleCancelRef.current?.();
+    if (pinchSettleTimerRef.current !== undefined) window.clearTimeout(pinchSettleTimerRef.current);
+    pinchSettleTimerRef.current = undefined;
   }
 
   function cancelSettleGlide() {
@@ -1724,9 +1740,10 @@ export function App() {
   askThreadRef.current = askThread;
   const [viewport, setViewport] = useState<ViewportSize>(() => ({ width: Math.max(1, window.innerWidth), height: Math.max(1, window.innerHeight - 68) }));
   useEffect(() => {
-    cancelGestureSceneRequests(); stopLateScanReveal();
-    // An already published code endpoint keeps its frozen authored window until
-    // fresh preparation; changing thresholds mid-gesture would jump geometry.
+    cancelGestureSceneRequests();
+    // cancelGestureSceneRequests drops an unpublished late reveal. A published one
+    // keeps its frozen window and finishes; stopping it here left partial L4 with no
+    // committed lens path until the next inward input.
   }, [viewport.width, viewport.height]);
   const [measuredSafeArea, setMeasuredSafeArea] = useState<SafeArea>(() => storySafeArea({ width: Math.max(1, window.innerWidth), height: Math.max(1, window.innerHeight - 68) }));
   const [safeAreaEpoch, setSafeAreaEpoch] = useState(0);
@@ -2998,6 +3015,10 @@ export function App() {
   }
 
   function cancelSemanticLensAt(reason: string, reachedCamera: Camera) {
+    stopLateScanReveal();
+    scanLateRevealRef.current = undefined;
+    const current = semanticLensSessionRef.current;
+    if (current.active.phase === 'idle' && current.settled.length === 0) return;
     // A queued assist frame, settle sample or in-flight handoff would otherwise re-arm the
     // cancelled branch: the scan bridge restores its lens path from the live morph.
     semanticAssistCancelRef.current?.();
@@ -3005,10 +3026,6 @@ export function App() {
     cancelGestureSceneRequests();
     scanContainerMorphRef.current = undefined;
     semanticRenderPacketRef.current = undefined;
-    stopLateScanReveal();
-    scanLateRevealRef.current = undefined;
-    const current = semanticLensSessionRef.current;
-    if (current.active.phase === 'idle' && current.settled.length === 0) return;
     const idle = idleSemanticLensSession(current.baseDetail);
     semanticLensSessionRef.current = idle;    setSemanticLensSession(idle);
     updateCamera(reachedCamera);
