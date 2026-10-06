@@ -143,9 +143,26 @@ export function retainContainerMorphSource(source: AtlasScene, target: AtlasScen
   return retainScanDetailMorphSource(source, target, 'container');
 }
 
-/** Compatibility name for the L2→L3 specialization. */
-export function createScanContainerMorph(source: AtlasScene, target: AtlasScene, focusId: string, startZoom: number) {
-  return createScanDetailMorph(source, target, focusId, 'container', 'component', startZoom);
+/** The shortest zoom ratio a container expansion may span, so it is still an expansion and not a cut. */
+export const SCAN_CONTAINER_MORPH_MIN_SPAN = 1.2;
+
+/**
+ * The L2→L3 specialization. Its end is capped at the earliest L3→L4 arm zoom among the
+ * container's files (CLA-404): the code handoff cannot start until this expansion is
+ * complete, and a container with few, large files otherwise reaches its files' whole code
+ * window while still expanding. `codeSafeWidth` is the width the code windows are measured in.
+ */
+export function createScanContainerMorph(source: AtlasScene, target: AtlasScene, focusId: string, startZoom: number, codeSafeWidth?: number) {
+  const morph = createScanDetailMorph(source, target, focusId, 'container', 'component', startZoom);
+  if (!morph) return undefined;
+  let earliestArm = Infinity;
+  for (const entity of target.entities) {
+    if (entity.parentId !== focusId) continue;
+    const arm = scanCodeRevealWindow(semanticBounds(morph.scene, entity.id, 'component'), codeSafeWidth)?.armZoom;
+    if (arm !== undefined && arm < earliestArm) earliestArm = arm;
+  }
+  morph.fullZoom = Math.min(morph.fullZoom, Math.max(earliestArm, morph.startZoom * SCAN_CONTAINER_MORPH_MIN_SPAN));
+  return morph;
 }
 
 export type ScanContainerMorph = NonNullable<ReturnType<typeof createScanContainerMorph>>;

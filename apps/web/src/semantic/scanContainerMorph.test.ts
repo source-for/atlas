@@ -5,8 +5,10 @@ import demoView from '../../../../fixtures/architecture/demo-view.json';
 import demoStory from '../../../../fixtures/architecture/demo-story.json';
 import { compileScanFixture, SCAN_RESIDENT_NODES_PER_BAND } from '../renderer/scanFixture';
 import { applySemanticBackgroundVisibility, composeSemanticZoomCamera, semanticLensSessionProjectionOverride, validateRestoredSemanticLensPath } from './semanticLens';
+import { scanCodeRevealWindow } from './scanCodeRevealWindow';
+import { semanticBounds } from '../renderer/goldenC4Scene';
 import { semanticPanFocusPlan } from './semanticLensEngine';
-import { createScanContainerMorph, createScanDetailMorph, createScanReverseMorph, retainScanDetailMorphSource, sampleScanContainerMorph, scanContainerMorphCamera, scanContainerMorphOwnsSession, shouldStartScanContainerReverseMorph } from './scanContainerMorph';
+import { SCAN_CONTAINER_MORPH_MIN_SPAN, createScanContainerMorph, createScanDetailMorph, createScanReverseMorph, retainScanDetailMorphSource, sampleScanContainerMorph, scanContainerMorphCamera, scanContainerMorphOwnsSession, shouldStartScanContainerReverseMorph } from './scanContainerMorph';
 
 function fixture() {
   const fixture = compileScanFixture({ snapshot: structuredClone(demoSnapshot), view: structuredClone(demoView), story: structuredClone(demoStory) });
@@ -443,5 +445,45 @@ describe('retained morph source maps (CLA-401)', () => {
     expect(projection.semanticToVisualEntityId[codeSymbol.id]).toBeUndefined();
     // Retained source objects keep their mapping.
     expect(Object.keys(projection.semanticToVisualEntityId).length).toBeGreaterThanOrEqual(Object.keys(target.projection!.semanticToVisualEntityId).length);
+  });
+});
+
+describe('container expansion window (CLA-404)', () => {
+  function expansion(startZoom: number, safeWidth?: number) {
+    const scan = compileScanFixture({ snapshot: structuredClone(demoSnapshot), view: structuredClone(demoView), story: structuredClone(demoStory) });
+    const source = scan.createScene(scan.navigation.rootEntityId);
+    const target = scan.createScene('container:web-app', source);
+    const morph = createScanContainerMorph(source, target, 'container:web-app', startZoom, safeWidth)!;
+    const arms = target.entities.filter(entity => entity.parentId === 'container:web-app')
+      .map(entity => scanCodeRevealWindow(semanticBounds(morph.scene, entity.id, 'component'), safeWidth)!.armZoom);
+    return { morph, earliestArm: Math.min(...arms) };
+  }
+
+  it('ends at the earliest file arm zoom when the expansion starts well below it', () => {
+    const { morph, earliestArm } = expansion(3);
+    expect(earliestArm).toBeGreaterThan(3 * SCAN_CONTAINER_MORPH_MIN_SPAN);
+    expect(earliestArm).toBeLessThan(3 * 1.65);
+    expect(morph.fullZoom).toBeCloseTo(earliestArm, 8);
+    expect(sampleScanContainerMorph(morph, earliestArm).progress).toBe(1);
+  });
+
+  it('keeps a minimum span when the expansion starts at or past the arm zoom', () => {
+    const { earliestArm } = expansion(2);
+    const { morph } = expansion(earliestArm * 1.1);
+    expect(morph.fullZoom).toBeCloseTo(earliestArm * 1.1 * SCAN_CONTAINER_MORPH_MIN_SPAN, 8);
+    expect(morph.fullZoom).toBeLessThan(earliestArm * 1.1 * 1.65);
+  });
+
+  it('never lengthens an expansion that already ends before the arm zoom', () => {
+    const { morph, earliestArm } = expansion(1);
+    expect(morph.fullZoom).toBeLessThan(earliestArm);
+    expect(morph.fullZoom).toBeGreaterThanOrEqual(1 * 1.65);
+  });
+
+  it('measures the arm zoom in the given safe width', () => {
+    const wide = expansion(1.2);
+    const narrow = expansion(1.2, 390);
+    expect(narrow.earliestArm).toBeLessThan(wide.earliestArm);
+    expect(narrow.morph.fullZoom).toBeLessThanOrEqual(wide.morph.fullZoom);
   });
 });

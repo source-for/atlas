@@ -143,29 +143,40 @@ async function frames(clock: { now: number }) {
   await act(async () => { for (const callback of pending) callback(clock.now); }); await settle();
 }
 
-/** Pinch from the system map until the container's L2→L3 expansion owns the camera. */
-async function enterContainerExpansion() {
+/**
+ * Pinch from the system map until the container's L2→L3 expansion owns the camera.
+ * `fast` crosses the entry threshold in one sample that lands past the file's arm zoom,
+ * as a quick pinch does: the expansion then starts inside the file's code window.
+ */
+async function enterContainerExpansion(fast = true) {
   inputMode = 'pinch';
   const owner = semanticBounds(fixture.createScene('system:okie'), 'container:web-app', 'container')!;
   const compile = vi.spyOn(fixture, 'createSceneAsync');
   await mount(`/?fixture=scan&backend=canvas2d&root=system%3Aokie&detail=context&lens=system%3Aokie&cx=${owner.x + owner.width / 2}&cy=${owner.y + owner.height / 2}&z=0.6`);
   const clock = { now: 5000 };
   vi.spyOn(performance, 'now').mockImplementation(() => clock.now);
-  for (let step = 0; step < 24 && diagnostic()?.bridge?.focusId !== 'container:web-app'; step++) {
+  const entered = () => diagnostic()?.bridge?.focusId === 'container:web-app';
+  // The renderer mock reports the camera on its first frame; until then `captured` is the last test's.
+  await frames(clock);
+  expect(captured.camera.zoom).toBeCloseTo(0.6, 6);
+  for (let step = 0; step < 24 && !entered() && (!fast || captured.camera.zoom < 3); step++) {
     await zoomTo(captured.camera.zoom * 1.12); await settle(); await frames(clock);
+  }
+  if (fast) {
+    expect(entered()).toBe(false);
+    await zoomTo(reveal.armZoom * 1.01); await settle(); await frames(clock);
+    // The container scene is prepared asynchronously; no further input arrives meanwhile.
+    for (let wait = 0; wait < 8 && !entered(); wait++) { await settle(); await frames(clock); }
   }
   const bridge = diagnostic().bridge;
   expect(bridge).toMatchObject({ focusId: 'container:web-app', targetDetail: 'component' });
-  // The case under test: this container's expansion ends past its file's whole code window.
-  expect(bridge.fullZoom).toBeGreaterThan(reveal.fullZoom);
-  expect(captured.camera.zoom).toBeLessThan(reveal.armZoom);
+  if (fast) expect(bridge.startZoom).toBeGreaterThanOrEqual(reveal.armZoom);
   const fileCompiles = () => compile.mock.calls.filter(call => call[0] === 'component:web-navigation').length;
   return { clock, bridge, fileCompiles };
 }
 
 it('prepares the file code scene while its container is still expanding, without publishing it', async () => {
   const { clock, fileCompiles } = await enterContainerExpansion();
-  await zoomTo(reveal.armZoom * .98); await settle(); await frames(clock);
   expect(fileCompiles()).toBe(0);
   await zoomTo(reveal.armZoom * 1.03); await settle(); await frames(clock);
   expect(fileCompiles()).toBe(1);
@@ -222,4 +233,20 @@ it('retries a failed preparation and still reaches code', async () => {
   expect(shell().getAttribute('data-root-entity-id')).toBe('component:web-navigation');
   expect(fileCompiles()).toBe(2);
   expect(host.textContent).not.toContain('worker lost');
+});
+
+it('ends a container expansion before its file code window opens (CLA-404)', async () => {
+  const { clock, bridge } = await enterContainerExpansion(false);
+  // Uncapped, this expansion ran to startZoom × 1.65, past the file's whole code window.
+  expect(bridge.startZoom * 1.65).toBeGreaterThan(reveal.fullZoom);
+  expect(bridge.fullZoom).toBeLessThanOrEqual(reveal.startZoom);
+  expect(bridge.fullZoom).toBeGreaterThan(bridge.startZoom);
+  // So the code reveal is driven by the pinch inside its own window, not started late.
+  await zoomTo(bridge.fullZoom * 1.01); await settle(); await frames(clock);
+  await zoomTo(Math.sqrt(reveal.startZoom * reveal.fullZoom)); await settle(); await frames(clock);
+  const code = diagnostic().bridge;
+  expect(code).toMatchObject({ focusId: 'component:web-navigation', targetDetail: 'code' });
+  expect(code.progress).toBeGreaterThan(0);
+  expect(code.progress).toBeLessThan(1);
+  expect(captured.camera.zoom).toBeLessThan(reveal.fullZoom);
 });
