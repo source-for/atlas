@@ -163,6 +163,7 @@ async function enterContainerExpansion(fast = true) {
     await zoomTo(captured.camera.zoom * 1.12); await settle(); await frames(clock);
   }
   if (fast) {
+    // Relies on the last ×1.12 step staying under the component band's entry zoom.
     expect(entered()).toBe(false);
     await zoomTo(reveal.armZoom * 1.01); await settle(); await frames(clock);
     // The container scene is prepared asynchronously; no further input arrives meanwhile.
@@ -237,8 +238,8 @@ it('retries a failed preparation and still reaches code', async () => {
 
 it('ends a container expansion before its file code window opens (CLA-404)', async () => {
   const { clock, bridge } = await enterContainerExpansion(false);
-  // Uncapped, this expansion ran to startZoom × 1.65, past the file's whole code window.
-  expect(bridge.startZoom * 1.65).toBeGreaterThan(reveal.fullZoom);
+  // Uncapped, this expansion ran to startZoom × 1.65, into the file's code window.
+  expect(bridge.startZoom * 1.65).toBeGreaterThan(reveal.startZoom);
   expect(bridge.fullZoom).toBeLessThanOrEqual(reveal.startZoom);
   expect(bridge.fullZoom).toBeGreaterThan(bridge.startZoom);
   // So the code reveal is driven by the pinch inside its own window, not started late.

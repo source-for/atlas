@@ -151,6 +151,12 @@ export const SCAN_CONTAINER_MORPH_MIN_SPAN = 1.2;
  * container's files (CLA-404): the code handoff cannot start until this expansion is
  * complete, and a container with few, large files otherwise reaches its files' whole code
  * window while still expanding. `codeSafeWidth` is the width the code windows are measured in.
+ *
+ * Two floors win over the cap: the minimum span, and the component band's enter zoom (a
+ * completed expansion must not sit below the band it arrived in). When the expansion starts
+ * at or past the arm zoom the code reveal is therefore still late, only sooner. On a narrow
+ * safe width (a phone) that is the normal case: the files' whole code window lies below
+ * the zoom at which the expansion starts.
  */
 export function createScanContainerMorph(source: AtlasScene, target: AtlasScene, focusId: string, startZoom: number, codeSafeWidth?: number) {
   const morph = createScanDetailMorph(source, target, focusId, 'container', 'component', startZoom);
@@ -161,7 +167,8 @@ export function createScanContainerMorph(source: AtlasScene, target: AtlasScene,
     const arm = scanCodeRevealWindow(semanticBounds(morph.scene, entity.id, 'component'), codeSafeWidth)?.armZoom;
     if (arm !== undefined && arm < earliestArm) earliestArm = arm;
   }
-  morph.fullZoom = Math.min(morph.fullZoom, Math.max(earliestArm, morph.startZoom * SCAN_CONTAINER_MORPH_MIN_SPAN));
+  morph.fullZoom = Math.min(morph.fullZoom,
+    Math.max(earliestArm, morph.startZoom * SCAN_CONTAINER_MORPH_MIN_SPAN, C4_ZOOM_BANDS[detailOrder.indexOf('component')]!.enterZoom));
   return morph;
 }
 

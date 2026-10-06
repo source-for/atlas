@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SceneSnapshot } from '@okie/scene-compiler';
+import { C4_ZOOM_BANDS, type SceneSnapshot } from '@okie/scene-compiler';
 import demoSnapshot from '../../../../fixtures/architecture/demo-snapshot.json';
 import demoView from '../../../../fixtures/architecture/demo-view.json';
 import demoStory from '../../../../fixtures/architecture/demo-story.json';
@@ -481,9 +481,18 @@ describe('container expansion window (CLA-404)', () => {
   });
 
   it('measures the arm zoom in the given safe width', () => {
-    const wide = expansion(1.2);
-    const narrow = expansion(1.2, 390);
-    expect(narrow.earliestArm).toBeLessThan(wide.earliestArm);
-    expect(narrow.morph.fullZoom).toBeLessThanOrEqual(wide.morph.fullZoom);
+    const wide = expansion(3);
+    const narrow = expansion(3, 390);
+    expect(narrow.earliestArm).toBeLessThan(3);
+    // Narrow faces arm below the start, so the minimum span decides; wide ones end at their arm.
+    expect(narrow.morph.fullZoom).toBeCloseTo(3 * SCAN_CONTAINER_MORPH_MIN_SPAN, 8);
+    expect(wide.morph.fullZoom).toBeCloseTo(wide.earliestArm, 8);
+    expect(narrow.morph.fullZoom).toBeLessThan(wide.morph.fullZoom);
+  });
+
+  it('never ends below the component band it arrives in', () => {
+    const { morph, earliestArm } = expansion(1.2, 390);
+    expect(Math.max(earliestArm, 1.2 * SCAN_CONTAINER_MORPH_MIN_SPAN)).toBeLessThan(C4_ZOOM_BANDS[2]!.enterZoom);
+    expect(morph.fullZoom).toBe(C4_ZOOM_BANDS[2]!.enterZoom);
   });
 });
