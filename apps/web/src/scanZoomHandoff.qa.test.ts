@@ -1177,7 +1177,20 @@ describe('dormant container bridge retarget', () => {
     expect(retargets('container:web-app')).toBe(false);
     expect(retargets(undefined)).toBe(false);
     const closed = (l2Scene.projection?.entityIdsByDetail.container ?? []).filter(id => id !== 'system:okie' && !opens(id));
+    expect(closed.length).toBeGreaterThan(0);
     for (const id of closed) expect(retargets(id), id).toBe(false);
+  });
+
+  it('never releases a bridge for a card whose handoff would choose that bridge again', () => {
+    const ids: Array<string | undefined> = [...(l2Scene.projection?.entityIdsByDetail.container ?? []), undefined];
+    const focuses = ids.filter((id): id is string => Boolean(id && opens(id) === id));
+    expect(focuses.length).toBeGreaterThan(1);
+    for (const focusId of focuses) for (const underPointer of ids) {
+      if (!scanDormantBridgeRetargets(l2Scene, fixture.snapshot, viewRootId, focusId, underPointer)) continue;
+      // A released bridge is followed by the handoff for the card under the pointer.
+      expect(opens(underPointer!), `${focusId} → ${underPointer}`).toBeDefined();
+      expect(opens(underPointer!), `${focusId} → ${underPointer}`).not.toBe(focusId);
+    }
   });
 
   it('releases the bridge for another container that would itself open', () => {

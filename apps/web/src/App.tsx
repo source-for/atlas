@@ -3405,10 +3405,11 @@ export function App() {
       && getLevel(sample.camera.zoom, sourceDetailIndex) < sourceDetailIndex;
     // Preserve the dormant bridge throughout L2, including multiple wheel
     // events after the zero crossing. It is safe to release only after the
-    // camera has actually crossed to L1; a different L2 card retargets now.
+    // camera has actually crossed to L1; another L2 card that opens retargets now.
     if (dormantBridge?.progress === 0 && ((sample.direction === 'outward' && hasLeftSourceBand)
       || (sample.direction === 'inward' && dormantTarget && dormantTarget !== dormantBridge.focusId
         // A container bridge yields only to a card that would itself open (see the helper).
+        // Code bridges keep the older any-other-card rule; that path is unexamined (CLA-417).
         && (dormantBridge.sourceDetail !== 'container' || !scanFixture || scanDormantBridgeRetargets(dormantBridge.sourceScene,
           activeSnapshot, scanFixture.navigation.rootEntityId, dormantBridge.focusId, dormantTarget))))) {
       scanContainerMorphRef.current = undefined;

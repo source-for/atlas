@@ -826,10 +826,11 @@ export function scanZoomEntityUnderPointer(
 
 /**
  * Whether an inward sample over a dormant L2→L3 bridge should release it for another
- * container. Only a card that would itself open may do that: the handoff falls back
- * to its preferred container when the pointer is over the system shell or a card
- * with nothing inside, so releasing the bridge there re-requests the same container
- * on every sample and the expansion never starts.
+ * container. Only a card that would itself open may do that. Over the system shell
+ * or a card with nothing inside, the handoff falls back to the inspector selection
+ * (or the entering lens target); releasing the bridge there re-requests that
+ * container on every sample and the expansion never starts. The bridge's own
+ * container therefore also wins over a different selected one in that case.
  */
 export function scanDormantBridgeRetargets(
   sourceScene: AtlasScene,
