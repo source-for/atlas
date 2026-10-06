@@ -54,6 +54,24 @@ export function retainScanDetailMorphSource(
   }
   const entityIds = new Set(target.entities.map(entity => entity.id));
   const retainedEntityIds = new Set([...retainedDetails].flatMap(detail => from.entityIdsByDetail[detail]));
+  const paths = [
+    ...newProtocol.paths.filter(path => !retainedPathIds.has(path.id)),
+    ...oldProtocol.paths.filter(path => retainedPathIds.has(path.id)),
+  ];
+  // The source's maps name every object it held, including finer-band ones this scene
+  // drops. A selection left on one of those must not resolve to an object the renderer
+  // was never given: the engine rejects the whole visibility filter (CLA-401).
+  const finalObjectIds = new Set(objects.map(object => object.id));
+  const finalPathIds = new Set(paths.map(path => path.id));
+  const sourceEntityVisuals = Object.fromEntries(Object.entries(from.semanticToVisualEntityId)
+    .filter(([, visualId]) => finalObjectIds.has(visualId)));
+  const sourceVisualEntities = Object.fromEntries(Object.entries(from.visualToSemanticEntityId)
+    .filter(([visualId]) => finalObjectIds.has(visualId)));
+  const sourceRelationVisuals = Object.fromEntries(Object.entries(from.semanticToVisualRelationIds)
+    .map(([id, visualIds]) => [id, visualIds.filter(visualId => finalPathIds.has(visualId))] as const)
+    .filter(([, visualIds]) => visualIds.length > 0));
+  const sourceVisualRelations = Object.fromEntries(Object.entries(from.visualToSemanticRelationIds)
+    .filter(([visualId]) => finalPathIds.has(visualId)));
   const world = [oldProtocol.worldBounds, newProtocol.worldBounds];
   const x = Math.min(...world.map(rect => rect.x));
   const y = Math.min(...world.map(rect => rect.y));
@@ -65,17 +83,14 @@ export function retainScanDetailMorphSource(
       ...newProtocol,
       worldBounds: { x, y, width: Math.max(...world.map(rect => rect.x + rect.width)) - x, height: Math.max(...world.map(rect => rect.y + rect.height)) - y },
       objects,
-      paths: [
-        ...newProtocol.paths.filter(path => !retainedPathIds.has(path.id)),
-        ...oldProtocol.paths.filter(path => retainedPathIds.has(path.id)),
-      ],
+      paths,
     } satisfies SceneSnapshot,
     projection: {
       ...to,
-      semanticToVisualEntityId: { ...from.semanticToVisualEntityId, ...to.semanticToVisualEntityId },
-      visualToSemanticEntityId: { ...from.visualToSemanticEntityId, ...to.visualToSemanticEntityId },
-      semanticToVisualRelationIds: { ...from.semanticToVisualRelationIds, ...to.semanticToVisualRelationIds },
-      visualToSemanticRelationIds: { ...from.visualToSemanticRelationIds, ...to.visualToSemanticRelationIds },
+      semanticToVisualEntityId: { ...sourceEntityVisuals, ...to.semanticToVisualEntityId },
+      visualToSemanticEntityId: { ...sourceVisualEntities, ...to.visualToSemanticEntityId },
+      semanticToVisualRelationIds: { ...sourceRelationVisuals, ...to.semanticToVisualRelationIds },
+      visualToSemanticRelationIds: { ...sourceVisualRelations, ...to.visualToSemanticRelationIds },
       boundsByEntityIdAndDetail: bounds,
       entityIdsByDetail: { ...to.entityIdsByDetail, ...Object.fromEntries([...retainedDetails].map(detail => [detail, from.entityIdsByDetail[detail]])) },
       relationIdsByDetail: { ...to.relationIdsByDetail, ...Object.fromEntries([...retainedDetails].map(detail => [detail, from.relationIdsByDetail[detail]])) },

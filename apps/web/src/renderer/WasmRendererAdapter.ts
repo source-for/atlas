@@ -21,6 +21,11 @@ function initializeWasm() {
   return initialization;
 }
 
+function protocolIds(items: unknown): ReadonlySet<string> | undefined {
+  if (!Array.isArray(items)) return undefined;
+  return new Set(items.flatMap(item => typeof (item as { id?: unknown })?.id === 'string' ? [(item as { id: string }).id] : []));
+}
+
 function validPick(value: unknown): PickResult | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const candidate = value as { kind?: unknown; id?: unknown };
@@ -39,6 +44,10 @@ export class WasmRendererAdapter implements AtlasRenderer {
   private timelinePlaying = false;
   private projectionOverrideKey = '';
   private projectionOverrideProgress = -1;
+  /** Ids the native scene holds. Undefined when the protocol scene does not list them. */
+  private nativeObjectIds: ReadonlySet<string> | undefined;
+  private nativePathIds: ReadonlySet<string> | undefined;
+  private nativeRevision: number | undefined;
 
   private constructor(private readonly native: ExtendedNativeRenderer, private readonly requestedBackend: string) {}
 
@@ -53,12 +62,18 @@ export class WasmRendererAdapter implements AtlasRenderer {
   setScene(scene: AtlasScene) {
     if (scene === this.scene) return;
     const protocolScene = measureAtlasPhase('renderer-protocol', () => toProtocolScene(scene)) as { sceneId?: unknown };
-    if (this.scene && scene.protocolPatch) {
+    // A patch is a diff against the scene its compile was given, which is not always the
+    // scene the engine holds by the time it is published (CLA-401).
+    if (this.scene && scene.protocolPatch && this.patchApplies(scene.protocolPatch, protocolScene)) {
       measureAtlasPhase('renderer-native-patch', () => this.native.applyPatch(scene.protocolPatch));
     } else {
       measureAtlasPhase('renderer-native-scene', () => this.native.setScene(protocolScene));
     }
     this.protocolSceneId = typeof protocolScene.sceneId === 'string' ? protocolScene.sceneId : `scene:${scene.id}`;
+    const revision = (protocolScene as { revision?: unknown }).revision;
+    this.nativeRevision = typeof revision === 'number' ? revision : undefined;
+    this.nativeObjectIds = protocolIds((protocolScene as { objects?: unknown }).objects);
+    this.nativePathIds = protocolIds((protocolScene as { paths?: unknown }).paths);
     this.scene = scene;
     this.camera = undefined;
     this.renderStateKey = '';
@@ -202,6 +217,8 @@ export class WasmRendererAdapter implements AtlasRenderer {
   render(timeMs: number) { this.native.render(timeMs); }
 
   pick(screenX: number, screenY: number) {
+    // A pointer event can reach a recovered renderer before its first scene does.
+    if (!this.scene) return undefined;
     const picked = validPick(this.native.pick(screenX, screenY));
     if (!picked || !this.scene?.projection) return picked;
     if (picked.kind === 'entity') {
@@ -213,6 +230,8 @@ export class WasmRendererAdapter implements AtlasRenderer {
   }
 
   visibleScene(): VisibleSceneState {
+    // The engine has nothing to report, and throws, before its first scene.
+    if (!this.scene) return { objectIds: [], relationIds: [] };
     const value = this.native.visibleScene() as { objects?: Array<{ id?: unknown }>; paths?: Array<{ id?: unknown }> };
     const objectIds = (value.objects ?? []).flatMap(object => typeof object.id === 'string' ? [object.id] : []);
     const relationIds = (value.paths ?? []).flatMap(path => typeof path.id === 'string' ? [path.id] : []);
@@ -225,6 +244,7 @@ export class WasmRendererAdapter implements AtlasRenderer {
   }
 
   lodState(): RendererLodState | undefined {
+    if (!this.scene) return undefined;
     const value = this.native.lodState() as {
       objectId?: unknown;
       currentRepresentationId?: unknown;
@@ -264,17 +284,43 @@ export class WasmRendererAdapter implements AtlasRenderer {
     this.timelinePlaying = false;
   }
 
+  /**
+   * True when `patch` turns the scene the engine holds into `target`. Checked on revision
+   * and on the resulting id sets; anything unknown is left for the engine to judge.
+   */
+  private patchApplies(patch: unknown, target: unknown): boolean {
+    const { baseRevision, upsertObjects, removeObjectIds, upsertPaths, removePathIds } = (patch ?? {}) as Record<string, unknown>;
+    if (this.nativeRevision !== undefined && typeof baseRevision === 'number' && baseRevision !== this.nativeRevision) return false;
+    const reaches = (held: ReadonlySet<string> | undefined, upserts: unknown, removals: unknown, wanted: ReadonlySet<string> | undefined) => {
+      if (!held || !wanted) return true;
+      const next = new Set(held);
+      if (Array.isArray(removals)) for (const id of removals) next.delete(id as string);
+      for (const id of protocolIds(upserts) ?? []) next.add(id);
+      if (next.size !== wanted.size) return false;
+      for (const id of wanted) if (!next.has(id)) return false;
+      return true;
+    };
+    return reaches(this.nativeObjectIds, upsertObjects, removeObjectIds, protocolIds((target as { objects?: unknown }).objects))
+      && reaches(this.nativePathIds, upsertPaths, removePathIds, protocolIds((target as { paths?: unknown }).paths));
+  }
+
+  // The engine rejects a filter or timeline that names an id it does not hold, and the
+  // App treats that as a lost GPU surface (CLA-401). A focus or selection that outlives
+  // its object is ordinary, so such ids are dropped here.
   private visualObjectIds(ids: Iterable<string>): string[] {
     const projection = this.scene?.projection;
+    const held = this.nativeObjectIds;
     return [...new Set([...ids].flatMap(id => {
       if (!projection) return [id];
       const visualId = projection.semanticToVisualEntityId[id];
       return visualId ? [visualId] : [];
-    }))].sort();
+    }))].filter(id => !held || held.has(id)).sort();
   }
 
   private visualPathIds(ids: Iterable<string>): string[] {
     const projection = this.scene?.projection;
-    return [...new Set([...ids].flatMap(id => projection?.semanticToVisualRelationIds[id] ?? [id]))].sort();
+    const held = this.nativePathIds;
+    return [...new Set([...ids].flatMap(id => projection?.semanticToVisualRelationIds[id] ?? [id]))]
+      .filter(id => !held || held.has(id)).sort();
   }
 }

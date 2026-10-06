@@ -6,7 +6,7 @@ import demoStory from '../../../../fixtures/architecture/demo-story.json';
 import { compileScanFixture, SCAN_RESIDENT_NODES_PER_BAND } from '../renderer/scanFixture';
 import { applySemanticBackgroundVisibility, composeSemanticZoomCamera, semanticLensSessionProjectionOverride, validateRestoredSemanticLensPath } from './semanticLens';
 import { semanticPanFocusPlan } from './semanticLensEngine';
-import { createScanContainerMorph, createScanDetailMorph, createScanReverseMorph, sampleScanContainerMorph, scanContainerMorphCamera, scanContainerMorphOwnsSession, shouldStartScanContainerReverseMorph } from './scanContainerMorph';
+import { createScanContainerMorph, createScanDetailMorph, createScanReverseMorph, retainScanDetailMorphSource, sampleScanContainerMorph, scanContainerMorphCamera, scanContainerMorphOwnsSession, shouldStartScanContainerReverseMorph } from './scanContainerMorph';
 
 function fixture() {
   const fixture = compileScanFixture({ snapshot: structuredClone(demoSnapshot), view: structuredClone(demoView), story: structuredClone(demoStory) });
@@ -405,5 +405,43 @@ describe('scan container expansion', () => {
     expect(scanContainerMorphOwnsSession(morph, {
       ...morph.targetSession, settled: [...morph.targetSession.settled, deeper],
     })).toBe(false);
+  });
+});
+
+describe('retained morph source maps (CLA-401)', () => {
+  it.each(['context', 'container', 'component'] as const)('maps only ids the merged scene holds when a code scene is left at %s', sourceDetail => {
+    const scan = compileScanFixture({ snapshot: structuredClone(demoSnapshot), view: structuredClone(demoView), story: structuredClone(demoStory) });
+    const code = scan.createScene('component:web-navigation');
+    const full = scan.createScene(scan.navigation.rootEntityId);
+    const codeSymbol = demoSnapshot.entities.find(entity => entity.kind === 'code' && entity.parentId === 'component:web-navigation')!;
+    // The case from production: a code symbol stays selected while the reader zooms out.
+    const codeVisualId = code.projection!.semanticToVisualEntityId[codeSymbol.id]!;
+    expect(codeVisualId).toBeDefined();
+    // A large atlas compiles a bounded neighborhood: the coarser scene does not hold the
+    // code objects at all. The demo fixture is small enough to keep them, so remove them.
+    const codeVisualIds = new Set(demoSnapshot.entities.filter(entity => entity.kind === 'code')
+      .map(entity => full.projection!.semanticToVisualEntityId[entity.id]).filter((id): id is string => Boolean(id)));
+    const fullProtocol = full.protocolSnapshot as SceneSnapshot;
+    const target = {
+      ...full,
+      protocolSnapshot: { ...fullProtocol, objects: fullProtocol.objects.filter(object => !codeVisualIds.has(object.id)) },
+      projection: {
+        ...full.projection!,
+        semanticToVisualEntityId: Object.fromEntries(Object.entries(full.projection!.semanticToVisualEntityId).filter(([, id]) => !codeVisualIds.has(id))),
+        visualToSemanticEntityId: Object.fromEntries(Object.entries(full.projection!.visualToSemanticEntityId).filter(([id]) => !codeVisualIds.has(id))),
+      },
+    };
+    const merged = retainScanDetailMorphSource(code, target, sourceDetail);
+    const protocol = merged.protocolSnapshot as SceneSnapshot;
+    const objectIds = new Set(protocol.objects.map(object => object.id));
+    const pathIds = new Set(protocol.paths.map(path => path.id));
+    const projection = merged.projection!;
+    expect(Object.values(projection.semanticToVisualEntityId).filter(id => !objectIds.has(id))).toEqual([]);
+    expect(Object.keys(projection.visualToSemanticEntityId).filter(id => !objectIds.has(id))).toEqual([]);
+    expect(Object.values(projection.semanticToVisualRelationIds).flat().filter(id => !pathIds.has(id))).toEqual([]);
+    expect(Object.keys(projection.visualToSemanticRelationIds).filter(id => !pathIds.has(id))).toEqual([]);
+    expect(projection.semanticToVisualEntityId[codeSymbol.id]).toBeUndefined();
+    // Retained source objects keep their mapping.
+    expect(Object.keys(projection.semanticToVisualEntityId).length).toBeGreaterThanOrEqual(Object.keys(target.projection!.semanticToVisualEntityId).length);
   });
 });
