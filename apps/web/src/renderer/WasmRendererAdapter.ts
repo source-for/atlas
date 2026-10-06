@@ -84,6 +84,9 @@ export class WasmRendererAdapter implements AtlasRenderer {
   }
 
   setCamera(camera: Camera) {
+    // The engine refuses a camera before its first scene; setScene clears the cached one,
+    // so the next frame sends it.
+    if (!this.scene) return;
     if (this.camera && this.camera.x === camera.x && this.camera.y === camera.y && this.camera.zoom === camera.zoom) return;
     this.native.setCamera(camera.x, camera.y, camera.zoom);
     this.camera = { ...camera };
@@ -289,7 +292,8 @@ export class WasmRendererAdapter implements AtlasRenderer {
    * and on the resulting id sets; anything unknown is left for the engine to judge.
    */
   private patchApplies(patch: unknown, target: unknown): boolean {
-    const { baseRevision, upsertObjects, removeObjectIds, upsertPaths, removePathIds } = (patch ?? {}) as Record<string, unknown>;
+    const { sceneId, baseRevision, upsertObjects, removeObjectIds, upsertPaths, removePathIds } = (patch ?? {}) as Record<string, unknown>;
+    if (typeof sceneId === 'string' && sceneId !== this.protocolSceneId) return false;
     if (this.nativeRevision !== undefined && typeof baseRevision === 'number' && baseRevision !== this.nativeRevision) return false;
     const reaches = (held: ReadonlySet<string> | undefined, upserts: unknown, removals: unknown, wanted: ReadonlySet<string> | undefined) => {
       if (!held || !wanted) return true;

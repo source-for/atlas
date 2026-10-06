@@ -4,7 +4,7 @@ import type { AtlasScene, RenderState } from './types';
 const native = vi.hoisted(() => ({
   setScene: vi.fn(), applyPatch: vi.fn(), setVisibility: vi.fn(), setReducedMotion: vi.fn(), setProjectionOverride: vi.fn(),
   setTimeline: vi.fn(), clearTimeline: vi.fn(), setTimelinePlaying: vi.fn(), setTimelinePosition: vi.fn(), pick: vi.fn(),
-  visibleScene: vi.fn(), lodState: vi.fn(), pauseTimeline: vi.fn(), playTimeline: vi.fn(),
+  visibleScene: vi.fn(), lodState: vi.fn(), setCamera: vi.fn(), pauseTimeline: vi.fn(), playTimeline: vi.fn(),
 }));
 vi.mock('../../../../crates/atlas-wasm/pkg/atlas_wasm.js', () => ({ default: vi.fn(async () => undefined), createAtlasRenderer: vi.fn(async () => native) }));
 afterEach(() => { vi.clearAllMocks(); });
@@ -44,12 +44,20 @@ it('answers queries before the first scene without calling the engine', async ()
   const adapter = await WasmRendererAdapter.create({} as HTMLCanvasElement, 'webgl2');
   const refuse = () => { throw new Error('setScene must be called first'); };
   native.pick.mockImplementation(refuse); native.visibleScene.mockImplementation(refuse); native.lodState.mockImplementation(refuse);
+  native.setCamera.mockImplementation(refuse);
+  expect(() => adapter.setCamera({ x: 1, y: 2, zoom: 3 })).not.toThrow();
+  expect(native.setCamera).not.toHaveBeenCalled();
   expect(adapter.pick(10, 10)).toBeUndefined();
   expect(adapter.visibleScene()).toEqual({ objectIds: [], relationIds: [] });
   expect(adapter.lodState()).toBeUndefined();
   expect(native.pick).not.toHaveBeenCalled();
   expect(native.visibleScene).not.toHaveBeenCalled();
   expect(native.lodState).not.toHaveBeenCalled();
+  // The camera refused before the scene is sent once there is one.
+  native.setCamera.mockReset();
+  adapter.setScene(scene(['a'], []));
+  adapter.setCamera({ x: 1, y: 2, zoom: 3 });
+  expect(native.setCamera).toHaveBeenCalledExactlyOnceWith(1, 2, 3);
 });
 
 it('applies a patch only when it starts from the scene the engine holds', async () => {
@@ -70,4 +78,16 @@ it('applies a patch only when it starts from the scene the engine holds', async 
   adapter.setScene(scene(['a', 'b', 'e'], ['q'], 4, patch));
   expect(native.applyPatch).toHaveBeenCalledExactlyOnceWith(patch);
   expect(native.setScene).toHaveBeenCalledTimes(3);
+  // The held ids and revision follow an applied patch: the next one is judged against them.
+  const next = { baseRevision: 4, revision: 5, upsertObjects: [{ id: 'f' }], removeObjectIds: ['e'], upsertPaths: [], removePathIds: [] };
+  adapter.setScene(scene(['a', 'b', 'f'], ['q'], 5, next));
+  expect(native.applyPatch).toHaveBeenCalledTimes(2);
+  // The target lists path 'p', which left with the first accepted patch and is not upserted.
+  adapter.setScene(scene(['a', 'b', 'f', 'g'], ['p'], 6, { baseRevision: 5, revision: 6, upsertObjects: [{ id: 'g' }], removeObjectIds: [], upsertPaths: [], removePathIds: [] }));
+  expect(native.applyPatch).toHaveBeenCalledTimes(2);
+  expect(native.setScene).toHaveBeenCalledTimes(4);
+  // A patch for another protocol scene never applies, whatever its revision.
+  adapter.setScene(scene(['a', 'b', 'f', 'g', 'h'], ['p'], 7, { sceneId: 'other', baseRevision: 6, revision: 7, upsertObjects: [{ id: 'h' }], removeObjectIds: [] }));
+  expect(native.applyPatch).toHaveBeenCalledTimes(2);
+  expect(native.setScene).toHaveBeenCalledTimes(5);
 });
