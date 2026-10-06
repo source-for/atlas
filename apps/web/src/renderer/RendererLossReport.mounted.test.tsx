@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Camera } from './types';
 
-const control = vi.hoisted(() => ({ failSetCamera: undefined as Error | undefined, recovered: 0 }));
+const control = vi.hoisted(() => ({ failSetCamera: undefined as unknown, recovered: 0, failRecovery: undefined as Error | undefined }));
 vi.mock('./createRenderer', () => {
   const session = (host: HTMLElement, kind: string, message: string, setCamera: (camera: Camera) => void) => {
     const canvas = document.createElement('canvas'); host.replaceChildren(canvas);
@@ -12,7 +12,7 @@ vi.mock('./createRenderer', () => {
   };
   return {
     createRenderer: async (host: HTMLElement) => session(host, 'webgpu', '', () => { if (control.failSetCamera) throw control.failSetCamera; }),
-    recoverRenderer: async (host: HTMLElement) => { control.recovered += 1; return session(host, 'canvas2d-preview', 'GPU surface lost (unreachable); WebGL2 recovery failed (module poisoned).', () => {}); },
+    recoverRenderer: async (host: HTMLElement) => { control.recovered += 1; if (control.failRecovery) throw control.failRecovery; return session(host, 'canvas2d-preview', 'GPU surface lost (unreachable); WebGL2 recovery failed (module poisoned).', () => {}); },
   };
 });
 let root: Root;
@@ -25,7 +25,7 @@ function wheel(init: WheelEventInit) {
   return event;
 }
 beforeEach(async () => {
-  control.failSetCamera = undefined; control.recovered = 0;
+  control.failSetCamera = undefined; control.recovered = 0; control.failRecovery = undefined;
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
   localStorage.clear(); vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ mode: 'public', ask: false, connected: false }), { headers: { 'content-type': 'application/json' } })));
@@ -44,15 +44,45 @@ beforeEach(async () => {
 });
 afterEach(async () => { await act(async () => root?.unmount()); host?.remove(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+async function loseRenderer(thrown: unknown) {
+  control.failSetCamera = thrown;
+  const canvas = host.querySelector('[data-testid="atlas-canvas"] canvas')!;
+  await act(async () => canvas.dispatchEvent(wheel({ ctrlKey: true, deltaMode: 0, deltaY: -20, clientX: 720, clientY: 450 })));
+  await settle(); await settle();
+}
+
 it('reports why the renderer was lost and what replaced it (CLA-401)', async () => {
   const error = vi.spyOn(console, 'error').mockImplementation(() => {});
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const failure = new Error('unreachable');
-  control.failSetCamera = failure;
-  const canvas = host.querySelector('[data-testid="atlas-canvas"] canvas')!;
-  await act(async () => canvas.dispatchEvent(wheel({ ctrlKey: true, deltaMode: 0, deltaY: -20, clientX: 720, clientY: 450 })));
-  await settle(); await settle();
+  await loseRenderer(failure);
   expect(control.recovered).toBe(1);
   expect(error).toHaveBeenCalledWith('[atlas] webgpu renderer lost: unreachable', failure);
   expect(warn).toHaveBeenCalledWith('[atlas] renderer recovered on canvas2d-preview: GPU surface lost (unreachable); WebGL2 recovery failed (module poisoned).');
+});
+
+it('still recovers when the thrown error has a non-string message and stack', async () => {
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const odd = new Error('placeholder');
+  Object.defineProperty(odd, 'message', { value: { code: 7 } });
+  Object.defineProperty(odd, 'stack', { value: 42 });
+  await loseRenderer(odd);
+  expect(control.recovered).toBe(1);
+});
+
+it('prints a string reason once', async () => {
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  await loseRenderer('WebGL context lost.');
+  expect(control.recovered).toBe(1);
+  expect(error).toHaveBeenCalledWith('[atlas] webgpu renderer lost: WebGL context lost.');
+});
+
+it('reports a failed recovery', async () => {
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const failure = new Error('no canvas');
+  control.failRecovery = failure;
+  await loseRenderer(new Error('unreachable'));
+  expect(error).toHaveBeenCalledWith('[atlas] renderer recovery failed: no canvas', failure);
 });

@@ -48,7 +48,9 @@ export type ZoomMotionFrame = {
 
 /**
  * A renderer loss or its recovery (CLA-401): without it a trace shows the
- * backend change between two frames but not why it happened.
+ * backend change between two frames but not why it happened. The reason and
+ * stack are the thrown error's own text, so they can quote scene content and
+ * bundle URLs; the trace is a local download the user starts in dev mode.
  */
 export type ZoomMotionRendererEvent = {
   timeMs: number;
@@ -94,6 +96,8 @@ export type ZoomMotionTraceOptions = { maxSamples?: number };
 const DEFAULT_MAX_SAMPLES = 10_000;
 const MAX_REASON_LENGTH = 2_000;
 const MAX_STACK_LENGTH = 4_000;
+/** Renderer events are rare and are the point of the trace, so a full frame budget must not drop them. */
+const MAX_RENDERER_EVENTS = 32;
 
 function boundedSampleLimit(value: number | undefined): number {
   if (!Number.isFinite(value)) return DEFAULT_MAX_SAMPLES;
@@ -127,14 +131,19 @@ export function createZoomMotionTrace(options: ZoomMotionTraceOptions = {}): Zoo
   let truncated = false;
   let droppedSamples = 0;
   let nextSequence = 0;
+  let rendererEvents = 0;
 
   const append = (sample: UnsequencedZoomMotionTraceSample) => {
     if (!header) return;
-    if (samples.length >= maxSamples) {
+    const overBudget = sample.kind === 'renderer'
+      ? rendererEvents >= MAX_RENDERER_EVENTS
+      : samples.length - rendererEvents >= maxSamples;
+    if (overBudget) {
       truncated = true;
       droppedSamples += 1;
       return;
     }
+    if (sample.kind === 'renderer') rendererEvents += 1;
     samples.push({ ...sample, sequence: nextSequence++ } as ZoomMotionTraceSample);
   };
 
@@ -151,6 +160,7 @@ export function createZoomMotionTrace(options: ZoomMotionTraceOptions = {}): Zoo
       truncated = false;
       droppedSamples = 0;
       nextSequence = 0;
+      rendererEvents = 0;
     },
     stop() {
       if (!header) return undefined;
@@ -195,13 +205,15 @@ export function createZoomMotionTrace(options: ZoomMotionTraceOptions = {}): Zoo
       });
     },
     recordRendererEvent(event) {
+      if (!header) return;
+      // A thrown value's message and stack are not guaranteed to be strings.
       append({
         kind: 'renderer',
         timeMs: event.timeMs,
         phase: event.phase,
-        backend: event.backend,
-        reason: event.reason.slice(0, MAX_REASON_LENGTH),
-        ...(event.stack === undefined ? {} : { stack: event.stack.slice(0, MAX_STACK_LENGTH) }),
+        backend: String(event.backend),
+        reason: String(event.reason).slice(0, MAX_REASON_LENGTH),
+        ...(event.stack === undefined ? {} : { stack: String(event.stack).slice(0, MAX_STACK_LENGTH) }),
       });
     },
     recordFrame(frame) {
