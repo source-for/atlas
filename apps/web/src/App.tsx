@@ -77,7 +77,7 @@ import {
 import { createGoldenC4Scene, goldenAppStory, scanDeeperBandHasPeerCards, scanDrillDeeperDetail, scanWindowedCompileDropsPeerGraph, scanZoomCompileHandoff, scanZoomEntityUnderPointer, scanZoomHandoffPreferredId, semanticBounds, type AppStoryPlan, type AppStoryPlanStep } from './renderer/goldenC4Scene';
 import { completeForegroundSceneRequest, createForegroundSceneRequestOwner, isSceneRequestAbort, createSceneGenerationFence, preparedSceneEntity, createPreparedSceneGenerations, createForegroundRequestStatus, prepareForegroundWithRetry, beginForegroundPlaybackPreparation, beginForegroundCameraIntent, storyArrivalCanPublish, beginMapInteraction } from './renderer/foregroundSceneRequest';
 import { createSceneRequestOwner, ownsNeighborhoodSceneCache, ownsScenePublication, readNeighborhoodScene, retainNeighborhoodScene } from './renderer/sceneRequestOwner';
-import { cacheableNeighborhoodScene, scanCompileFocusForBand, scanEntityHasChildren, scanNextBand, scanPrefetchFocusIds } from './renderer/lazyBandCompile';
+import { cacheableNeighborhoodScene, scanCompileFocusForBand, scanEntityHasChildren, scanEntityIsInSubtree, scanNextBand, scanPrefetchFocusIds } from './renderer/lazyBandCompile';
 import { getActiveScanFixture, scanKeepsResidentL3Landmarks } from './renderer/fixtureBundle';
 import { createRenderer, recoverRenderer, type RendererSession } from './renderer/createRenderer';
 import { createCameraPublisher, createCameraPublicationEchoGuard, panCamera, shouldAdoptExternalCameraAsRaw, zoomCameraAt, zoomCameraByFactor, type CameraPublisher, type CameraPublicationEchoGuard } from './renderer/cameraController';
@@ -1700,6 +1700,8 @@ export function App() {
   const zoomHandoffGenerationRef = useRef(0);
   const zoomHandoffInflightRef = useRef<{ detail: SemanticDetail; compileFocus: string } | undefined>(undefined);
   const scanZoomPointerRef = useRef<LensPoint | undefined>(undefined);
+  const restoredDescentCheckRef = useRef(false);
+  const scanCodePrewarmRef = useRef<{ focus: string; safeWidth: number; controller: AbortController; promise: Promise<void> } | undefined>(undefined);
   const scanZoomAdoptRawRef = useRef<Camera | undefined>(undefined);
   const semanticAssistCancelRef = useRef<(() => void) | undefined>(undefined);
   const [detailsOpen, setDetailsOpen] = useState(() => initialInspectorOpen());
@@ -2856,6 +2858,7 @@ export function App() {
       onCommit(commit) {
         if (query.fixture === 'stress' && stressNavigationSourceRef.current.entities[0]?.id === 'stress-loading'
           && (commit.source === 'push' || commit.source === 'replace' || commit.source === 'popstate')) stressBootNavigationSupersededRef.current = true;
+        if (commit.source === 'initialize') restoredDescentCheckRef.current = true;
         setSettledNavigation(commit.state);
         setCameraSettledEpoch(commit.settledEpoch);
       },
@@ -2867,6 +2870,34 @@ export function App() {
       if (historyControllerRef.current === controller) historyControllerRef.current = undefined;
     };
   }, [goldenScene, initialCameraExplicit, navigationUrlOptions, query.fixture]);
+
+  // A loaded URL can already sit past a file's L3→L4 window with the container
+  // still as root (CLA-402). Zoom input is otherwise the only thing that asks for
+  // the descent, so the card would stay a screen-filling L3 face until the next
+  // wheel tick. Ask once, for the file under the map centre, and only when its reveal
+  // would already show: below that, preparation stays with zoom input.
+  useEffect(() => () => {
+    scanCodePrewarmRef.current?.controller.abort();
+    scanCodePrewarmRef.current = undefined;
+  }, []);
+
+  useEffect(() => {
+    if (!restoredDescentCheckRef.current || restoringNavigationRef.current) return;
+    // An unsized frame measures a 1px safe width, which would put every file past its window.
+    if (!isUsableAtlasViewport(viewport)) return;
+    restoredDescentCheckRef.current = false;
+    if (!scanFixture || importedAtlasRef.current || storyStep >= 0
+      || semanticLensSessionDetail(semanticLensSessionRef.current) !== 'component') return;
+    const centre = mapCentrePointer();
+    const fileId = scanFileUnderPointer(renderedCameraRef.current, centre);
+    const codeWindow = fileId ? scanCodeRevealWindow(semanticBounds(sceneRef.current, fileId, 'component'), currentScanCodeSafeWidth()) : undefined;
+    if (!codeWindow || renderedCameraRef.current.zoom < codeWindow.startZoom) return;
+    scanZoomPointerRef.current = centre;
+    maybeScanZoomHandoff(renderedCameraRef.current, next => {
+      renderedCameraRef.current = next;
+      updateCamera(next);
+    }, scanZoomPointerRef.current);
+  }, [cameraSettledEpoch, viewport.width, viewport.height]);
 
   useEffect(() => {
     if (restoringNavigationRef.current) return;
@@ -3405,6 +3436,7 @@ export function App() {
       // A completed expansion can continue into L4. Until then the same retained
       // L2/L3 representations own both zoom directions, including wheel settle.
       if (frame.progress < 1 || containerMorph.progress < 1 || sample.direction !== 'inward') {
+        if (sample.direction === 'inward') prewarmScanCodeDuringContainerEntry(sample.camera, sample.pointer);
         const next = scanContainerMorphCamera(containerMorph, frame.progress, sample.camera,
           sample.direction === 'none' ? sample.renderedCamera : undefined);
         const previousProgress = containerMorph.progress;
@@ -3599,6 +3631,27 @@ export function App() {
       settleCamera(settled);
       semanticControlTimerRef.current = undefined;
     }, 100);
+  }
+
+  /**
+   * The file of the opened container, with code to show, painted under `pointer`.
+   * A peer container's shell is also painted at L3 and is not one.
+   */
+  function scanFileUnderPointer(camera: Camera, pointer: LensPoint): string | undefined {
+    const liveScene = sceneRef.current;
+    const fileId = scanZoomEntityUnderPointer(liveScene, camera, viewport, pointer, 'component');
+    const ownerId = liveScene.rootEntityId;
+    return fileId && ownerId && fileId !== ownerId && scanEntityIsInSubtree(activeSnapshot, fileId, ownerId)
+      && scanEntityHasChildren(activeSnapshot, fileId) ? fileId : undefined;
+  }
+
+  /** The middle of the unobscured map: what a loaded URL is looking at. */
+  function mapCentrePointer(): LensPoint {
+    const safeArea = measureCurrentMapSafeArea(false);
+    return {
+      x: safeArea.left + (viewport.width - safeArea.left - safeArea.right) / 2,
+      y: safeArea.top + (viewport.height - safeArea.top - safeArea.bottom) / 2,
+    };
   }
 
   function settleCamera(next: Camera) {
@@ -4437,7 +4490,14 @@ export function App() {
       { fixture: scanFixture, scene: sceneRef.current, session: semanticLensSessionRef.current, selection: inspectorSelectionRef.current },
     );
     zoomHandoffInflightRef.current = handoff;
+    // An early preparation of this same file is the work this handoff needs; wait for
+    // it instead of superseding it in the worker. Any other one only delays this request.
+    const warm = scanCodePrewarmRef.current;
+    const warmMatches = Boolean(warm && handoff.detail === 'code' && warm.focus === handoff.compileFocus && warm.safeWidth === codeSafeWidth);
+    if (warm && !warmMatches) { warm.controller.abort(); scanCodePrewarmRef.current = undefined; }
     void fixture.ensureNeighborhood(handoff.compileFocus, request.signal).then(async () => {
+      if (!owns()) return;
+      if (warmMatches) await warm!.promise;
       if (!owns()) return;
       const prepared = await composeScanSceneAsync(handoff.compileFocus, sourceScene, request.signal, undefined, undefined, undefined, handoff.detail === 'code' ? codeSafeWidth : undefined);
       if (!owns()) return;
@@ -4467,6 +4527,41 @@ export function App() {
       if (token === zoomHandoffGenerationRef.current) zoomHandoffInflightRef.current = undefined;
     });
     return true;
+  }
+
+  /**
+   * Start preparing a file's code scene while its container is still expanding (CLA-402).
+   * A container with few files paints faces so large that their L3→L4 window opens
+   * before the L2→L3 expansion completes, and the code handoff cannot start until it
+   * does. Preparing here lets that handoff find the scene already cached. Nothing is
+   * published: the handoff still owns the reveal.
+   */
+  function prewarmScanCodeDuringContainerEntry(camera: Camera, pointer: LensPoint | undefined) {
+    const fixture = scanFixture;
+    if (!fixture || !pointer || foregroundSceneRequestRef.current.pending() || zoomHandoffInflightRef.current) return;
+    const liveScene = sceneRef.current;
+    const viewRootId = fixture.navigation.rootEntityId;
+    const compileFocus = liveScene.rootEntityId ?? viewRootId;
+    const fileId = scanZoomHandoffPreferredId(liveScene, activeSnapshot, viewRootId, 'code', compileFocus, camera, viewport, pointer, 'component', '');
+    const handoff = fileId ? scanZoomCompileHandoff(liveScene, activeSnapshot, fileId, viewRootId, 'code', compileFocus) : undefined;
+    if (handoff?.detail !== 'code') return;
+    const safeWidth = currentScanCodeSafeWidth();
+    const codeWindow = scanCodeRevealWindow(semanticBounds(liveScene, handoff.compileFocus, 'component'), safeWidth);
+    if (!codeWindow || camera.zoom < codeWindow.armZoom) return;
+    const warm = scanCodePrewarmRef.current;
+    if (warm && warm.focus === handoff.compileFocus && warm.safeWidth === safeWidth) return;
+    warm?.controller.abort();
+    const controller = new AbortController();
+    const focus = handoff.compileFocus;
+    const promise = fixture.ensureNeighborhood(focus, controller.signal).then(async () => {
+      if (controller.signal.aborted || fixture !== scanFixture) throw new DOMException('Scene request superseded', 'AbortError');
+      await composeScanSceneAsync(focus, liveScene, controller.signal, undefined, undefined, undefined, safeWidth);
+    }).then(() => undefined, () => {
+      // The handoff prepares the scene itself and reports its own failure. Forget this
+      // attempt so a later sample over the same file may try again.
+      if (scanCodePrewarmRef.current?.controller === controller) scanCodePrewarmRef.current = undefined;
+    });
+    scanCodePrewarmRef.current = { focus, safeWidth, controller, promise };
   }
 
   /** Fetch the next-band neighborhood without compiling or changing the visible scene (CLA-11). */
