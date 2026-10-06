@@ -858,6 +858,17 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
       const reason = error instanceof Error ? error.message : String(error);
       const failedBackend = renderer?.kind ?? requestedBackend;
       const previousRenderer = renderer;
+      // The recovery replaces the canvas and the diagnostics message, so this is the
+      // only durable record of what failed (CLA-401). Not dev-gated: the report is
+      // needed from production sessions.
+      console.error(`[atlas] ${failedBackend} renderer lost: ${reason}`, error);
+      zoomMotionTrace.recordRendererEvent({
+        timeMs: performance.now(),
+        phase: 'lost',
+        backend: failedBackend,
+        reason,
+        ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+      });
       detachLossListener();
       detachWheelListener();
       detachGesturePinch();
@@ -884,8 +895,25 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
           return;
         }
         installSession(session);
+        let recoveredReason = '';
+        try { recoveredReason = session.renderer.diagnostics().message ?? ''; } catch { /* The report must not start another recovery. */ }
+        console.warn(`[atlas] renderer recovered on ${session.renderer.kind}${recoveredReason ? `: ${recoveredReason}` : ''}`);
+        zoomMotionTrace.recordRendererEvent({
+          timeMs: performance.now(),
+          phase: 'recovered',
+          backend: session.renderer.kind,
+          reason: recoveredReason,
+        });
       } catch (recoveryError) {
         if (!disposed) {
+          const recoveryReason = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+          console.error(`[atlas] renderer recovery failed: ${recoveryReason}`, recoveryError);
+          zoomMotionTrace.recordRendererEvent({
+            timeMs: performance.now(),
+            phase: 'recovery-failed',
+            backend: failedBackend,
+            reason: recoveryReason,
+          });
           onDiagnostics({
             requestedBackend,
             activeBackend: 'unsupported',

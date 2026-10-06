@@ -46,13 +46,30 @@ export type ZoomMotionFrame = {
   minimapCamera?: Camera;
 };
 
+/**
+ * A renderer loss or its recovery (CLA-401): without it a trace shows the
+ * backend change between two frames but not why it happened.
+ */
+export type ZoomMotionRendererEvent = {
+  timeMs: number;
+  phase: 'lost' | 'recovered' | 'recovery-failed';
+  /** The backend that failed (`lost`) or the one now active (`recovered`). */
+  backend: string;
+  /** The thrown error's message, or the new renderer's own fallback message. */
+  reason: string;
+  /** The thrown error's stack, when it had one. */
+  stack?: string;
+};
+
 export type ZoomMotionTraceSample =
   | ({ kind: 'input' } & Omit<ZoomMotionInput, 'timeMs'> & { timeMs: number; sequence: number })
-  | ({ kind: 'frame' } & Omit<ZoomMotionFrame, 'timeMs'> & { timeMs: number; sequence: number });
+  | ({ kind: 'frame' } & Omit<ZoomMotionFrame, 'timeMs'> & { timeMs: number; sequence: number })
+  | ({ kind: 'renderer' } & ZoomMotionRendererEvent & { sequence: number });
 
 type UnsequencedZoomMotionTraceSample =
   | ({ kind: 'input' } & Omit<ZoomMotionInput, 'timeMs'> & { timeMs: number })
-  | ({ kind: 'frame' } & Omit<ZoomMotionFrame, 'timeMs'> & { timeMs: number });
+  | ({ kind: 'frame' } & Omit<ZoomMotionFrame, 'timeMs'> & { timeMs: number })
+  | ({ kind: 'renderer' } & ZoomMotionRendererEvent);
 
 export type ZoomMotionTrace = {
   version: 1;
@@ -67,6 +84,7 @@ export type ZoomMotionTraceCollector = {
   stop(): ZoomMotionTrace | undefined;
   recordInput(input: ZoomMotionInput): void;
   recordFrame(frame: ZoomMotionFrame): void;
+  recordRendererEvent(event: ZoomMotionRendererEvent): void;
   isRecording(): boolean;
   readonly active: boolean;
 };
@@ -74,6 +92,8 @@ export type ZoomMotionTraceCollector = {
 export type ZoomMotionTraceOptions = { maxSamples?: number };
 
 const DEFAULT_MAX_SAMPLES = 10_000;
+const MAX_REASON_LENGTH = 2_000;
+const MAX_STACK_LENGTH = 4_000;
 
 function boundedSampleLimit(value: number | undefined): number {
   if (!Number.isFinite(value)) return DEFAULT_MAX_SAMPLES;
@@ -137,7 +157,9 @@ export function createZoomMotionTrace(options: ZoomMotionTraceOptions = {}): Zoo
       const trace: ZoomMotionTrace = {
         version: 1,
         header: copyMetadata(header),
-        samples: samples.map(sample => sample.kind === 'input'
+        samples: samples.map(sample => sample.kind === 'renderer'
+          ? { ...sample }
+          : sample.kind === 'input'
           ? { ...sample, viewport: { ...sample.viewport } }
           : {
               ...sample,
@@ -170,6 +192,16 @@ export function createZoomMotionTrace(options: ZoomMotionTraceOptions = {}): Zoo
         devicePixelRatio: input.devicePixelRatio,
         ...(input.intent === undefined ? {} : { intent: input.intent }),
         ...(input.zoomFactor === undefined ? {} : { zoomFactor: input.zoomFactor }),
+      });
+    },
+    recordRendererEvent(event) {
+      append({
+        kind: 'renderer',
+        timeMs: event.timeMs,
+        phase: event.phase,
+        backend: event.backend,
+        reason: event.reason.slice(0, MAX_REASON_LENGTH),
+        ...(event.stack === undefined ? {} : { stack: event.stack.slice(0, MAX_STACK_LENGTH) }),
       });
     },
     recordFrame(frame) {
