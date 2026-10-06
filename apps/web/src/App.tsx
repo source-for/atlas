@@ -1,11 +1,12 @@
 import { scanCodeRevealWindow, type ScanCodeRevealWindow } from './semantic/scanCodeRevealWindow';
-import { scenePreparationFailureMessage } from './renderer/scanFixture';
+import { scenePreparationFailureMessage, ScanWorkerUnavailableError } from './renderer/scanFixture';
 import { completeFixturePreparation } from './renderer/fixturePreparation';
 import { inspectorEntityForFraming, resolveInspectorEntity, retainResidentInspectorEntity } from './inspector/inspectorEntity';
 import { navigationEntityReference } from './navigation/entityReferences';
 import { prepareLevelSceneWithDeadline, clearLevelScenePreparation, levelScenePreparationPending, runLevelSceneGesture, LEVEL_SCENE_PREPARING } from './renderer/levelScenePreparation';
 import { compileCurrentGeneration } from './renderer/compileCurrentGeneration';
 import { navigateResidentInspectorChild } from './inspector/residentInspectorChild';
+import { prepareReverseScene } from './renderer/reverseScenePreparation';
 import { initialSceneBandsMatch } from './renderer/initialSceneCompatibility';
 import { recordAtlasFirstFrame } from './performance/loadTimings';
 import { DiagramActionHelp } from './diagram/DiagramActionHelp';
@@ -269,6 +270,10 @@ function diagramTabDomId(surfaceId: string) {
 }
 
 const preservedNavigationParams = ['backend', 'embed', 'fixture', 'seed'] as const;
+/** Outward zoom keeps the deep map while the worker prepares its parent. A stalled
+ * preparation is abandoned after the deadline; a failed one is not retried for a while. */
+const REVERSE_SCENE_DEADLINE_MS = 8_000;
+const REVERSE_SCENE_RETRY_MS = 2_000;
 const zoomMotionTrace = createZoomMotionTrace({ maxSamples: 10_000 });
 const configuredRepositoryRoot = import.meta.env.VITE_OKIE_REPOSITORY_ROOT?.trim() || undefined;
 
@@ -379,6 +384,7 @@ type CanvasViewportProps = {
   onInteractionStart: (reason: string, camera: Camera) => void;
   onSemanticEditStart: (reason: string, camera: Camera) => void;
   onCameraFlightCancel: () => void;
+  onCameraPanStart: () => void;
   onLensCancel: (reason: string, camera: Camera) => void;
   onLensPan: (camera: Camera) => void;
   onSemanticZoomBurstStart: (camera: Camera) => Camera;
@@ -412,7 +418,7 @@ type CanvasViewportProps = {
   }) => void;
 };
 
-function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, semanticRenderPacketRef, semanticLensSession, scene, camera, setCamera, selectedId, onPick, onOpenInside, focusedIds, relationFocusIds, activeRelationIds, flowRelationIds, requestedBackend, reduceMotion, animationActive, inspectorFlightActive, flowActive, projectionOverride, onSemanticZoom, cinematicTransition, onDiagnostics, onViewportChange, onCameraSettled, onCameraInput, onNavigationFlush, onInteractionStart, onSemanticEditStart, onCameraFlightCancel, onLensCancel, onLensPan, onSemanticZoomBurstStart, onLodState, scanZoomAdoptRawRef, semanticAssistCancelRef, visibilityMode, authoringTool, authoringEnabled, authoringDetail, authoringEntityIds, selectedRelationId, onCreateRelationship, onGuideRelationship }: CanvasViewportProps) {
+function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, semanticRenderPacketRef, semanticLensSession, scene, camera, setCamera, selectedId, onPick, onOpenInside, focusedIds, relationFocusIds, activeRelationIds, flowRelationIds, requestedBackend, reduceMotion, animationActive, inspectorFlightActive, flowActive, projectionOverride, onSemanticZoom, cinematicTransition, onDiagnostics, onViewportChange, onCameraSettled, onCameraInput, onNavigationFlush, onInteractionStart, onSemanticEditStart, onCameraFlightCancel, onCameraPanStart, onLensCancel, onLensPan, onSemanticZoomBurstStart, onLodState, scanZoomAdoptRawRef, semanticAssistCancelRef, visibilityMode, authoringTool, authoringEnabled, authoringDetail, authoringEntityIds, selectedRelationId, onCreateRelationship, onGuideRelationship }: CanvasViewportProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<AtlasRenderer | undefined>(undefined);
   const liveCameraRef = useRef(camera);
@@ -497,6 +503,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
   const onInteractionStartRef = useRef(onInteractionStart);
   const onSemanticEditStartRef = useRef(onSemanticEditStart);
   const onCameraFlightCancelRef = useRef(onCameraFlightCancel);
+  const onCameraPanStartRef = useRef(onCameraPanStart);
   const onLensCancelRef = useRef(onLensCancel);
   const onLensPanRef = useRef(onLensPan);
   const onSemanticZoomBurstStartRef = useRef(onSemanticZoomBurstStart);
@@ -510,6 +517,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
   onInteractionStartRef.current = onInteractionStart;
   onSemanticEditStartRef.current = onSemanticEditStart;
   onCameraFlightCancelRef.current = onCameraFlightCancel;
+  onCameraPanStartRef.current = onCameraPanStart;
   onLensCancelRef.current = onLensCancel;
   semanticAssistCancelRef.current = cancelPendingSemanticGesture;
   onLensPanRef.current = onLensPan;
@@ -745,6 +753,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
     // (without the glide, which the pan would cancel), so the semantic lens
     // always receives its gestureSettled sample.
     const wheelPan = (intent: Extract<WheelIntent, { kind: 'pan' }>) => {
+      onCameraPanStartRef.current();
       if (semanticZoomSettleTimer !== undefined) settleSemanticWheelZoom(false);
       cancelAssistAnimation();
       // A scan zoom handoff's pending raw camera predates this pan; a later zoom
@@ -1305,6 +1314,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
     if (!pointer.moved) {
       if (Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY) <= 3) return;
       pointer.moved = true;
+      onCameraPanStartRef.current();
       setHoveredPick(undefined);
       rawCameraRef.current = { ...liveCameraRef.current };
       cancelAssistAnimation();
@@ -1648,6 +1658,16 @@ export function App() {
   const foregroundSceneRequestRef = useRef(createForegroundSceneRequestOwner());
   const foregroundFixtureRef = useRef(scanFixture);
   foregroundFixtureRef.current = scanFixture;
+  const [reverseViewLoading, setReverseViewLoading] = useState(false);
+  const reverseSceneRequestRef = useRef(createSceneRequestOwner());
+  const reverseScenePendingRef = useRef<{ scene: AtlasScene; session: SemanticLensSession; focusId: string; owns(): boolean } | undefined>(undefined);
+  const reverseSceneDeadlineRef = useRef<number | undefined>(undefined);
+  const reverseSettleDeferredRef = useRef(false);
+  // A replayed settle runs from a request started in an earlier render; read the latest.
+  const settleCameraRef = useRef(settleCamera);
+  settleCameraRef.current = settleCamera;
+  const reverseSceneFailureRef = useRef<{ focusId: string; sourceFocusId: string; at: number } | undefined>(undefined);
+  const reverseWorkerUnavailableRef = useRef(false);
   const gestureSceneRequestRef = useRef(createSceneRequestOwner());
   const viewportSceneRequestRef = useRef(createSceneRequestOwner());
   const viewportRequestedTileRef = useRef<string | undefined>(undefined);
@@ -1821,7 +1841,8 @@ export function App() {
       if (storyPreparationActiveRef.current) pauseStoryWithoutHistory(renderedCameraRef.current);
       cancelForegroundSceneRequest();
     }
-    cancelGestureSceneRequests();
+    if (reverseScenePendingRef.current && !reverseScenePendingRef.current.owns()) cancelReverseScenePreparation();
+    cancelGestureSceneRequests(false);
   }, [scene, selectedId, scanFixture]);
   useEffect(() => () => {
     cancelForegroundSceneRequest();
@@ -3121,44 +3142,124 @@ export function App() {
     return reachedCamera;
   }
 
-  /** Restore adjacent endpoints for a deep scene reached by rail, search, or a link. */
+  function cancelReverseScenePreparation() {
+    reverseSceneRequestRef.current.cancel();
+    clearReverseScenePreparation();
+    reverseSettleDeferredRef.current = false;
+  }
+
+  function clearReverseScenePreparation() {
+    if (reverseSceneDeadlineRef.current !== undefined) window.clearTimeout(reverseSceneDeadlineRef.current);
+    reverseSceneDeadlineRef.current = undefined;
+    reverseScenePendingRef.current = undefined;
+    setReverseViewLoading(false);
+  }
+
+  /** End the owned request. A settle suppressed while it was pending runs now, at the
+   * live camera, so a failed or abandoned preparation never leaves the URL uncommitted. */
+  function finishReverseScenePreparation(intent: NonNullable<typeof reverseScenePendingRef.current>) {
+    if (reverseScenePendingRef.current !== intent) return;
+    clearReverseScenePreparation();
+    if (!reverseSettleDeferredRef.current) return;
+    reverseSettleDeferredRef.current = false;
+    settleCameraRef.current(renderedCameraRef.current);
+  }
+
+  /** Prepare adjacent endpoints without blocking live outward camera samples. */
   function startScanContainerReverseMorph(camera: Camera, direction: 'inward' | 'outward' | 'none', arrivalZoom?: number) {
-    if (!scanFixture || reduceMotion) return false;
+    if (!scanFixture || importedAtlasRef.current || reduceMotion || reverseWorkerUnavailableRef.current) return false;
     const target = sceneRef.current;
     const viewRootId = scanFixture.navigation.rootEntityId;
     const focusId = target.rootEntityId ?? viewRootId;
     const session = semanticLensSessionRef.current;
+    const pending = reverseScenePendingRef.current;
+    if (pending) {
+      if (direction !== 'inward' && pending.scene === target && pending.session === session && pending.focusId === focusId) {
+        return true;
+      }
+      cancelReverseScenePreparation();
+    }
     const existing = scanContainerMorphRef.current;
-    // The bridge owns both its source and target sessions. Do not rebuild it
-    // while an outward gesture is still above the component boundary.
     if (existing && existing.scene === target && scanContainerMorphOwnsSession(existing, session)) return false;
-    if (!shouldStartScanContainerReverseMorph({
-      direction,
-      currentDetail: semanticLensSessionDetail(session),
-      currentRootId: focusId,
-      viewRootId,
-      activeTargetId: session.settled.at(-1)?.targetId,
-    })) return false;
+    if (!shouldStartScanContainerReverseMorph({ direction, currentDetail: semanticLensSessionDetail(session),
+      currentRootId: focusId, viewRootId, activeTargetId: session.settled.at(-1)?.targetId })) return false;
     const detail = semanticLensSessionDetail(session);
     if (detail !== 'component' && detail !== 'code') return false;
     const sourceFocusId = detail === 'code'
-      ? activeSnapshot.entities.find(entity => entity.id === focusId)?.parentId
-      : viewRootId;
+      ? activeSnapshot.entities.find(entity => entity.id === focusId)?.parentId : viewRootId;
     if (!sourceFocusId) return false;
-    const source = composeScene(sourceFocusId, undefined, authoringHistoryRef.current.present);
-    const bridge = createScanReverseMorph(source, target, focusId, detail, arrivalZoom);
-    if (!bridge) return false;
-    const frame = sampleScanContainerMorph(bridge, camera.zoom);
-    scanContainerMorphRef.current = bridge;
-    sceneRef.current = bridge.scene;
-    setScene(bridge.scene);
-    semanticLensSessionRef.current = frame.session;
-    setSemanticLensSession(frame.session);
+    // A failed preparation of this endpoint pair backs off instead of re-requesting on
+    // every tick (viewport refreshes replace the scene object, so key by entity ids).
+    const failure = reverseSceneFailureRef.current;
+    if (failure && failure.focusId === focusId && failure.sourceFocusId === sourceFocusId
+      && performance.now() - failure.at < REVERSE_SCENE_RETRY_MS) return false;
+    const endpointZoom = arrivalZoom ?? camera.zoom;
+    viewportSceneRequestRef.current.cancel();
+    viewportRequestedTileRef.current = undefined;
+    gestureSceneRequestRef.current.cancel();
+    zoomHandoffInflightRef.current = undefined;
+    const request = reverseSceneRequestRef.current.begin();
+    const fixture = scanFixture;
+    const selection = inspectorSelectionRef.current;
+    const intent = { scene: target, session, focusId, owns: () => false };
+    reverseScenePendingRef.current = intent;
+    setReverseViewLoading(true);
+    const fail = () => { reverseSceneFailureRef.current = { focusId, sourceFocusId, at: performance.now() }; };
+    // The worker's own timeout is longer; the map must not wait on it or a stalled fetch.
+    reverseSceneDeadlineRef.current = window.setTimeout(() => {
+      if (reverseScenePendingRef.current !== intent) return;
+      reverseSceneRequestRef.current.cancel();
+      fail();
+      finishReverseScenePreparation(intent);
+    }, REVERSE_SCENE_DEADLINE_MS);
+    const owns = () => request.owns() && reverseScenePendingRef.current === intent
+      && !foregroundSceneRequestRef.current.pending() && fixture === foregroundFixtureRef.current
+      && target === sceneRef.current && session === semanticLensSessionRef.current && selection === inspectorSelectionRef.current;
+    intent.owns = owns;
+    void prepareReverseScene({ signal: request.signal, owns, generation: () => fixture.getSceneGeneration(),
+      ensure: () => fixture.ensureNeighborhood(sourceFocusId, request.signal),
+      compile: () => composeScanSceneAsync(sourceFocusId, undefined, request.signal, undefined, [focusId]),
+      publish: source => {
+        const bridge = createScanReverseMorph(source, target, focusId, detail, endpointZoom);
+        if (!bridge) return;
+        const liveCamera = renderedCameraRef.current;
+        const frame = sampleScanContainerMorph(bridge, liveCamera.zoom);
+        const next = scanContainerMorphCamera(bridge, frame.progress, liveCamera);
+        bridge.progress = frame.progress;
+        bridge.baselineProgress = frame.progress;
+        const rootEntityId = frame.progress === 0 ? source.rootEntityId ?? viewRootId : focusId;
+        if (frame.progress === 0) bridge.scene = { ...bridge.scene, rootEntityId };
+        scanContainerMorphRef.current = bridge;
+        sceneRef.current = bridge.scene;
+        setScene(bridge.scene);
+        semanticLensSessionRef.current = frame.session;
+        setSemanticLensSession(frame.session);
+        setNavigationIdentity(current => ({ ...current, rootEntityId }));
+        scanZoomAdoptRawRef.current = next;
+        renderedCameraRef.current = next;
+        updateCamera(next);
+        const navigation = canonicalNavigationState({ ...navigationRef.current, rootEntityId, camera: next,
+          detail: frame.session.baseDetail, lensPath: semanticLensCanonicalPathIds(frame.session) }, navigationDefaults);
+        navigationRef.current = navigation;
+        historyControllerRef.current?.replace(navigation);
+        publishSemanticRenderPacket(next);
+        recordSemanticLensDiagnostics('reverse-publication', { camera: next, pointer: scanZoomPointerRef.current ?? { x: viewport.width / 2, y: viewport.height / 2 }, direction: 'none', gestureSettled: false, mobile: false });
+      },
+    }).catch(error => {
+      // Keep the current map. Stale work is silent; a real failure backs off, and an
+      // unavailable worker (latched until reload) stops outward preparation and says so.
+      if (isSceneRequestAbort(error) || reverseScenePendingRef.current !== intent) return;
+      fail();
+      if (error instanceof ScanWorkerUnavailableError) {
+        reverseWorkerUnavailableRef.current = true;
+        setLiveMessage(error.message);
+      } else console.warn('Outward zoom preparation failed', error);
+    }).finally(() => finishReverseScenePreparation(intent));
     return true;
   }
 
   function recordSemanticLensDiagnostics(
-    stage: 'level-preparing' | 'foreground-preparing' | 'disabled' | 'scan-bridge' | 'scan-handoff' | 'handoff-publication' | 'late-publication' | 'semantic-policy',
+    stage: 'level-preparing' | 'foreground-preparing' | 'disabled' | 'scan-bridge' | 'scan-handoff' | 'handoff-publication' | 'late-publication' | 'reverse-publication' | 'semantic-policy',
     sample: Parameters<typeof handleSemanticZoomReady>[0],
     targetsInput: { candidate?: ReturnType<typeof findSemanticLensTarget>; active?: ReturnType<typeof measureSemanticLensTarget>; safeArea?: SafeArea } = {},
   ) {
@@ -3260,7 +3361,10 @@ export function App() {
       if (rootEntityId) setNavigationIdentity(current => ({ ...current, rootEntityId }));
       scanZoomAdoptRawRef.current = sample.camera;
     }
-    startScanContainerReverseMorph(sample.camera, sample.direction, sample.renderedCamera?.zoom ?? sample.gestureStartZoom);
+    if (startScanContainerReverseMorph(sample.camera, sample.direction, sample.renderedCamera?.zoom ?? sample.gestureStartZoom)) {
+      publishSemanticRenderPacket(sample.camera);
+      return sample.camera;
+    }
     const containerMorph = scanContainerMorphRef.current;
     if (containerMorph && containerMorph.scene === sceneRef.current
       && scanContainerMorphOwnsSession(containerMorph, semanticLensSessionRef.current)) {
@@ -3474,6 +3578,7 @@ export function App() {
 
   function settleCamera(next: Camera) {
     if (foregroundSceneRequestRef.current.pending()) return;
+    if (reverseScenePendingRef.current) { reverseSettleDeferredRef.current = true; return; }
     const base = canonicalNavigationState({
       ...navigationRef.current,
       camera: next,
@@ -3940,7 +4045,8 @@ export function App() {
       });
   }
 
-  function cancelGestureSceneRequests() {
+  function cancelGestureSceneRequests(cancelReverse = true) {
+    if (cancelReverse) cancelReverseScenePreparation();
     gestureSceneRequestRef.current.cancel();
     viewportSceneRequestRef.current.cancel();
     viewportRequestedTileRef.current = undefined;
@@ -4075,7 +4181,7 @@ export function App() {
   /** Recompile the current C4 neighborhood for the camera tile window. Not a full-graph compile. */
   function refreshViewportNeighborhood(next: Camera) {
     // Foreground band handoffs own selected compilation until publication finishes.
-    if (!scanFixture || foregroundSceneRequestRef.current.pending() || levelScenePreparationPending(levelCompileAbortRef.current) || zoomHandoffInflightRef.current) return;
+    if (!scanFixture || foregroundSceneRequestRef.current.pending() || levelScenePreparationPending(levelCompileAbortRef.current) || reverseScenePendingRef.current || zoomHandoffInflightRef.current) return;
     const containerMorph = scanContainerMorphRef.current;
     // The terminal L3 frame remains an endpoint of the reversible L2↔L3
     // bridge. A camera-tile refresh here can compile only the owner shell and
@@ -6623,6 +6729,7 @@ export function App() {
               renderedCameraRef.current = next;
             }}
             onCameraFlightCancel={handleDirectCameraInput}
+            onCameraPanStart={cancelReverseScenePreparation}
             onCreateRelationship={createRelationship}
             onDiagnostics={setDiagnostics}
             onGuideRelationship={guideRelationship}
@@ -6668,7 +6775,7 @@ export function App() {
 
           <div className="map-heading">
             <h1>{scene.title}</h1>
-            {foregroundViewLoading ? <small role="status">Loading view…</small> : initialDetailLoading && <small role="status">Loading more detail…</small>}
+            {foregroundViewLoading || reverseViewLoading ? <small role="status">Loading view…</small> : initialDetailLoading && <small role="status">Loading more detail…</small>}
             <nav aria-label="Architecture ancestry" className="semantic-breadcrumb">
               {breadcrumbState.chain.map((entity, index) => <span key={entity.id}>{index > 0 && <ChevronIcon size={9}/>} {entity.id === navigationIdentity.rootEntityId ? <b aria-current="page">{entity.name}</b> : <button onClick={() => navigateRoot(entity.id)}>{entity.name}</button>}</span>)}
               {breadcrumbState.descendant && <span className="selected-descendant"><ChevronIcon size={9}/><em>{breadcrumbState.descendant.name}</em></span>}
