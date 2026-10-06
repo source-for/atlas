@@ -89,4 +89,50 @@ describe('zoom motion trace', () => {
     expect(legacy).not.toHaveProperty('intent');
     expect(legacy).not.toHaveProperty('zoomFactor');
   });
+
+  it('records why the renderer was lost and what replaced it, in delivery order (CLA-401)', () => {
+    const trace = createZoomMotionTrace();
+    trace.start(metadata);
+    trace.recordFrame({ timeMs: 510, camera: { x: 0, y: 0, zoom: 1 }, renderer: 'webgpu' });
+    trace.recordRendererEvent({ timeMs: 520, phase: 'lost', backend: 'webgpu', reason: 'unreachable', stack: 'RuntimeError: unreachable\n    at wasm' });
+    trace.recordRendererEvent({ timeMs: 530, phase: 'recovered', backend: 'canvas2d-preview', reason: 'x'.repeat(5_000) });
+    trace.recordFrame({ timeMs: 540, camera: { x: 0, y: 0, zoom: 1 }, renderer: 'canvas2d-preview' });
+
+    const result = trace.stop()!;
+    expect(result.samples.map(sample => sample.kind)).toEqual(['frame', 'renderer', 'renderer', 'frame']);
+    expect(result.samples[1]).toEqual({
+      kind: 'renderer', timeMs: 520, phase: 'lost', backend: 'webgpu', reason: 'unreachable',
+      stack: 'RuntimeError: unreachable\n    at wasm', sequence: 1,
+    });
+    const recovered = result.samples[2]!;
+    expect(recovered.kind === 'renderer' && recovered.reason.length).toBe(2_000);
+    expect(recovered).not.toHaveProperty('stack');
+  });
+
+  it('ignores renderer events while not recording', () => {
+    const trace = createZoomMotionTrace();
+    trace.recordRendererEvent({ timeMs: 1, phase: 'lost', backend: 'webgpu', reason: 'ignored' });
+    trace.start(metadata);
+    expect(trace.stop()!.samples).toEqual([]);
+  });
+
+  it('keeps renderer events after the frame budget is full, within their own bound', () => {
+    const trace = createZoomMotionTrace({ maxSamples: 2 });
+    trace.start(metadata);
+    for (let timeMs = 501; timeMs <= 504; timeMs += 1) trace.recordFrame({ timeMs, camera: { x: 0, y: 0, zoom: 1 } });
+    for (let index = 0; index < 40; index += 1) trace.recordRendererEvent({ timeMs: 600 + index, phase: 'lost', backend: 'webgpu', reason: 'late' });
+    trace.recordFrame({ timeMs: 700, camera: { x: 0, y: 0, zoom: 1 } });
+
+    const result = trace.stop()!;
+    expect(result.samples.filter(sample => sample.kind === 'frame')).toHaveLength(2);
+    expect(result.samples.filter(sample => sample.kind === 'renderer')).toHaveLength(32);
+    expect(result).toMatchObject({ truncated: true, droppedSamples: 2 + 8 + 1 });
+  });
+
+  it('coerces a non-string reason and stack instead of throwing', () => {
+    const trace = createZoomMotionTrace();
+    trace.start(metadata);
+    trace.recordRendererEvent({ timeMs: 1, phase: 'lost', backend: 'webgpu', reason: { code: 7 } as unknown as string, stack: 42 as unknown as string });
+    expect(trace.stop()!.samples[0]).toMatchObject({ reason: '[object Object]', stack: '42' });
+  });
 });

@@ -858,6 +858,27 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
       const reason = error instanceof Error ? error.message : String(error);
       const failedBackend = renderer?.kind ?? requestedBackend;
       const previousRenderer = renderer;
+      // The recovery replaces the canvas and the diagnostics message, so this is the
+      // only durable record of what failed (CLA-401). Not dev-gated: the report is
+      // needed from production sessions. A report must never stop the recovery.
+      const report = (phase: 'lost' | 'recovered' | 'recovery-failed', backend: string, text: string, cause?: unknown) => {
+        try {
+          const line = phase === 'lost' ? `[atlas] ${backend} renderer lost: ${text}`
+            : phase === 'recovered' ? `[atlas] renderer recovered on ${backend}${text ? `: ${text}` : ''}`
+              : `[atlas] renderer recovery failed: ${text}`;
+          const log = phase === 'recovered' ? console.warn : console.error;
+          // A context-loss listener passes the message itself; do not print it twice.
+          if (cause instanceof Error) log(line, cause); else log(line);
+          zoomMotionTrace.recordRendererEvent({
+            timeMs: performance.now(),
+            phase,
+            backend,
+            reason: text,
+            ...(cause instanceof Error && cause.stack ? { stack: cause.stack } : {}),
+          });
+        } catch { /* Diagnostics only. */ }
+      };
+      report('lost', failedBackend, reason, error);
       detachLossListener();
       detachWheelListener();
       detachGesturePinch();
@@ -884,8 +905,12 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
           return;
         }
         installSession(session);
+        let recoveredReason = '';
+        try { recoveredReason = session.renderer.diagnostics().message ?? ''; } catch { recoveredReason = 'diagnostics unavailable'; }
+        report('recovered', session.renderer.kind, recoveredReason);
       } catch (recoveryError) {
         if (!disposed) {
+          report('recovery-failed', failedBackend, recoveryError instanceof Error ? recoveryError.message : String(recoveryError), recoveryError);
           onDiagnostics({
             requestedBackend,
             activeBackend: 'unsupported',
