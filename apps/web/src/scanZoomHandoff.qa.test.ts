@@ -28,6 +28,7 @@ import {
   createC4Scene,
   createGoldenC4Scene,
   scanDeeperBandHasPeerCards,
+  scanDormantBridgeRetargets,
   scanDrillDeeperDetail,
   scanPeerContainerIds,
   scanWindowedCompileDropsPeerGraph,
@@ -1147,5 +1148,45 @@ describe('CLA-122: L3→L4 wheel stays inside the opened container', () => {
       selected: l3.entities.find(entity => entity.id === 'container:apps-server')!,
       settledTargetIds: ['container:apps-server'],
     }).length).toBeGreaterThan(0);
+  });
+});
+
+describe('dormant container bridge retarget', () => {
+  const snapshot = structuredClone(demoSnapshot) as unknown as ArchitectureSnapshot;
+  const view = structuredClone(demoView) as unknown as ArchitectureView;
+  const l1 = sliceArchitectureNeighborhood(snapshot, view, { focusEntityId: 'system:okie' });
+  const fixture = compileScanNeighborhoodFixture(l1, demoStory, {
+    loadNeighborhood: async (focus: string) => sliceArchitectureNeighborhood(snapshot, view, { focusEntityId: focus || 'system:okie' }),
+    loadExcerpts: async () => undefined,
+    loadStory: async () => demoStory,
+  });
+  const viewRootId = fixture.navigation.rootEntityId;
+  const l2Scene = fixture.createScene(viewRootId);
+  const opens = (id: string) => scanZoomCompileHandoff(l2Scene, fixture.snapshot, id, viewRootId, 'component')?.compileFocus;
+  const retargets = (underPointer: string | undefined) =>
+    scanDormantBridgeRetargets(l2Scene, fixture.snapshot, viewRootId, 'container:web-app', underPointer);
+
+  it('keeps the bridge when the pointer is over the system shell between cards', () => {
+    // The handoff falls back to its preferred container here; releasing the bridge
+    // would request that same container again on every sample and never expand it.
+    expect(opens('system:okie')).toBeUndefined();
+    expect(retargets('system:okie')).toBe(false);
+  });
+
+  it('keeps the bridge over its own container, a miss, and a card that cannot open', () => {
+    expect(retargets('container:web-app')).toBe(false);
+    expect(retargets(undefined)).toBe(false);
+    const closed = (l2Scene.projection?.entityIdsByDetail.container ?? []).filter(id => id !== 'system:okie' && !opens(id));
+    for (const id of closed) expect(retargets(id), id).toBe(false);
+  });
+
+  it('releases the bridge for another container that would itself open', () => {
+    const other = (l2Scene.projection?.entityIdsByDetail.container ?? []).find(id => id !== 'container:web-app' && opens(id) === id);
+    expect(other).toBeDefined();
+    expect(retargets(other)).toBe(true);
+  });
+
+  it('is what the zoom path asks before releasing a container bridge', () => {
+    expect(handleSemanticZoom).toContain("dormantBridge.sourceDetail !== 'container' || !scanFixture || scanDormantBridgeRetargets(dormantBridge.sourceScene,");
   });
 });
