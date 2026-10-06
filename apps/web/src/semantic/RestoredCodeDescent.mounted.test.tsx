@@ -203,3 +203,23 @@ it('does not publish a prepared scene when the reader pinches back out of the co
   expect(shell().getAttribute('data-detail')).not.toBe('code');
   expect(new URL(window.location.href).searchParams.getAll('lens')).not.toContain('component:web-navigation');
 });
+
+it('retries a failed preparation and still reaches code', async () => {
+  const { clock, bridge, fileCompiles } = await enterContainerExpansion();
+  const compile = vi.mocked(fixture.createSceneAsync);
+  const real = compile.getMockImplementation();
+  compile.mockImplementationOnce(async () => { throw new Error('worker lost'); });
+  await zoomTo(reveal.armZoom * 1.03); await settle(); await frames(clock);
+  expect(fileCompiles()).toBe(1);
+  if (real) compile.mockImplementation(real);
+  // The failed attempt is forgotten: the next sample over the same file prepares again.
+  await zoomTo(reveal.armZoom * 1.08); await settle(); await frames(clock);
+  expect(fileCompiles()).toBe(2);
+  for (let step = 0; step < 12 && shell().getAttribute('data-root-entity-id') !== 'component:web-navigation'; step++) {
+    await zoomTo(captured.camera.zoom * 1.12); await settle(); await frames(clock);
+  }
+  expect(captured.camera.zoom).toBeGreaterThan(bridge.fullZoom);
+  expect(shell().getAttribute('data-root-entity-id')).toBe('component:web-navigation');
+  expect(fileCompiles()).toBe(2);
+  expect(host.textContent).not.toContain('worker lost');
+});

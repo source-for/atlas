@@ -2876,9 +2876,15 @@ export function App() {
   // the descent, so the card would stay a screen-filling L3 face until the next
   // wheel tick. Ask once, for the file under the map centre, and only when its reveal
   // would already show: below that, preparation stays with zoom input.
+  useEffect(() => () => {
+    scanCodePrewarmRef.current?.controller.abort();
+    scanCodePrewarmRef.current = undefined;
+  }, []);
+
   useEffect(() => {
     if (!restoredDescentCheckRef.current || restoringNavigationRef.current) return;
-    if (viewport.width <= 0 || viewport.height <= 0) return;
+    // An unsized frame measures a 1px safe width, which would put every file past its window.
+    if (!isUsableAtlasViewport(viewport)) return;
     restoredDescentCheckRef.current = false;
     if (!scanFixture || importedAtlasRef.current || storyStep >= 0
       || semanticLensSessionDetail(semanticLensSessionRef.current) !== 'component') return;
@@ -4548,9 +4554,13 @@ export function App() {
     const controller = new AbortController();
     const focus = handoff.compileFocus;
     const promise = fixture.ensureNeighborhood(focus, controller.signal).then(async () => {
-      if (controller.signal.aborted || fixture !== scanFixture) return;
+      if (controller.signal.aborted || fixture !== scanFixture) throw new DOMException('Scene request superseded', 'AbortError');
       await composeScanSceneAsync(focus, liveScene, controller.signal, undefined, undefined, undefined, safeWidth);
-    }).then(() => undefined, () => { /* The handoff prepares the scene itself and reports its own failure. */ });
+    }).then(() => undefined, () => {
+      // The handoff prepares the scene itself and reports its own failure. Forget this
+      // attempt so a later sample over the same file may try again.
+      if (scanCodePrewarmRef.current?.controller === controller) scanCodePrewarmRef.current = undefined;
+    });
     scanCodePrewarmRef.current = { focus, safeWidth, controller, promise };
   }
 
