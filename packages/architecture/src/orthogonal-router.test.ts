@@ -6,6 +6,7 @@ import {
   routeOrthogonal,
   routeOrthogonalWithIntent,
   segmentIntersectsRectInterior,
+  orthogonalGridBlockage,
 } from './orthogonal-router.js';
 
 function assertOrthogonal(points: readonly Point[]) {
@@ -159,4 +160,53 @@ test('invalid and stale guidance deterministically degrades to the automatic saf
   assert.equal(empty.status, 'fallback');
   assert.equal(empty.reason, 'unroutable-guidance');
   assert.deepEqual(empty.points, automatic.points);
+});
+
+test('CLA-385: a one-column grid blocks vertical steps through an obstacle like the per-obstacle path', () => {
+  // xs.length === 1, so node ± 1 is a vertical neighbour; review of #196 found the
+  // indexed lookup read it as horizontal. Values pinned from main c3e9d0f.
+  const options = {
+    source: { x: 0, y: 0, width: 0, height: 10 },
+    target: { x: 0, y: 100, width: 0, height: 10 },
+    obstacles: [],
+    clearance: 1,
+    domain: { x: 0, y: -50, width: 0, height: 200 },
+  };
+  const result = routeOrthogonal(options);
+  assert.equal(result.exploredStates, 2);
+  const walled = routeOrthogonal({ ...options, obstacles: [{ id: 'wall', bounds: { x: -10, y: 40, width: 20, height: 20 } }] });
+  assert.equal(walled.diagnostic, 'direct-fallback');
+  assert.equal(walled.exploredStates, 0);
+});
+
+test('CLA-385: indexed grid blockage marks exactly what the per-obstacle predicates reject', () => {
+  const EPSILON = 1e-9;
+  const inside = (point: Point, rect: NodeLayout) => point.x > rect.x + EPSILON && point.x < rect.x + rect.width - EPSILON
+    && point.y > rect.y + EPSILON && point.y < rect.y + rect.height - EPSILON;
+  const unique = (values: number[]) => [...values].sort((a, b) => a - b).filter((value, index, sorted) => index === 0 || Math.abs(value - sorted[index - 1]!) > EPSILON);
+  let seed = 385;
+  const random = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  for (let trial = 0; trial < 600; trial += 1) {
+    // A coarse lattice makes coincident and touching edges common; tiny offsets probe EPSILON.
+    const coordinate = () => Math.floor(random() * 12) * 10 + (random() < .2 ? (random() < .5 ? 1 : -1) * EPSILON * [.5, 1, 2][Math.floor(random() * 3)]! : 0);
+    const obstacles: NodeLayout[] = Array.from({ length: 1 + Math.floor(random() * 7) }, () => {
+      const x = coordinate(); const y = coordinate();
+      return { x, y, width: random() < .1 ? 0 : Math.max(0, coordinate() - x + 10), height: random() < .1 ? 0 : Math.max(0, coordinate() - y + 10) };
+    });
+    const xs = unique([0, 130, coordinate(), ...obstacles.flatMap(rect => [rect.x, rect.x + rect.width])]);
+    const ys = unique([0, 130, coordinate(), ...obstacles.flatMap(rect => [rect.y, rect.y + rect.height])]);
+    const blocked = orthogonalGridBlockage(xs, ys, obstacles)!;
+    for (let y = 0; y < ys.length; y += 1) {
+      for (let x = 0; x < xs.length; x += 1) {
+        const node = y * xs.length + x;
+        const at = { x: xs[x]!, y: ys[y]! };
+        assert.equal(blocked.point[node] === 1, obstacles.some(rect => inside(at, rect)), `point ${trial}/${node}`);
+        if (x + 1 < xs.length) assert.equal(blocked.right[node] === 1,
+          obstacles.some(rect => segmentIntersectsRectInterior(at, { x: xs[x + 1]!, y: ys[y]! }, rect)), `right ${trial}/${node}`);
+        if (y + 1 < ys.length) assert.equal(blocked.down[node] === 1,
+          obstacles.some(rect => segmentIntersectsRectInterior(at, { x: xs[x]!, y: ys[y + 1]! }, rect)), `down ${trial}/${node}`);
+      }
+    }
+  }
+  assert.equal(orthogonalGridBlockage([0, 1], [0, 1], [{ x: Number.NaN, y: 0, width: 1, height: 1 }]), undefined);
 });

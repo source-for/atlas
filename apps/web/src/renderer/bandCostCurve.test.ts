@@ -106,12 +106,19 @@ describe('CLA-67 Canvas2D per-band frame cost', () => {
   });
 
   it('Open inside / one-down prefetch of 25 code children stays cheaper than compiling a 50-child parent band', () => {
-    const parentStarted = performance.now();
-    neighborhoodScene('component', 50);
-    const parentCompileMs = performance.now() - parentStarted;
-    const prefetchStarted = performance.now();
-    const prefetchScene = neighborhoodScene('code', BAND_COST_PREFETCH_CODE_CHILDREN);
-    const prefetchCompileMs = performance.now() - prefetchStarted;
+    // Fastest of three interleaved compiles each: since CLA-385 both take tens of ms, so one
+    // GC pause in a single sample could flip the comparison without the costs changing.
+    let parentCompileMs = Number.POSITIVE_INFINITY;
+    let prefetchCompileMs = Number.POSITIVE_INFINITY;
+    let prefetchScene!: ReturnType<typeof neighborhoodScene>;
+    for (let sample = 0; sample < 3; sample += 1) {
+      const parentStarted = performance.now();
+      neighborhoodScene('component', 50);
+      parentCompileMs = Math.min(parentCompileMs, performance.now() - parentStarted);
+      const prefetchStarted = performance.now();
+      prefetchScene = neighborhoodScene('code', BAND_COST_PREFETCH_CODE_CHILDREN);
+      prefetchCompileMs = Math.min(prefetchCompileMs, performance.now() - prefetchStarted);
+    }
     const zoom = C4_ZOOM_BANDS.find(band => band.detail === 'code')!.focusZoom;
     const frames = measureCanvasFrames(prefetchScene, zoom);
     expect(prefetchCompileMs).toBeLessThan(parentCompileMs);

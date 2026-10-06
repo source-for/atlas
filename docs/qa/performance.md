@@ -483,3 +483,43 @@ Ported onto current main (after #183–#194). It merges with main's level-prepar
   - Both end with L1 in the same pointer-anchored position.
 - **Frame strips:** [main](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla357-reverse-morph-main-strip.jpg), [branch](https://github.com/source-for/atlas/releases/download/qa-screenshots/cla357-reverse-morph-branch-strip.jpg).
 - **Caveats:** small sequential samples on a loaded machine, so this is not a p95 claim. Only one gesture speed was measured, and time-to-publication wasn't recorded; whether a slower real gesture shows the L3→L2 morph is untested. The golden atlas is authored, not a scan, so it doesn't take this path.
+
+## CLA-385 compile cost: indexed edge-routing blockage
+
+The staging attribution put the long tail inside the worker's compile, mostly layout and adapter. Offline, the same compile (pinned 5,507-entity publication, focus `component:apps-web-src-app-tsx` with the App component kept resident) took 1.9–3.8 s depending on machine load. A Node CPU profile attributed about 75% of it to edge routing:
+- `findGridPath` in `orthogonal-router.ts` tested every obstacle for every grid point, and again for every A* expansion. The grid lines come from obstacle edges, so each route cost roughly O(N³).
+- Routing runs twice per compile: once in `bandLayout`, then again in `applyIntrinsicOwnerGeometry`.
+
+The fix is exact:
+- `orthogonalGridBlockage` marks the blocked points and edges once per route. `xs`/`ys` are strictly ascending (`dedupeSorted`), so the grid lines strictly inside an obstacle form one contiguous index range. The bounds use the same strict EPSILON comparisons as `pointInsideRect` and `segmentIntersectsRectInterior`.
+- The A* loop reads coordinates directly instead of allocating points, and keeps the same neighbour order.
+- `goldenC4Scene`'s code-window `ownsCode` builds one entity index per compile (`scanSubtreeMembership`) instead of one per object and edge.
+- Non-finite obstacles fall back to the original per-test path.
+
+**Equivalence**
+- The SHA-256 of the compiled scene JSON is identical for 48 compiles: view root, all 10 containers, 12 components and the App component, each with and without residency.
+- Golden fixtures and the evidence hash are unchanged.
+- A randomized test with 600 lattice obstacle sets (coincident edges, ±0.5/1/2 EPSILON offsets, zero-size rects) compares every point and edge mark against the original predicates. It catches off-by-one span and strict/non-strict comparison mutations.
+
+**Offline A/B** (interleaved, same machine, 3 × 3 runs, ms):
+
+| Focus | main | this change |
+|---|---:|---:|
+| `component:apps-web-src-app-tsx` (App deep link) | 1,869–2,691 | 487–575 |
+| `container:apps-web` | 376–487 | 198–303 |
+
+**Browser, through the real worker:**
+- **Setup:** local production builds, pinned publication, headed Chrome, `workerTrials.mjs --smoke --runs 6` per build.
+- **Results** (ms, p50; compile also shows max):
+
+| | main | this change |
+|---|---:|---:|
+| App deep-link worker compile, p50 / max | 1,672 / 1,740 | 570 / 633 |
+| Web deep-link worker compile, p50 / max | 816 / 858 | 530 / 584 |
+| App usable, cold / warm | 2,828 / 2,683 | 1,507 / 1,348 |
+| Web usable, cold / warm | 1,967 / 1,789 | 1,476 / 1,265 |
+
+**Limits**
+- This is a smoke sample (n=3 per cell for usable time), not a p95 claim. Native staging wasn't re-measured.
+- The proportional effect on the 8–16 s native tail is expected but unmeasured.
+- The routing-twice structure remains. The `dedupeSorted` coordinate sort per route (about 14% of what's left) is the next exact candidate.
