@@ -4343,7 +4343,7 @@ export function App() {
     }
     const containerMorph = !reduceMotion && handoff.detail === 'component'
       && liveScene.rootEntityId === scanFixture?.navigation.rootEntityId
-      ? createScanContainerMorph(liveScene, nextScene, handoff.compileFocus, liveCamera.zoom)
+      ? createScanContainerMorph(liveScene, nextScene, handoff.compileFocus, liveCamera.zoom, currentScanCodeSafeWidth())
       : !reduceMotion && handoff.detail === 'code'
         ? createScanDetailMorph(liveScene, nextScene, handoff.compileFocus, 'component', 'code', liveCamera.zoom, currentSession, codeWindow)
         : undefined;
