@@ -490,6 +490,9 @@ export const HOME_SCRIPT_PATH = '/home.js';
  */
 export const AUTH_SLOT_HTML = '<nav class="site-auth" aria-label="Account" data-auth-slot hidden></nav>';
 
+/** The home page's "Request a scan" link (CLA-455): the form on the account page. */
+export const SCAN_REQUEST_HREF = '/account#request-scan';
+
 export { COOKIE_NOTICE_STORAGE_KEY, COOKIE_NOTICE_TEXT };
 
 /**
@@ -560,6 +563,11 @@ function renderHomePage(input: HomePageInput, cards: readonly HomeAtlasCard[]): 
   // The search needs it when there are cards; the sign-in slot (CLA-316) whenever accounts are on.
   const accounts = input.accounts === true;
   const script = cards.length || accounts ? `\n    <script src="${HOME_SCRIPT_PATH}" defer></script>` : '';
+  // With accounts on, a request goes through the account page's form (CLA-455). A signed-out reader signs in
+  // first and lands on /account (or the welcome page, then /account), not always at the form's anchor.
+  const askHtml = accounts
+    ? `Want your repo mapped? <a href="${SCAN_REQUEST_HREF}" data-scan-request-link>Request a scan</a>`
+    : `Want your repo mapped? <a href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a>`;
   const header = accounts ? `<header class="site-header">
       ${AUTH_SLOT_HTML}
     </header>
@@ -581,7 +589,7 @@ function renderHomePage(input: HomePageInput, cards: readonly HomeAtlasCard[]): 
         <h1 id="home-heading">${siteBrandLinkHtml('brand', true)}</h1>
         <p class="lede">${escapeHtml(HOME_DESCRIPTION)}</p>
         <div class="actions">
-          ${cta}<p class="ask">Want your repo mapped? <a href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a></p>
+          ${cta}<p class="ask">${askHtml}</p>
         </div>
       </section>
       <section class="directory" aria-labelledby="atlases-heading">

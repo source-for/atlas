@@ -4,7 +4,7 @@ import deployScriptSource from '../scripts/deploy.mjs?raw';
 import privacySource from '../../web/src/privacyPage.ts?raw';
 import termsSource from '../../web/src/termsPage.ts?raw';
 import { PRIVACY_COPY_PENDING } from '../../web/src/privacyPage';
-import { csvField, deleteOutputUnreadableMessage, deleteSql, EXPORT_COLUMNS, exportSql, parseUsersArgs, sqlString, toCsv, wranglerRows } from '../scripts/usersCore.mjs';
+import { csvField, deleteOutputUnreadableMessage, deleteSql, EXPORT_COLUMNS, exportSql, parseUsersArgs, REQUEST_COLUMNS, requestStatusSql, requestsSql, sqlString, toCsv, wranglerRows } from '../scripts/usersCore.mjs';
 import { edgeEnv } from './helpers';
 
 describe('operator users scripts (CLA-316)', () => {
@@ -283,5 +283,37 @@ environment-value`;
     expect(deployScriptSource.match(/spawnSync/g)).toHaveLength(2);
     expect(deployScriptSource).not.toContain('wrangler deploy');
     expect(deployScriptSource).not.toContain("'deploy'");
+  });
+});
+
+describe('scan request commands (CLA-455)', () => {
+  it('parses requests and request-status, refusing bad ids and statuses', () => {
+    expect(parseUsersArgs(['requests', 'production'])).toEqual({ command: 'requests', env: 'production', all: false });
+    expect(parseUsersArgs(['requests', 'staging', '--all'])).toEqual({ command: 'requests', env: 'staging', all: true });
+    expect(parseUsersArgs(['request-status', 'production', '--id', '7', '--status', 'published'])).toEqual({ command: 'request-status', env: 'production', id: 7, status: 'published' });
+    expect(parseUsersArgs(['request-status', 'production', '--status', 'declined', '--id', '7'])).toEqual({ command: 'request-status', env: 'production', id: 7, status: 'declined' });
+    for (const argv of [['requests', 'production', '--opted-in'], ['requests', 'dev'], ['request-status', 'production', '--id', '0', '--status', 'published'], ['request-status', 'production', '--id', '7', '--status', 'done'], ['request-status', 'production', '--id', '7;', '--status', 'published'], ['request-status', 'production', '--id', '7'], ['request-status', 'production', '--id', '7', '--id', '8'], ['request-status', 'production', '--status', 'published', '--status', 'declined'], ['request-status', 'production', '--id', '--status', 'published', '7'], ['request-status', 'production', '--id', '07', '--status', 'published'], ['request-status', 'production', '--id', '7', '--status', 'published', 'extra']]) {
+      expect(parseUsersArgs(argv), argv.join(' ')).toHaveProperty('error');
+    }
+  });
+
+  it('lists open requests with who asked, and sets a status, against the real schema', async () => {
+    const db = edgeEnv.USERS_DB!;
+    await db.exec('DELETE FROM scan_requests WHERE github_id >= 900000; DELETE FROM users WHERE github_id >= 900000');
+    await db.prepare("INSERT INTO users (github_id, github_login, email, email_verified, created_at, last_sign_in_at, privacy_version) VALUES (900010, 'dana', 'dana@example.com', 1, 't', 't', 'v')").run();
+    const insert = db.prepare("INSERT INTO scan_requests (github_id, owner, repo, repo_key, note, status, created_at, updated_at) VALUES (900010, ?1, ?2, ?3, ?4, ?5, ?6, ?6)");
+    await db.batch([insert.bind('acme', 'app', 'acme/app', '=SUM(A1)', 'requested', '2026-10-10T01:00:00Z'), insert.bind('acme', 'old', 'acme/old', null, 'published', '2026-10-09T00:00:00Z')]);
+    const mine = (rows: Array<Record<string, unknown>>) => rows.filter(row => Number(row.github_id) >= 900000);
+    const open = mine((await db.prepare(requestsSql(false)).all()).results);
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({ owner: 'acme', repo: 'app', status: 'requested', github_login: 'dana', email: 'dana@example.com' });
+    expect(Object.keys(open[0]!)).toEqual(REQUEST_COLUMNS);
+    expect(toCsv(open, REQUEST_COLUMNS)).toContain(",'=SUM(A1),");
+    expect(mine((await db.prepare(requestsSql(true)).all()).results).map(row => row.repo)).toEqual(['old', 'app']);
+    const id = Number(open[0]!.id);
+    expect((await db.prepare(requestStatusSql(id, 'published', '2026-10-10T02:00:00Z')).all()).results).toEqual([{ id, owner: 'acme', repo: 'app', status: 'published' }]);
+    expect(await db.prepare('SELECT status, updated_at FROM scan_requests WHERE id = ?1').bind(id).first()).toEqual({ status: 'published', updated_at: '2026-10-10T02:00:00Z' });
+    expect((await db.prepare(requestStatusSql(999_999_999, 'declined', 't')).all()).results).toEqual([]);
+    expect(() => requestStatusSql(id, "published'; --", 't')).toThrow();
   });
 });

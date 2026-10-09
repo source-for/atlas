@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import source from '../public/home.js?raw';
-import { AUTH_SLOT_HTML, COOKIE_NOTICE_HTML, COOKIE_NOTICE_STORAGE_KEY, COOKIE_NOTICE_TEXT, homeAtlasCards, homeCardMatches, homeCountText, homePageHtml, matchesAtWordStart, normalizeHomeQuery } from './homePage';
+import { AUTH_SLOT_HTML, COOKIE_NOTICE_HTML, SCAN_REQUEST_HREF, COOKIE_NOTICE_STORAGE_KEY, COOKIE_NOTICE_TEXT, homeAtlasCards, homeCardMatches, homeCountText, homePageHtml, matchesAtWordStart, normalizeHomeQuery } from './homePage';
 
 /**
  * CLA-269: apps/web/public/home.js, the home page's plain-script enhancement. The file is evaluated as the
@@ -353,7 +353,11 @@ describe('CLA-316 home.js: the sign-in slot', () => {
       expect(html).toContain(`<header class="site-header">\n      ${AUTH_SLOT_HTML}\n    </header>`);
       expect(html).toContain('.site-auth[hidden]{display:none}');
       expect(html).toContain('<script src="/home.js" defer></script>');
+      // CLA-455: the hero's ask goes to the account page's request form, not email.
+      expect(html).toContain(`Want your repo mapped? <a href="${SCAN_REQUEST_HREF}" data-scan-request-link>Request a scan</a>`);
+      expect(html).not.toContain('Want your repo mapped? <a href="mailto:');
     }
+    expect(SCAN_REQUEST_HREF).toBe('/account#request-scan');
   });
 
   it('leaves the home exactly as before when accounts are off: no slot, no slot CSS, no script on an empty directory', () => {
@@ -363,6 +367,7 @@ describe('CLA-316 home.js: the sign-in slot', () => {
       expect(html).not.toContain('data-auth-slot');
       expect(html).not.toContain('site-header');
       expect(html).not.toContain('site-auth');
+      expect(html).not.toContain('data-scan-request-link');
     }
     expect(homePageHtml({ index: undefined })).not.toMatch(/<script/i);
   });
