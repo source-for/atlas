@@ -415,6 +415,20 @@ pnpm --silent --filter @okie/edge users:delete production --email someone@exampl
 Self-serve: a signed-in user can untick product updates, or tick the confirmation and "Delete my account", on
 `/account`. Deletion removes the row at once and signs them out.
 
+**Scan requests (CLA-455):** a signed-in user can ask for a public repo to be scanned from `/account` (the home
+page's "Request a scan" link goes there). Requests are in `scan_requests` in the same database, at most five open
+per user. Work through them like this:
+
+```sh
+pnpm --silent --filter @okie/edge requests:export production > requests.csv       # open requests, oldest first, with login and email
+pnpm --silent --filter @okie/edge requests:export production --all > all.csv      # every status
+pnpm --silent --filter @okie/edge requests:status production --id 7 --status published   # after its atlas is live
+pnpm --silent --filter @okie/edge requests:status production --id 8 --status declined     # not scanning it
+```
+
+The user sees the status on `/account`, with a link to the atlas once it is `published`. Nothing emails them
+yet. Deleting an account, from `/account` or with `users:delete`, deletes its requests too.
+
 **Privacy, terms and cookie notice:** the `/privacy` copy lives in `PRIVACY_COPY` at the top of `apps/web/src/privacyPage.ts` and the `/terms` copy in `TERMS_COPY` in `apps/web/src/termsPage.ts` (its date is `TERMS_VERSION` in `siteMeta.ts`; the operator's legal name on both pages is the one `SITE_OPERATOR` line in `privacyPage.ts`) (its cookie table comes from `auth.ts`, its date from `PRIVACY_POLICY_VERSION` in `apps/web/src/siteMeta.ts`: bump that when the policy changes); the notice's words are `COOKIE_NOTICE_TEXT` in the same `siteMeta.ts`. Copy the owner still has to fill in carries the marker `[pending owner]` (or `[pending owner: <what to do>]`); `deploy:production` refuses to run while `privacyPage.ts` or `termsPage.ts` contains it (staging deploys anyway, and a production `--dry-run` only prints a warning).
 
 **Local:** in `apps/edge/.dev.vars` set `SESSION_SIGNING_KEY` (32+ characters) and either `DEV_AUTH_TEST_LOGIN=1` (a fixed

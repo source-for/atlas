@@ -13,7 +13,9 @@
     "smoke:staging": "node scripts/smoke.mjs staging",
     "smoke:production": "node scripts/smoke.mjs production",
     "users:export": "node scripts/users.mjs export",
-    "users:delete": "node scripts/users.mjs delete"
+    "users:delete": "node scripts/users.mjs delete",
+    "requests:export": "node scripts/users.mjs requests",
+    "requests:status": "node scripts/users.mjs request-status"
   },
   "devDependencies": {
     "@cloudflare/containers": "0.3.7",

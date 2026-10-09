@@ -18,6 +18,11 @@ export const EXPORT_COLUMNS = [
   'product_updates_changed_at',
 ];
 
+/** Columns of `users.mjs requests` (CLA-455): one row per scan request, with who asked. */
+export const REQUEST_COLUMNS = ['id', 'created_at', 'status', 'owner', 'repo', 'note', 'github_login', 'email', 'github_id'];
+export const REQUEST_STATUSES = ['published', 'declined', 'requested'];
+
+const REQUEST_ID = /^[1-9]\d{0,15}$/;
 const EMAIL = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,63}$/;
 const GITHUB_ID = /^(0|[1-9]\d{0,15})$/;
 
@@ -26,6 +31,9 @@ export const USAGE = [
   '  users.mjs export <staging|production> [--opted-in]      CSV of accounts on stdout',
   '  users.mjs delete <staging|production> --github-id <N>   delete one account',
   '  users.mjs delete <staging|production> --email <address> delete the account(s) with that email',
+  '  users.mjs requests <staging|production> [--all]         CSV of open scan requests (--all: every status) on stdout',
+  '  users.mjs request-status <staging|production> --id <N> --status <published|declined|requested>',
+  '                                                          set one scan request\'s status',
 ].join('\n');
 
 /**
@@ -33,12 +41,29 @@ export const USAGE = [
  * @returns {{ command: 'export', env: string, optedIn: boolean }
  *   | { command: 'delete', env: string, githubId: number }
  *   | { command: 'delete', env: string, email: string }
+ *   | { command: 'requests', env: string, all: boolean }
+ *   | { command: 'request-status', env: string, id: number, status: string }
  *   | { error: string }}
  */
 export function parseUsersArgs(argv) {
   const [command, env, ...rest] = argv;
-  if (command !== 'export' && command !== 'delete') return { error: USAGE };
+  if (command !== 'export' && command !== 'delete' && command !== 'requests' && command !== 'request-status') return { error: USAGE };
   if (!ENVIRONMENTS.includes(env ?? '')) return { error: `unknown environment ${JSON.stringify(env ?? '')}\n${USAGE}` };
+  if (command === 'requests') {
+    if (rest.length === 0) return { command, env, all: false };
+    if (rest.length === 1 && rest[0] === '--all') return { command, env, all: true };
+    return { error: USAGE };
+  }
+  if (command === 'request-status') {
+    const flags = new Map();
+    for (let index = 0; index < rest.length; index += 2) flags.set(rest[index], rest[index + 1]);
+    if (rest.length !== 4 || !flags.has('--id') || !flags.has('--status')) return { error: USAGE };
+    const id = flags.get('--id');
+    const status = flags.get('--status');
+    if (!REQUEST_ID.test(id ?? '') || !Number.isSafeInteger(Number(id))) return { error: 'the request id must be a positive integer' };
+    if (!REQUEST_STATUSES.includes(status ?? '')) return { error: `the status must be one of ${REQUEST_STATUSES.join(', ')}` };
+    return { command, env, id: Number(id), status };
+  }
   if (command === 'export') {
     if (rest.length === 0) return { command, env, optedIn: false };
     if (rest.length === 1 && rest[0] === '--opted-in') return { command, env, optedIn: true };
@@ -60,6 +85,24 @@ export function parseUsersArgs(argv) {
 /** A SQL string literal ('' doubles a quote). */
 export function sqlString(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+/** @param {boolean} all  every request, not only the open ones; oldest first */
+export function requestsSql(all) {
+  const where = all ? '' : " WHERE r.status = 'requested'";
+  const columns = REQUEST_COLUMNS.map(column => (column === 'github_login' || column === 'email' ? `u.${column}` : `r.${column}`)).join(', ');
+  return `SELECT ${columns} FROM scan_requests r LEFT JOIN users u ON u.github_id = r.github_id${where} ORDER BY r.created_at, r.id;`;
+}
+
+/**
+ * @param {number} id
+ * @param {string} status
+ * @param {string} at  ISO timestamp for updated_at
+ */
+export function requestStatusSql(id, status, at) {
+  if (!Number.isSafeInteger(id) || id < 1) throw new Error('invalid request id');
+  if (!REQUEST_STATUSES.includes(status)) throw new Error('invalid status');
+  return `UPDATE scan_requests SET status = ${sqlString(status)}, updated_at = ${sqlString(at)} WHERE id = ${id} RETURNING id, owner, repo, status;`;
 }
 
 /** @param {boolean} optedIn  only rows that opted in to product updates and have an email */
