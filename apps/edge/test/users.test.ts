@@ -30,8 +30,8 @@ describe('operator users scripts (CLA-316)', () => {
   it('builds the SQL, which runs against the real schema', async () => {
     expect(exportSql(false)).toBe(`SELECT ${EXPORT_COLUMNS.join(', ')} FROM users ORDER BY github_id;`);
     expect(exportSql(true)).toContain('WHERE product_updates_opt_in = 1 AND email IS NOT NULL');
-    expect(deleteSql({ githubId: 42 })).toBe('DELETE FROM users WHERE github_id = 42 RETURNING github_id;');
-    expect(deleteSql({ email: 'A@Example.com' })).toBe("DELETE FROM users WHERE lower(email) = lower('A@Example.com') RETURNING github_id;");
+    expect(deleteSql({ githubId: 42 })).toBe('DELETE FROM scan_requests WHERE github_id IN (SELECT github_id FROM users WHERE github_id = 42); DELETE FROM users WHERE github_id = 42 RETURNING github_id;');
+    expect(deleteSql({ email: 'A@Example.com' })).toBe("DELETE FROM scan_requests WHERE github_id IN (SELECT github_id FROM users WHERE lower(email) = lower('A@Example.com')); DELETE FROM users WHERE lower(email) = lower('A@Example.com') RETURNING github_id;");
     expect(() => deleteSql({ email: "x'--@example.com" })).toThrow();
     expect(() => deleteSql({ githubId: -1 })).toThrow();
     expect(sqlString("it's")).toBe("'it''s'");
@@ -44,9 +44,16 @@ describe('operator users scripts (CLA-316)', () => {
     const mine = (rows: Array<Record<string, unknown>>) => rows.map(row => row.github_id).filter(id => Number(id) >= 900000);
     expect(mine((await db.prepare(exportSql(true)).all()).results)).toEqual([900001]);
     expect(mine((await db.prepare(exportSql(false)).all()).results)).toEqual([900001, 900002, 900003]);
-    expect((await db.prepare(deleteSql({ email: 'B@EXAMPLE.COM' })).all()).results).toEqual([{ github_id: 900002 }]);
-    expect((await db.prepare(deleteSql({ githubId: 900003 })).all()).results).toEqual([{ github_id: 900003 }]);
-    expect((await db.prepare(deleteSql({ githubId: 900003 })).all()).results).toEqual([]);
+    // wrangler runs the statements in order; the last one's rows are the deleted accounts.
+    const run = async (sql: string) => (await db.batch(sql.split(/;\s*/).filter(Boolean).map(statement => db.prepare(statement)))).at(-1)!.results;
+    await db.exec('DELETE FROM scan_requests WHERE github_id >= 900000');
+    const request = db.prepare("INSERT INTO scan_requests (github_id, owner, repo, repo_key, created_at, updated_at) VALUES (?1, 'acme', 'app', 'acme/app', 't', 't')");
+    await db.batch([request.bind(900001), request.bind(900002)]);
+    expect(await run(deleteSql({ email: 'B@EXAMPLE.COM' }))).toEqual([{ github_id: 900002 }]);
+    expect(await run(deleteSql({ githubId: 900003 }))).toEqual([{ github_id: 900003 }]);
+    expect(await run(deleteSql({ githubId: 900003 }))).toEqual([]);
+    // The deleted account's scan requests went with it (CLA-455); another account's stayed.
+    expect((await db.prepare('SELECT github_id FROM scan_requests WHERE github_id >= 900000').all()).results).toEqual([{ github_id: 900001 }]);
   });
 
   it('reads wrangler --json output and writes CSV (quoted, formula-safe, nulls empty)', () => {
