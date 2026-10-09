@@ -153,7 +153,7 @@ export function applyPageMeta(doc: MetaDocument, pathname: string): PageMeta {
  * The privacy policy version in force (CLA-316). Stored on each account row at sign-up
  * (`users.privacy_version`, apps/edge) and shown on the privacy page; bump it when the policy changes.
  */
-export const PRIVACY_POLICY_VERSION = '2026-10-01';
+export const PRIVACY_POLICY_VERSION = '2026-10-10';
 
 /** The privacy page (CLA-316; privacyPage.ts, rendered by the edge Worker). Every site footer links it. */
 export const PRIVACY_PATH = '/privacy';

@@ -70,6 +70,13 @@ export const PRIVACY_COPY = {
       ],
     },
     {
+      heading: 'If you request a scan',
+      blocks: [
+        { kind: 'p', text: 'Signed-in users can ask us to scan a public GitHub repository. We store the repository name, the note you add (if any), when you asked, and whether we published it or decided not to. We use this to scan and publish the repository, and we may email you about the request.' },
+        { kind: 'p', text: 'We only scan public repositories, and we may decide not to scan one. Requests are listed on your Account page and are deleted with your account.' },
+      ],
+    },
+    {
       heading: 'If you use Ask',
       blocks: [
         { kind: 'p', text: 'Ask requires sign-in. To answer your question, we send the question and a bounded selection of atlas evidence to OpenRouter and its selected model provider. We do not include your GitHub account details or sign-in cookies in the model request. Avoid putting private information in a question.' },

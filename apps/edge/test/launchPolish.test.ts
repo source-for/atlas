@@ -134,7 +134,7 @@ describe('sitemap.xml at the edge', () => {
   </url>
   <url>
     <loc>https://sourcefor.dev/privacy</loc>
-    <lastmod>2026-10-01</lastmod>
+    <lastmod>2026-10-10</lastmod>
   </url>
   <url>
     <loc>https://sourcefor.dev/terms</loc>
