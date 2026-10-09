@@ -28,7 +28,7 @@ export type AccountPageInput = {
   /** The user's scan requests, newest first (CLA-455). */
   scanRequests?: readonly AccountScanRequest[];
   /** `?request=…`: what happened to the scan request just submitted. */
-  scanRequestOutcome?: 'requested' | 'invalid' | 'duplicate' | 'limit';
+  scanRequestOutcome?: 'requested' | 'invalid' | 'duplicate' | 'published' | 'declined' | 'limit';
 };
 
 export type AccountScanRequest = { owner: string; repo: string; status: 'requested' | 'published' | 'declined'; createdAt: string };
@@ -86,7 +86,9 @@ export const ACCOUNT_PAGE_STYLE = `
 const SCAN_REQUEST_NOTICES = {
   requested: { tone: '', text: 'Thanks — your request is in. We’ll scan it, and it will show as published here when its atlas is live.' },
   invalid: { tone: ' warn', text: 'That doesn’t look like a GitHub repository. Enter owner/repo or a github.com link.' },
-  duplicate: { tone: ' warn', text: 'You’ve already requested that repository.' },
+  duplicate: { tone: ' warn', text: 'You’ve already requested that repository. It’s listed below.' },
+  published: { tone: '', text: 'We’ve already published that repository’s atlas. It’s linked below.' },
+  declined: { tone: ' warn', text: `We decided not to scan that repository. Email ${CONTACT_EMAIL} if you’d like us to look again.` },
   limit: { tone: ' warn', text: `You have ${SCAN_REQUEST_LIMIT} requests waiting. You can request more once some of them are done.` },
 } as const;
 

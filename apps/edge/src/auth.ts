@@ -36,6 +36,8 @@ export const PREFERENCES_PATH = '/api/account/preferences';
 export const DELETE_ACCOUNT_PATH = '/api/account/delete';
 export const SCAN_REQUESTS_PATH = '/api/account/scan-requests';
 
+/** The largest account form POST accepted (the scan request note is the longest field, 500 characters). */
+export const MAX_ACCOUNT_FORM_BYTES = 16 * 1024;
 export const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 export const STATE_TTL_SECONDS = 10 * 60;
 export const MIN_SIGNING_KEY_LENGTH = 32;
@@ -528,6 +530,8 @@ export async function handleAuthRoute(request: Request, env: EdgeEnv, context: A
     // A page with a link, not a redirect: form-action 'self' would block the hop on to github.com.
     if (!current.signedIn) return sessionEnded(current.clear);
     const githubId = current.signedIn.user.github_id;
+    // Every account form is a few fields; refuse a large declared body before buffering it.
+    if (Number(request.headers.get('content-length')) > MAX_ACCOUNT_FORM_BYTES) return jsonResponse(413, { error: 'Form submission is too large.' });
     let form: FormData;
     try {
       form = await request.formData();
@@ -598,5 +602,5 @@ export async function handleAccountPage(request: Request, env: EdgeEnv, context:
 }
 
 function isScanRequestOutcome(value: string | null): value is ScanRequestOutcome {
-  return value === 'requested' || value === 'invalid' || value === 'duplicate' || value === 'limit';
+  return value === 'requested' || value === 'invalid' || value === 'duplicate' || value === 'published' || value === 'declined' || value === 'limit';
 }

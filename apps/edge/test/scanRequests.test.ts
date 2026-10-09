@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PRIVACY_POLICY_VERSION } from '../../web/src/siteMeta';
-import { SESSION_TTL_SECONDS, signSession } from '../src/auth';
+import { MAX_ACCOUNT_FORM_BYTES, SESSION_TTL_SECONDS, signSession } from '../src/auth';
 import type { EdgeEnv } from '../src/env';
 import { MAX_OPEN_SCAN_REQUESTS, MAX_SCAN_REQUEST_NOTE, cleanScanRequestNote, parseScanRequestRepo } from '../src/scanRequests';
 import { edgeEnv, edgeFetch } from './helpers';
@@ -51,13 +51,15 @@ describe('parseScanRequestRepo (CLA-455)', () => {
   });
 
   it('refuses anything that is not a GitHub repository', () => {
-    for (const input of ['', 'acme', 'acme/', '/app', 'acme/app/extra', 'https://gitlab.com/acme/app', 'https://github.com/acme', 'acme/..', '-acme/app', 'acme--x/app', 'ac me/app', 'git@github.com:acme/app.git', `a/${'x'.repeat(101)}`, 'acme/app<script>']) {
+    for (const input of ['', 'acme', 'acme/', '/app', 'acme/app/extra', 'https://gitlab.com/acme/app', 'https://github.com/acme', 'acme/..', '-acme/app', 'acme--x/app', 'ac me/app', 'git@github.com:acme/app.git', `a/${'x'.repeat(101)}`, 'acme/app<script>', 'https://github.com/orgs/acme/repositories', 'github.com/settings/profile', 'sponsors/acme', 'Features/actions']) {
       expect(parseScanRequestRepo(input), input).toBeUndefined();
     }
   });
 
   it('trims the note, drops control characters and caps its length', () => {
     expect(cleanScanRequestNote('  hello\u0000 there \n')).toBe('hello there');
+    expect(cleanScanRequestNote('a\u202eb\u200bc\u0085d\ufeff')).toBe('abcd');
+    expect(cleanScanRequestNote('line one\n\tline two')).toBe('line one\n\tline two');
     expect(cleanScanRequestNote('   ')).toBeNull();
     expect(cleanScanRequestNote(undefined)).toBeNull();
     expect([...cleanScanRequestNote('é'.repeat(MAX_SCAN_REQUEST_NOTE + 20))!]).toHaveLength(MAX_SCAN_REQUEST_NOTE);
@@ -92,6 +94,44 @@ describe('scan requests (CLA-455)', () => {
     const page = await (await account(cookie)).text();
     expect(page).toContain('<a href="/r/acme/app">acme/app</a>');
     expect(page).toContain('<span class="status">Published</span>');
+  });
+
+  it('takes a link to a page inside the repo through the route', async () => {
+    const cookie = await signedIn(ALICE, 'alice');
+    expect((await send(post({ repo: 'https://github.com/acme/app/tree/main/src?tab=readme#x' }, cookie))).headers.get('location')).toBe('/account?request=requested#request-scan');
+    expect(await rows(ALICE)).toMatchObject([{ owner: 'acme', repo: 'app' }]);
+  });
+
+  it('says when a repo was already published or declined instead of asking again', async () => {
+    const cookie = await signedIn(ALICE, 'alice');
+    await send(post({ repo: 'acme/app' }, cookie));
+    await send(post({ repo: 'acme/other' }, cookie));
+    await edgeEnv.USERS_DB!.batch([
+      edgeEnv.USERS_DB!.prepare("UPDATE scan_requests SET status = 'published' WHERE github_id = ?1 AND repo_key = 'acme/app'").bind(ALICE),
+      edgeEnv.USERS_DB!.prepare("UPDATE scan_requests SET status = 'declined' WHERE github_id = ?1 AND repo_key = 'acme/other'").bind(ALICE),
+    ]);
+    expect((await send(post({ repo: 'Acme/App' }, cookie))).headers.get('location')).toBe('/account?request=published#request-scan');
+    expect((await send(post({ repo: 'acme/other' }, cookie))).headers.get('location')).toBe('/account?request=declined#request-scan');
+    expect(await rows(ALICE)).toHaveLength(2);
+    expect(await (await account(cookie, '?request=declined')).text()).toContain('We decided not to scan that repository.');
+    expect(await (await account(cookie, '?request=published')).text()).toContain('data-scan-request-outcome="published"');
+  });
+
+  it('holds the open cap under concurrent posts', async () => {
+    const cookie = await signedIn(ALICE, 'alice');
+    const outcomes = await Promise.all(Array.from({ length: MAX_OPEN_SCAN_REQUESTS * 2 }, (_, index) => send(post({ repo: `acme/race-${index}` }, cookie)).then(response => response.headers.get('location'))));
+    expect(await rows(ALICE)).toHaveLength(MAX_OPEN_SCAN_REQUESTS);
+    expect(outcomes.filter(location => location?.includes('request=requested'))).toHaveLength(MAX_OPEN_SCAN_REQUESTS);
+    expect(outcomes.filter(location => location?.includes('request=limit'))).toHaveLength(MAX_OPEN_SCAN_REQUESTS);
+  });
+
+  it('refuses a form body over the account form limit before reading it', async () => {
+    const cookie = await signedIn(ALICE, 'alice');
+    const big = post({ repo: 'acme/app', note: 'x'.repeat(MAX_ACCOUNT_FORM_BYTES) }, cookie);
+    expect(Number(big.headers.get('content-length') ?? new TextEncoder().encode(await big.clone().text()).byteLength)).toBeGreaterThan(MAX_ACCOUNT_FORM_BYTES);
+    const sized = new Request(big, { headers: { ...Object.fromEntries(big.headers), 'content-length': String(MAX_ACCOUNT_FORM_BYTES + 100) } });
+    expect((await send(sized)).status).toBe(413);
+    expect(await rows(ALICE)).toEqual([]);
   });
 
   it('keeps each user’s requests to themselves', async () => {

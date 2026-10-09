@@ -9,11 +9,18 @@ export const MAX_SCAN_REQUEST_NOTE = 500;
 
 export type ScanRequestStatus = 'requested' | 'published' | 'declined';
 export type ScanRequest = { owner: string; repo: string; status: ScanRequestStatus; createdAt: string };
-export type ScanRequestOutcome = 'requested' | 'invalid' | 'duplicate' | 'limit';
+/** `duplicate` = still waiting; `published` / `declined` = asked before and already settled that way. */
+export type ScanRequestOutcome = 'requested' | 'invalid' | 'duplicate' | 'published' | 'declined' | 'limit';
 
 // GitHub's own rules: owners are 1–39 alphanumerics or single hyphens; repo names are [A-Za-z0-9._-]{1,100}.
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 const REPO = /^[A-Za-z0-9._-]{1,100}$/;
+// First path segments of github.com that are site pages, not owners (github.com/orgs/acme/… is not a repo).
+const RESERVED_OWNERS = new Set([
+  'about', 'apps', 'codespaces', 'collections', 'customer-stories', 'enterprise', 'events', 'explore', 'features',
+  'issues', 'login', 'marketplace', 'new', 'notifications', 'orgs', 'organizations', 'pricing', 'pulls', 'readme',
+  'search', 'security', 'settings', 'site', 'sponsors', 'topics', 'trending', 'users',
+]);
 
 /** `owner/repo`, or a github.com URL to the repo or any page inside it. Undefined when it is neither. */
 export function parseScanRequestRepo(input: string): { owner: string; repo: string } | undefined {
@@ -26,15 +33,18 @@ export function parseScanRequestRepo(input: string): { owner: string; repo: stri
   if (!url && (parts.length !== 2 || /[:\s]/.test(text))) return undefined;
   const [owner, rawRepo] = parts;
   const repo = rawRepo?.replace(/\.git$/i, '');
-  if (!owner || !repo || !OWNER.test(owner) || !REPO.test(repo) || repo === '.' || repo === '..') return undefined;
+  if (!owner || !repo || !OWNER.test(owner) || RESERVED_OWNERS.has(owner.toLowerCase()) || !REPO.test(repo) || repo === '.' || repo === '..') return undefined;
   return { owner, repo };
 }
 
-/** The optional note: trimmed, control characters removed, at most MAX_SCAN_REQUEST_NOTE characters. */
+/**
+ * The optional note: trimmed, at most MAX_SCAN_REQUEST_NOTE characters. Tabs and line breaks stay; other C0/C1
+ * controls, zero-width characters and bidirectional overrides are removed, so an export shows what was typed.
+ */
 export function cleanScanRequestNote(input: unknown): string | null {
   if (typeof input !== 'string') return null;
   // eslint-disable-next-line no-control-regex
-  const text = input.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '').trim();
+  const text = input.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '').trim();
   return text ? [...text].slice(0, MAX_SCAN_REQUEST_NOTE).join('') : null;
 }
 
@@ -47,16 +57,20 @@ export async function createScanRequest(
   const parsed = typeof input.repo === 'string' ? parseScanRequestRepo(input.repo) : undefined;
   if (!parsed) return 'invalid';
   const key = `${parsed.owner}/${parsed.repo}`.toLowerCase();
-  const open = await db.prepare("SELECT repo_key FROM scan_requests WHERE github_id = ?1 AND status = 'requested'").bind(githubId).all<{ repo_key: string }>();
-  const existing = await db.prepare('SELECT 1 AS found FROM scan_requests WHERE github_id = ?1 AND repo_key = ?2').bind(githubId, key).first();
-  if (existing) return 'duplicate';
-  if (open.results.length >= MAX_OPEN_SCAN_REQUESTS) return 'limit';
+  const existing = await db.prepare('SELECT status FROM scan_requests WHERE github_id = ?1 AND repo_key = ?2').bind(githubId, key).first<{ status: ScanRequestStatus }>();
+  if (existing) return existing.status === 'requested' ? 'duplicate' : existing.status;
   const at = now.toISOString();
-  await db.prepare(
-    `INSERT INTO scan_requests (github_id, owner, repo, repo_key, note, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+  // One statement, so concurrent posts cannot each see room under the cap: the row is written only while
+  // fewer than MAX_OPEN_SCAN_REQUESTS are open, and the unique key drops a same-repo race.
+  const inserted = await db.prepare(
+    `INSERT INTO scan_requests (github_id, owner, repo, repo_key, note, created_at, updated_at)
+     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?6
+     WHERE (SELECT COUNT(*) FROM scan_requests WHERE github_id = ?1 AND status = 'requested') < ?7
      ON CONFLICT (github_id, repo_key) DO NOTHING`,
-  ).bind(githubId, parsed.owner, parsed.repo, key, cleanScanRequestNote(input.note), at).run();
-  return 'requested';
+  ).bind(githubId, parsed.owner, parsed.repo, key, cleanScanRequestNote(input.note), at, MAX_OPEN_SCAN_REQUESTS).run();
+  if (inserted.meta.changes === 1) return 'requested';
+  // Nothing written: either the same repo landed concurrently, or the cap is full.
+  return await db.prepare('SELECT 1 AS found FROM scan_requests WHERE github_id = ?1 AND repo_key = ?2').bind(githubId, key).first() ? 'duplicate' : 'limit';
 }
 
 /** A user's requests, newest first. */
