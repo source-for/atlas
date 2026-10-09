@@ -292,7 +292,7 @@ describe('scan request commands (CLA-455)', () => {
     expect(parseUsersArgs(['requests', 'staging', '--all'])).toEqual({ command: 'requests', env: 'staging', all: true });
     expect(parseUsersArgs(['request-status', 'production', '--id', '7', '--status', 'published'])).toEqual({ command: 'request-status', env: 'production', id: 7, status: 'published' });
     expect(parseUsersArgs(['request-status', 'production', '--status', 'declined', '--id', '7'])).toEqual({ command: 'request-status', env: 'production', id: 7, status: 'declined' });
-    for (const argv of [['requests', 'production', '--opted-in'], ['requests', 'dev'], ['request-status', 'production', '--id', '0', '--status', 'published'], ['request-status', 'production', '--id', '7', '--status', 'done'], ['request-status', 'production', '--id', '7;', '--status', 'published'], ['request-status', 'production', '--id', '7']]) {
+    for (const argv of [['requests', 'production', '--opted-in'], ['requests', 'dev'], ['request-status', 'production', '--id', '0', '--status', 'published'], ['request-status', 'production', '--id', '7', '--status', 'done'], ['request-status', 'production', '--id', '7;', '--status', 'published'], ['request-status', 'production', '--id', '7'], ['request-status', 'production', '--id', '7', '--id', '8'], ['request-status', 'production', '--status', 'published', '--status', 'declined'], ['request-status', 'production', '--id', '--status', 'published', '7'], ['request-status', 'production', '--id', '07', '--status', 'published'], ['request-status', 'production', '--id', '7', '--status', 'published', 'extra']]) {
       expect(parseUsersArgs(argv), argv.join(' ')).toHaveProperty('error');
     }
   });

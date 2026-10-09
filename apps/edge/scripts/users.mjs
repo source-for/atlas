@@ -47,6 +47,9 @@ try {
   rows = wranglerRows(result.stdout);
 } catch (error) {
   console.error(`could not read wrangler's output: ${error instanceof Error ? error.message : String(error)}`);
+  if (args.command === 'request-status') {
+    console.error(`the UPDATE may still have run; re-running it is safe. wrangler printed:\n${result.stdout}`);
+  }
   if (args.command === 'delete') {
     // wrangler's output holds query results only (no credentials): show it so the operator can see what happened.
     console.error(deleteOutputUnreadableMessage(result.stdout));
@@ -61,8 +64,11 @@ if (args.command === 'export') {
   console.error(`${rows.length} ${args.all ? '' : 'open '}scan request(s) exported from ${args.env}`);
 } else if (args.command === 'request-status') {
   const [row] = rows;
-  console.log(row ? `scan request ${row.id} (${row.owner}/${row.repo}) is now ${row.status} on ${args.env}` : `no scan request ${args.id} on ${args.env}`);
-  if (!row) process.exit(1);
+  if (!row) {
+    console.error(`no scan request ${args.id} on ${args.env}`);
+    process.exit(1);
+  }
+  console.log(`scan request ${row.id} (${row.owner}/${row.repo}) is now ${row.status} on ${args.env}`);
 } else {
   console.log(`deleted ${rows.length} account(s) from ${args.env}`);
 }
