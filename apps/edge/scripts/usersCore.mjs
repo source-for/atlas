@@ -68,14 +68,23 @@ export function exportSql(optedIn) {
   return `SELECT ${EXPORT_COLUMNS.join(', ')} FROM users${where} ORDER BY github_id;`;
 }
 
+/**
+ * The account's scan requests (CLA-455) go first, in the same `wrangler d1 execute` call, as the account
+ * page's delete does; only the users DELETE returns rows, so the count is still accounts.
+ * @param {string} where  a validated users WHERE clause
+ */
+function withScanRequests(where) {
+  return `DELETE FROM scan_requests WHERE github_id IN (SELECT github_id FROM users WHERE ${where}); DELETE FROM users WHERE ${where} RETURNING github_id;`;
+}
+
 /** @param {{ githubId: number } | { email: string }} target */
 export function deleteSql(target) {
   if ('githubId' in target) {
     if (!Number.isSafeInteger(target.githubId) || target.githubId < 0) throw new Error('invalid GitHub id');
-    return `DELETE FROM users WHERE github_id = ${target.githubId} RETURNING github_id;`;
+    return withScanRequests(`github_id = ${target.githubId}`);
   }
   if (!EMAIL.test(target.email)) throw new Error('invalid email');
-  return `DELETE FROM users WHERE lower(email) = lower(${sqlString(target.email)}) RETURNING github_id;`;
+  return withScanRequests(`lower(email) = lower(${sqlString(target.email)})`);
 }
 
 /**

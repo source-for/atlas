@@ -3,6 +3,7 @@ import { accountHttpOutput, sessionEndedPageHtml } from '../../web/src/accountPa
 import { PRIVACY_POLICY_VERSION } from '../../web/src/siteMeta';
 import { askEnabled, type EdgeEnv } from './env';
 import { jsonResponse, notFoundJson } from './http';
+import { createScanRequest, deleteScanRequestsStatement, listScanRequests, type ScanRequest, type ScanRequestOutcome } from './scanRequests';
 
 /**
  * GitHub sign-in + email capture at the edge (CLA-316).
@@ -33,7 +34,10 @@ export const LOGOUT_PATH = '/api/auth/logout';
 export const ACCOUNT_PATH = '/account';
 export const PREFERENCES_PATH = '/api/account/preferences';
 export const DELETE_ACCOUNT_PATH = '/api/account/delete';
+export const SCAN_REQUESTS_PATH = '/api/account/scan-requests';
 
+/** The largest account form POST accepted (the scan request note is the longest field, 500 characters). */
+export const MAX_ACCOUNT_FORM_BYTES = 16 * 1024;
 export const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 export const STATE_TTL_SECONDS = 10 * 60;
 export const MIN_SIGNING_KEY_LENGTH = 32;
@@ -298,7 +302,8 @@ export async function setProductUpdates(db: D1Database, githubId: number, optIn:
 }
 
 export async function deleteUser(db: D1Database, githubId: number): Promise<void> {
-  await db.prepare('DELETE FROM users WHERE github_id = ?1').bind(githubId).run();
+  // CLA-455: the user's scan requests go in the same batch.
+  await db.batch([deleteScanRequestsStatement(db, githubId), db.prepare('DELETE FROM users WHERE github_id = ?1').bind(githubId)]);
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -518,18 +523,26 @@ export async function handleAuthRoute(request: Request, env: EdgeEnv, context: A
     }
   }
 
-  if (method === 'POST' && (pathname === PREFERENCES_PATH || pathname === DELETE_ACCOUNT_PATH)) {
+  if (method === 'POST' && (pathname === PREFERENCES_PATH || pathname === DELETE_ACCOUNT_PATH || pathname === SCAN_REQUESTS_PATH)) {
     if (!sameOrigin(request, url)) return jsonResponse(403, { error: 'Cross-origin request refused.' });
     const current = await currentUser(request, setup, now);
     if (current.unavailable) return unavailable();
     // A page with a link, not a redirect: form-action 'self' would block the hop on to github.com.
     if (!current.signedIn) return sessionEnded(current.clear);
     const githubId = current.signedIn.user.github_id;
+    // Every account form is a few fields; refuse a large declared body before buffering it.
+    if (Number(request.headers.get('content-length')) > MAX_ACCOUNT_FORM_BYTES) return jsonResponse(413, { error: 'Form submission is too large.' });
     let form: FormData;
     try {
       form = await request.formData();
     } catch {
       return jsonResponse(400, { error: 'Expected a form submission.' });
+    }
+    if (pathname === SCAN_REQUESTS_PATH) {
+      return write('scan request', async () => {
+        const outcome = await createScanRequest(setup.db, githubId, { repo: form.get('repo'), note: form.get('note') }, now);
+        return redirect(`${ACCOUNT_PATH}?request=${outcome}#request-scan`, [], 303);
+      });
     }
     if (pathname === PREFERENCES_PATH) {
       return write('preferences', async () => {
@@ -566,6 +579,14 @@ export async function handleAccountPage(request: Request, env: EdgeEnv, context:
   if (!current.signedIn) return redirect(signInLocation(ACCOUNT_PATH), current.clear);
   const { user } = current.signedIn;
   const welcome = url.searchParams.get('welcome') === '1';
+  let scanRequests: ScanRequest[];
+  try {
+    scanRequests = welcome ? [] : await listScanRequests(setup.db, user.github_id);
+  } catch {
+    console.warn('auth: scan requests lookup failed');
+    return unavailable();
+  }
+  const outcome = url.searchParams.get('request');
   const page = accountHttpOutput(method, {
     login: user.github_login,
     email: user.email,
@@ -574,6 +595,12 @@ export async function handleAccountPage(request: Request, env: EdgeEnv, context:
     returnTo: safeReturnPath(url.searchParams.get('return'), DEFAULT_RETURN),
     saved: url.searchParams.get('saved') === '1',
     deleteNeedsConfirm: url.searchParams.get('delete') === 'confirm',
+    scanRequests,
+    ...(isScanRequestOutcome(outcome) ? { scanRequestOutcome: outcome } : {}),
   });
   return new Response(page.body === '' ? null : page.body, { status: page.status, headers: page.headers });
+}
+
+function isScanRequestOutcome(value: string | null): value is ScanRequestOutcome {
+  return value === 'requested' || value === 'invalid' || value === 'duplicate' || value === 'published' || value === 'declined' || value === 'limit';
 }

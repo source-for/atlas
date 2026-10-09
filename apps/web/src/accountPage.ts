@@ -25,7 +25,17 @@ export type AccountPageInput = {
   saved?: boolean;
   /** `?delete=confirm`: a delete was submitted without ticking the confirmation. */
   deleteNeedsConfirm?: boolean;
+  /** The user's scan requests, newest first (CLA-455). */
+  scanRequests?: readonly AccountScanRequest[];
+  /** `?request=…`: what happened to the scan request just submitted. */
+  scanRequestOutcome?: 'requested' | 'invalid' | 'duplicate' | 'published' | 'declined' | 'limit';
 };
+
+export type AccountScanRequest = { owner: string; repo: string; status: 'requested' | 'published' | 'declined'; createdAt: string };
+
+/** Mirrors MAX_OPEN_SCAN_REQUESTS and MAX_SCAN_REQUEST_NOTE in apps/edge/src/scanRequests.ts. */
+export const SCAN_REQUEST_LIMIT = 5;
+export const SCAN_REQUEST_NOTE_MAX = 500;
 
 export const ACCOUNT_CACHE_CONTROL = 'private, no-store';
 export const PRODUCT_UPDATES_LABEL = 'Email me occasional product updates';
@@ -54,6 +64,14 @@ export const ACCOUNT_PAGE_STYLE = `
       button.danger{border-color:#ff8a80;background:transparent;color:#ff8a80}
       button.danger:hover{background:#2a1413}
       button:focus-visible,label.check input:focus-visible,a:focus-visible{outline:2px solid #79dfd4;outline-offset:2px}
+      label.field{display:block;margin:.75rem 0 .3rem;color:#eef4f2}
+      .optional{color:#97a5a0}
+      input[type=text],textarea{display:block;width:100%;margin:0 0 .75rem;padding:.55rem .7rem;border:1px solid #2a3a37;border-radius:8px;background:#070a0b;color:#eef4f2;font:inherit}
+      textarea{resize:vertical}
+      input[type=text]:focus-visible,textarea:focus-visible{outline:2px solid #79dfd4;outline-offset:2px}
+      .requests{margin:1.25rem 0 0;padding:0;list-style:none;display:grid;gap:.4rem}
+      .requests li{display:flex;justify-content:space-between;gap:1rem;padding:.4rem 0;border-top:1px solid #1d2a28}
+      .requests .status{color:#97a5a0;white-space:nowrap}
       .notice{padding:.6rem .9rem;border:1px solid #2a3a37;border-radius:8px;color:#eef4f2}
       .notice.warn{border-color:#ff8a80}
       nav{display:flex;flex-wrap:wrap;gap:1rem;margin-top:1.75rem;font-size:.95rem}
@@ -64,6 +82,45 @@ export const ACCOUNT_PAGE_STYLE = `
       ${SITE_FOOTER_CSS}
       @media (min-width:720px){main,.site-footer{padding-left:1.5rem;padding-right:1.5rem}}
     `;
+
+const SCAN_REQUEST_NOTICES = {
+  requested: { tone: '', text: 'Thanks — your request is in. We’ll scan it, and it will show as published here when its atlas is live.' },
+  invalid: { tone: ' warn', text: 'That doesn’t look like a GitHub repository. Enter owner/repo or a github.com link.' },
+  duplicate: { tone: ' warn', text: 'You’ve already requested that repository. It’s listed below.' },
+  published: { tone: '', text: 'We’ve already published that repository’s atlas. It’s linked below.' },
+  declined: { tone: ' warn', text: `We decided not to scan that repository. Email ${CONTACT_EMAIL} if you’d like us to look again.` },
+  limit: { tone: ' warn', text: `You have ${SCAN_REQUEST_LIMIT} requests waiting. You can request more once some of them are done.` },
+} as const;
+
+const SCAN_REQUEST_STATUS = { requested: 'Waiting', published: 'Published', declined: 'Not scanned' } as const;
+
+function scanRequestsHtml(input: AccountPageInput): string {
+  const e = escapeHtml;
+  const outcome = input.scanRequestOutcome ? SCAN_REQUEST_NOTICES[input.scanRequestOutcome] : undefined;
+  const notice = outcome
+    ? `<p class="notice${outcome.tone}" role="${outcome.tone ? 'alert' : 'status'}" data-scan-request-outcome="${input.scanRequestOutcome}">${e(outcome.text)}</p>\n        `
+    : '';
+  const requests = input.scanRequests ?? [];
+  const list = requests.length === 0 ? '' : `
+        <ul class="requests" data-scan-requests>
+          ${requests.map(request => {
+            const name = `${request.owner}/${request.repo}`;
+            const label = request.status === 'published' ? `<a href="/r/${e(encodeURIComponent(request.owner))}/${e(encodeURIComponent(request.repo))}">${e(name)}</a>` : e(name);
+            return `<li data-scan-request-status="${request.status}"><span>${label}</span> <span class="status">${SCAN_REQUEST_STATUS[request.status]}</span></li>`;
+          }).join('\n          ')}
+        </ul>`;
+  return `<section id="request-scan" aria-labelledby="request-scan-heading">
+        <h2 id="request-scan-heading">Request a scan</h2>
+        ${notice}<p>Want an atlas of a public GitHub repository, such as one you own or contribute to? Tell us which, and we’ll scan it and publish its atlas.</p>
+        <form method="post" action="/api/account/scan-requests" data-scan-request-form>
+          <label class="field" for="scan-request-repo">Repository</label>
+          <input id="scan-request-repo" name="repo" type="text" required maxlength="300" placeholder="owner/repo or a GitHub link" autocomplete="off" spellcheck="false" />
+          <label class="field" for="scan-request-note">Anything we should know? <span class="optional">(optional)</span></label>
+          <textarea id="scan-request-note" name="note" rows="3" maxlength="${SCAN_REQUEST_NOTE_MAX}"></textarea>
+          <button type="submit">Request a scan</button>
+        </form>${list}
+      </section>`;
+}
 
 function emailHtml(email: string | null): string {
   return email ? escapeHtml(email) : escapeHtml(NO_EMAIL_COPY);
@@ -104,13 +161,14 @@ export function accountPageHtml(input: AccountPageInput): string {
           <dt>Email</dt><dd data-account-email>${emailHtml(input.email)}</dd>
         </dl>
       </section>
+      ${scanRequestsHtml(input)}
       <section aria-labelledby="updates-heading">
         <h2 id="updates-heading">Product updates</h2>
         ${preferencesFormHtml(input)}
       </section>
       <section aria-labelledby="delete-heading">
         <h2 id="delete-heading">Delete my account</h2>
-        <p>Deletes your account record (GitHub login, email and preferences) straight away and signs you out.</p>
+        <p>Deletes your account record (GitHub login, email, preferences and scan requests) straight away and signs you out.</p>
         <form method="post" action="/api/account/delete" data-account-delete>
           <label class="check"><input type="checkbox" name="confirm" value="1" required /> <span>Yes, delete my account</span></label>
           <button class="danger" type="submit">Delete my account</button>

@@ -18,8 +18,8 @@ describe('CLA-316 privacy page', () => {
   const html = privacyPageHtml({ cookies: COOKIES });
 
   it('renders the copy: last-updated date from PRIVACY_POLICY_VERSION, every section, mailto links, no script', () => {
-    expect(PRIVACY_POLICY_VERSION).toBe('2026-10-01');
-    expect(html).toContain('Last updated <time datetime="2026-10-01">1 October 2026</time>');
+    expect(PRIVACY_POLICY_VERSION).toBe('2026-10-10');
+    expect(html).toContain('Last updated <time datetime="2026-10-10">10 October 2026</time>');
     for (const section of PRIVACY_COPY.sections) expect(html).toContain(`>${section.heading}</h2>`);
     expect(html).toContain(`<a href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a> from the address on your account`);
     expect(html).not.toContain('[CONTACT_EMAIL]');

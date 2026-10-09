@@ -54,7 +54,7 @@ describe('/privacy at the edge (CLA-316)', () => {
   });
 
   it('is in the sitemap, and the 404 page footer links it', async () => {
-    expect(await (await edgeFetch('/sitemap.xml', { env: { OKIE_PUBLIC_ORIGIN: 'https://sourcefor.dev' } })).text()).toContain('<loc>https://sourcefor.dev/privacy</loc>\n    <lastmod>2026-10-01</lastmod>');
+    expect(await (await edgeFetch('/sitemap.xml', { env: { OKIE_PUBLIC_ORIGIN: 'https://sourcefor.dev' } })).text()).toContain('<loc>https://sourcefor.dev/privacy</loc>\n    <lastmod>2026-10-10</lastmod>');
     const notFound = await edgeFetch('/no-such-page');
     expect(notFound.status).toBe(404);
     expect(await notFound.text()).toContain('<a href="/privacy">Privacy</a>');
