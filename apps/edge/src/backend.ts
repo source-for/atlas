@@ -37,7 +37,7 @@ const STRIPPED_REQUEST_HEADERS = [
 ] as const;
 
 /** Response headers the container may set that must never reach a browser. */
-const STRIPPED_RESPONSE_HEADERS = ['set-cookie', 'x-okie-ask-cost-usd', 'x-okie-ask-tokens'] as const;
+const STRIPPED_RESPONSE_HEADERS = ['set-cookie', 'x-okie-ask-cost-usd', 'x-okie-ask-tokens', 'x-okie-ask-outcome'] as const;
 
 export function devBackendOrigin(env: Pick<EdgeEnv, 'DEV_BACKEND_ORIGIN'>): string | undefined {
   const raw = env.DEV_BACKEND_ORIGIN?.trim();

@@ -12,6 +12,7 @@ import type { EdgeEnv } from './env';
  *     reservation settles to the real cost (`x-okie-ask-cost-usd`) or keeps the estimate.
  *
  * A reservation whose settle never arrives (isolate died mid-request) stays counted — fail closed.
+ * CLA-472: a settle marked unanswered also gives the account's daily Ask back (the bucket count and dollars stand).
  * All methods are synchronous SQL inside one Durable Object, so admission is atomic.
  */
 
@@ -58,6 +59,7 @@ export class AtlasBudget extends DurableObject<EdgeEnv> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS request_counts (day TEXT NOT NULL, bucket TEXT NOT NULL, requests INTEGER NOT NULL, PRIMARY KEY (day, bucket))`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS dollar_spent (day TEXT PRIMARY KEY, spent REAL NOT NULL)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS dollar_reservations (id TEXT PRIMARY KEY, day TEXT NOT NULL, amount REAL NOT NULL)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS ask_admissions (reservation_id TEXT PRIMARY KEY, day TEXT NOT NULL, account_id TEXT NOT NULL)`);
   }
 
   private requests(day: string, bucket: BudgetBucket): number {
@@ -84,6 +86,7 @@ export class AtlasBudget extends DurableObject<EdgeEnv> {
     this.sql.exec('DELETE FROM request_counts WHERE day < ?', cutoff);
     this.sql.exec('DELETE FROM dollar_spent WHERE day < ?', cutoff);
     this.sql.exec('DELETE FROM dollar_reservations WHERE day < ?', cutoff);
+    this.sql.exec('DELETE FROM ask_admissions WHERE day < ?', cutoff);
 
     if (this.requests(input.day, input.bucket) + 1 > input.maxRequests) return { ok: false, reason: 'requests' };
     let reservationId: string | undefined;
@@ -99,11 +102,20 @@ export class AtlasBudget extends DurableObject<EdgeEnv> {
       input.bucket,
     );
     if (input.bucket === 'ask') this.sql.exec('INSERT INTO user_requests (day, account_id, requests) VALUES (?, ?, 1) ON CONFLICT (day, account_id) DO UPDATE SET requests = requests + 1', input.day, input.accountId!);
+    if (input.bucket === 'ask' && reservationId) this.sql.exec('INSERT INTO ask_admissions (reservation_id, day, account_id) VALUES (?, ?, ?)', reservationId, input.day, input.accountId!);
     return reservationId ? { ok: true, reservationId } : { ok: true };
   }
 
-  /** Close a reservation at the real cost (`undefined`/invalid → keep the estimate). Unknown ids are ignored. */
-  settle(reservationId: string, actualDollars?: number): void {
+  /**
+   * Close a reservation at the real cost (`undefined`/invalid → keep the estimate). Unknown ids are ignored.
+   * `unanswered` (CLA-472) also returns the account's daily Ask, once per reservation.
+   */
+  settle(reservationId: string, actualDollars?: number, unanswered = false): void {
+    const admission = this.sql.exec<{ day: string; account_id: string }>('SELECT day, account_id FROM ask_admissions WHERE reservation_id = ?', reservationId).toArray()[0];
+    if (admission) {
+      this.sql.exec('DELETE FROM ask_admissions WHERE reservation_id = ?', reservationId);
+      if (unanswered) this.sql.exec('UPDATE user_requests SET requests = requests - 1 WHERE day = ? AND account_id = ? AND requests > 0', admission.day, admission.account_id);
+    }
     const row = this.sql.exec<{ day: string; amount: number }>('SELECT day, amount FROM dollar_reservations WHERE id = ?', reservationId).toArray()[0];
     if (!row) return;
     const amount = typeof actualDollars === 'number' && Number.isFinite(actualDollars) && actualDollars >= 0 ? actualDollars : row.amount;

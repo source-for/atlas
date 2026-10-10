@@ -205,6 +205,14 @@ export async function runGuards(guards: readonly Guard[], request: Request, env:
   return undefined;
 }
 
+/**
+ * CLA-472: the reply gave the caller no answer — the container marked it `x-okie-ask-outcome: unanswered`, or it
+ * failed with a 5xx — so the account's daily Ask is returned.
+ */
+export function askUnanswered(response: Response): boolean {
+  return response.status >= 500 || response.headers.get('x-okie-ask-outcome')?.trim().toLowerCase() === 'unanswered';
+}
+
 /** The container's reported Ask cost in dollars, if it sent a sane one. */
 export function reportedAskCost(response: Response): number | undefined {
   const raw = response.headers.get('x-okie-ask-cost-usd');
