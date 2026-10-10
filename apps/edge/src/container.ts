@@ -28,14 +28,45 @@ export function containerEnvVars(env: Partial<EdgeEnv>): Record<string, string> 
   return vars;
 }
 
+/** SHA-256 of the env a container would start with. Stored to tell a changed secret; never the values. */
+export async function containerEnvFingerprint(vars: Record<string, string>): Promise<string> {
+  const text = JSON.stringify(Object.entries(vars).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+const ENV_FINGERPRINT_KEY = 'okie:container-env-fingerprint';
+
 export class AtlasApiContainer extends Container<EdgeEnv> {
   override defaultPort = 8080;
   override sleepAfter = '10m';
   override enableInternet = true;
+  /** Settles once the constructor has checked the running container's env (CLA-483). */
+  readonly envCheck: Promise<void>;
 
   constructor(ctx: ConstructorParameters<typeof Container<EdgeEnv>>[0], env: EdgeEnv) {
     super(ctx, env);
     this.envVars = containerEnvVars(env);
+    this.envCheck = ctx.blockConcurrencyWhile(() => this.destroyIfEnvChanged());
+  }
+
+  /**
+   * CLA-483: a container reads its env once, when it starts. A secret put or a deploy with an unchanged image
+   * restarts this Durable Object but leaves the container running with the old values (an expired gateway key kept
+   * failing Ask). If the running container was started with a different env, destroy it; the next request starts it
+   * with the current one. A check that fails leaves the container alone.
+   */
+  private async destroyIfEnvChanged(): Promise<void> {
+    try {
+      if (!this.ctx.container?.running) return;
+      const started = await this.ctx.storage.get<string>(ENV_FINGERPRINT_KEY);
+      if (started === await containerEnvFingerprint(this.envVars ?? {})) return;
+      await this.destroy();
+    } catch { /* keep serving with the running container */ }
+  }
+
+  override async onStart(): Promise<void> {
+    await this.ctx.storage.put(ENV_FINGERPRINT_KEY, await containerEnvFingerprint(this.envVars ?? {}));
   }
 }
 
