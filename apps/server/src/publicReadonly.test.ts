@@ -180,7 +180,7 @@ test("CLA-266 public-readonly Ask: every answer without a gateway call reports c
         const response = await fetch(`${origin}/api/ask`, item.init);
         assert.equal(response.status, item.status, item.name);
         assert.equal(response.headers.get(ASK_COST_HEADER), "0", item.name);
-        assert.equal(response.headers.get(ASK_OUTCOME_HEADER), "unanswered", item.name);
+        assert.equal(response.headers.get(ASK_OUTCOME_HEADER), item.name.startsWith("connected:false") ? "unanswered" : null, item.name);
         await response.body?.cancel();
       });
     }

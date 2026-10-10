@@ -311,10 +311,12 @@ function createHandler(options: ScanHttpOptions | PublicReadonlyHttpOptions): Sc
       }
       // CLA-266: every public-readonly answer that made no gateway call reports a zero cost, so the edge releases the
       // estimate it reserved; after a gateway call the header carries the reported cost (absent when unreported).
-      // CLA-472: a reply without an answer is marked so the edge returns the account's daily Ask; a gateway call that
-      // reported usage is not (the model did the work).
+      // CLA-472: a reply the service failed to answer is marked so the edge returns the account's daily Ask: no gateway
+      // configured, retrieval busy, or a gateway call that failed without reporting usage. Requests the caller can make
+      // unanswerable on purpose (malformed body, no atlas, empty question, no scope, per-IP refusal) are not marked, and
+      // still spend the Ask; neither is a gateway call that reported usage (the model did the work).
       const unanswered: Record<string, string> = full ? {} : { [ASK_OUTCOME_HEADER]: "unanswered" };
-      const noCost: Record<string, string> = full ? {} : { [ASK_COST_HEADER]: "0", ...unanswered };
+      const noCost: Record<string, string> = full ? {} : { [ASK_COST_HEADER]: "0" };
       // Account window first, then the per-IP window, both before the 48 KB body is read. A malformed or unanswerable
       // request therefore spends the account's quota too (deliberate: it is the caller's own budget). Only requests the
       // account window admits count against the IP window, so one account cannot lock everyone out; loopback addresses
@@ -336,7 +338,7 @@ function createHandler(options: ScanHttpOptions | PublicReadonlyHttpOptions): Sc
         return;
       }
       // Cheap checks: never locate a snapshot or wake the retrieval worker for a request that cannot be answered.
-      if (!askGatewayConnected(llm)) { sendJson(response, 200, { connected: false }, true, noCost); return; }
+      if (!askGatewayConnected(llm)) { sendJson(response, 200, { connected: false }, true, { ...noCost, ...unanswered }); return; }
       if (typeof record.question !== "string" || !record.question.trim()) { sendJson(response, 200, { connected: true, error: "Ask needs a question." }, true, noCost); return; }
       const slug = sanitizeAskSlug((record.atlas as Record<string, unknown>).slug);
       // The atlas's commit: a mirror whose current version is on another commit re-reads latest.json first.
@@ -344,7 +346,7 @@ function createHandler(options: ScanHttpOptions | PublicReadonlyHttpOptions): Sc
       let locations: AskCorpusLocation[];
       try { locations = askCorpus.locate({ ...(slug !== undefined ? { slug } : {}), owner: atlas.owner, repo: atlas.repo, commitSha: atlas.commitSha }); } catch { locations = []; }
       const ticket = locations.length ? askRetrieval.admit(locations, atlas.commitSha) : undefined;
-      if (ticket === "busy") { sendJson(response, 429, { error: ASK_BUSY_ERROR }, true, { ...noCost, "retry-after": String(ASK_BUSY_RETRY_AFTER_SECONDS) }); return; }
+      if (ticket === "busy") { sendJson(response, 429, { error: ASK_BUSY_ERROR }, true, { ...noCost, ...unanswered, "retry-after": String(ASK_BUSY_RETRY_AFTER_SECONDS) }); return; }
       let result: Awaited<ReturnType<typeof answerAskQuestion>>;
       let usage: GatewayUsage | undefined;
       let gatewayCalled = false;
@@ -375,7 +377,7 @@ function createHandler(options: ScanHttpOptions | PublicReadonlyHttpOptions): Sc
         sendJson(response, 200, { ...result, answer, citationDetails, thread: publicAskThread(thread) });
         return;
       }
-      sendJson(response, 200, result, true, { ...costHeaders, ...(usage ? {} : unanswered) });
+      sendJson(response, 200, result, true, { ...costHeaders, ...(gatewayCalled && !usage ? unanswered : {}) });
       return;
     }
 
