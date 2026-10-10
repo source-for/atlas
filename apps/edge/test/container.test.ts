@@ -28,37 +28,67 @@ describe('AtlasApiContainer', () => {
     const stub = edgeEnv.ATLAS_BUDGET!.getByName('container-env-restart-probe');
     await runInDurableObject(stub, async (_budget, state) => {
       let destroyed = 0;
-      const container = { running: true, monitor: () => new Promise<void>(() => undefined), destroy: async () => { destroyed += 1; container.running = false; }, interceptOutboundHttp: async () => undefined, interceptAllOutboundHttp: async () => undefined };
+      // Like the runtime: `running` turns false a little after destroy resolves.
+      let destroy = async () => { destroyed += 1; setTimeout(() => { container.running = false; }, 120); };
+      const container = { running: true, monitor: () => new Promise<void>(() => undefined), destroy: () => destroy(), interceptOutboundHttp: async () => undefined, interceptAllOutboundHttp: async () => undefined };
       Object.defineProperty(state, 'container', { value: container, configurable: true });
-      const build = async (env: typeof edgeEnv) => {
-        const instance = new AtlasApiContainer(state as never, env);
+      const build = async (env: typeof edgeEnv, timeoutMs?: number) => {
+        const instance = new AtlasApiContainer(state as never, env, timeoutMs);
         await instance.envCheck;
         await Promise.resolve(instance.applyOutboundInterceptionPromise).catch(() => undefined);
         return instance;
       };
+      const recorded = () => state.storage.get<string>('okie:container-env-fingerprint');
+      const fingerprint = (env: typeof edgeEnv) => containerEnvFingerprint(containerEnvVars(env));
       const oldEnv = { ...edgeEnv, OKIE_LLM_API_KEY: 'old-key' };
-      // Running with no record of what it started with (the deploy that adds this check): restart once.
+      const newEnv = { ...edgeEnv, OKIE_LLM_API_KEY: 'new-key' };
+
+      // Running with no record of what it started with (the deploy that adds this check): restart once,
+      // and the check does not finish until the container reports stopped.
       const first = await build(oldEnv);
       expect(destroyed).toBe(1);
+      expect(container.running).toBe(false);
       // It starts again and records its env; a Durable Object restart with the same env leaves it running.
       container.running = true;
       await first.onStart();
+      expect(await recorded()).toBe(await fingerprint(oldEnv));
       await build(oldEnv);
       expect(destroyed).toBe(1);
       // A rotated key: the running container is destroyed so the next request starts it with the new one.
-      await build({ ...edgeEnv, OKIE_LLM_API_KEY: 'new-key' });
+      const rotated = await build(newEnv);
       expect(destroyed).toBe(2);
+      expect(container.running).toBe(false);
       // Not running: nothing to do.
-      await build({ ...edgeEnv, OKIE_LLM_API_KEY: 'newer-key' });
+      await build({ ...edgeEnv, OKIE_LLM_API_KEY: 'unused-key' });
       expect(destroyed).toBe(2);
-      // A failing check never throws out of the constructor.
       container.running = true;
-      container.destroy = async () => { throw new Error('no runtime'); };
-      await build({ ...edgeEnv, OKIE_LLM_API_KEY: 'another-key' });
+      await rotated.onStart();
+      expect(await recorded()).toBe(await fingerprint(newEnv));
+
+      // A destroy that throws: the constructor completes, and the old container's env is not recorded as current.
+      destroy = async () => { destroyed += 1; throw new Error('no runtime'); };
+      const failed = await build(oldEnv);
+      expect(destroyed).toBe(3);
+      await failed.onStart();
+      expect(await recorded()).toBe(await fingerprint(newEnv));
+      // A destroy that hangs: the check gives up at its timeout, with the same result.
+      destroy = () => { destroyed += 1; return new Promise<never>(() => undefined); };
+      const hung = await build(oldEnv, 150);
+      expect(destroyed).toBe(4);
+      await hung.onStart();
+      expect(await recorded()).toBe(await fingerprint(newEnv));
+      // A failed write in onStart does not throw into the request that started the container.
+      destroy = async () => { destroyed += 1; container.running = false; };
+      const writer = await build(oldEnv);
+      container.running = true;
+      const put = state.storage.put.bind(state.storage);
+      state.storage.put = (async () => { throw new Error('storage down'); }) as typeof state.storage.put;
+      await expect(writer.onStart()).resolves.toBeUndefined();
+      state.storage.put = put;
+
       // The stored value is a digest, never the key.
       const stored = [...(await state.storage.list<string>()).values()].filter(value => typeof value === 'string').join(' ');
-      expect(stored).not.toContain('old-key');
-      expect(stored).toContain(await containerEnvFingerprint(containerEnvVars(oldEnv)));
+      expect(stored).not.toContain('new-key');
       await state.storage.deleteAlarm();
     });
   });
