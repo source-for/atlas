@@ -183,6 +183,9 @@ export const HOSTED_BLOCK_PLAN_AUTH_ERROR = "Sign in with GitHub to get planned 
 /** Cost headers the edge Worker settles its daily Ask dollar ledger from (public-readonly mode only). */
 export const ASK_COST_HEADER = "x-okie-ask-cost-usd";
 export const ASK_TOKENS_HEADER = "x-okie-ask-tokens";
+/** CLA-472: set on a public-readonly Ask reply that has no answer and no reported model usage; the edge gives the
+ * account's daily Ask back. */
+export const ASK_OUTCOME_HEADER = "x-okie-ask-outcome";
 
 function askUsageHeaders(usage: GatewayUsage | undefined): Record<string, string> {
   if (!usage) return {};
@@ -308,6 +311,11 @@ function createHandler(options: ScanHttpOptions | PublicReadonlyHttpOptions): Sc
       }
       // CLA-266: every public-readonly answer that made no gateway call reports a zero cost, so the edge releases the
       // estimate it reserved; after a gateway call the header carries the reported cost (absent when unreported).
+      // CLA-472: a reply the service failed to answer is marked so the edge returns the account's daily Ask: no gateway
+      // configured, retrieval busy, or a gateway call that failed without reporting usage. Requests the caller can make
+      // unanswerable on purpose (malformed body, no atlas, empty question, no scope, per-IP refusal) are not marked, and
+      // still spend the Ask; neither is a gateway call that reported usage (the model did the work).
+      const unanswered: Record<string, string> = full ? {} : { [ASK_OUTCOME_HEADER]: "unanswered" };
       const noCost: Record<string, string> = full ? {} : { [ASK_COST_HEADER]: "0" };
       // Account window first, then the per-IP window, both before the 48 KB body is read. A malformed or unanswerable
       // request therefore spends the account's quota too (deliberate: it is the caller's own budget). Only requests the
@@ -330,7 +338,7 @@ function createHandler(options: ScanHttpOptions | PublicReadonlyHttpOptions): Sc
         return;
       }
       // Cheap checks: never locate a snapshot or wake the retrieval worker for a request that cannot be answered.
-      if (!askGatewayConnected(llm)) { sendJson(response, 200, { connected: false }, true, noCost); return; }
+      if (!askGatewayConnected(llm)) { sendJson(response, 200, { connected: false }, true, { ...noCost, ...unanswered }); return; }
       if (typeof record.question !== "string" || !record.question.trim()) { sendJson(response, 200, { connected: true, error: "Ask needs a question." }, true, noCost); return; }
       const slug = sanitizeAskSlug((record.atlas as Record<string, unknown>).slug);
       // The atlas's commit: a mirror whose current version is on another commit re-reads latest.json first.
@@ -338,7 +346,7 @@ function createHandler(options: ScanHttpOptions | PublicReadonlyHttpOptions): Sc
       let locations: AskCorpusLocation[];
       try { locations = askCorpus.locate({ ...(slug !== undefined ? { slug } : {}), owner: atlas.owner, repo: atlas.repo, commitSha: atlas.commitSha }); } catch { locations = []; }
       const ticket = locations.length ? askRetrieval.admit(locations, atlas.commitSha) : undefined;
-      if (ticket === "busy") { sendJson(response, 429, { error: ASK_BUSY_ERROR }, true, { ...noCost, "retry-after": String(ASK_BUSY_RETRY_AFTER_SECONDS) }); return; }
+      if (ticket === "busy") { sendJson(response, 429, { error: ASK_BUSY_ERROR }, true, { ...noCost, ...unanswered, "retry-after": String(ASK_BUSY_RETRY_AFTER_SECONDS) }); return; }
       let result: Awaited<ReturnType<typeof answerAskQuestion>>;
       let usage: GatewayUsage | undefined;
       let gatewayCalled = false;
@@ -348,7 +356,7 @@ function createHandler(options: ScanHttpOptions | PublicReadonlyHttpOptions): Sc
       } finally { ticket?.release(); }
       // CLA-266: the edge settles its Ask dollar ledger from these (public-readonly only). No gateway call → 0; a call
       // with unreported cost → no cost header (the edge keeps its estimate).
-      const costHeaders = full ? {} : gatewayCalled ? askUsageHeaders(usage) : noCost;
+      const costHeaders = full ? {} : gatewayCalled ? askUsageHeaders(usage) : { [ASK_COST_HEADER]: "0" };
       if (result.connected && "answer" in result && result.answer && !session) {
         const answer = redactGatewayText(result.answer, llm.apiKey);
         sendJson(response, 200, { ...result, answer, citationDetails: sanitizeCitationDetails(result.citationDetails, llm.apiKey) }, true, costHeaders);
@@ -369,7 +377,7 @@ function createHandler(options: ScanHttpOptions | PublicReadonlyHttpOptions): Sc
         sendJson(response, 200, { ...result, answer, citationDetails, thread: publicAskThread(thread) });
         return;
       }
-      sendJson(response, 200, result, true, costHeaders);
+      sendJson(response, 200, result, true, { ...costHeaders, ...(gatewayCalled && !usage ? unanswered : {}) });
       return;
     }
 

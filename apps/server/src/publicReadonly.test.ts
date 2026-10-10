@@ -14,7 +14,7 @@ import { createPublishedOperatorFixture, FIXTURE_COMMIT, FIXTURE_LICENSE, FIXTUR
 import { buildPublishedVersion, publishBuiltVersion } from "./publishAtlas.js";
 import { createPublicReadonlyRuntime } from "./publicReadonly.js";
 import { resetPublishedTrioCache } from "./scanNeighborhood.js";
-import { ASK_COST_HEADER, ASK_TOKENS_HEADER, createPublicReadonlyHttpHandler, createScanHttpHandler, resolveServerMode, type ScanHttpHandler } from "./scanServer.js";
+import { ASK_COST_HEADER, ASK_OUTCOME_HEADER, ASK_TOKENS_HEADER, createPublicReadonlyHttpHandler, createScanHttpHandler, resolveServerMode, type ScanHttpHandler } from "./scanServer.js";
 
 const FAKE_GATEWAY_KEY = "okie-test-llm-key-cla266-fake";
 
@@ -180,6 +180,7 @@ test("CLA-266 public-readonly Ask: every answer without a gateway call reports c
         const response = await fetch(`${origin}/api/ask`, item.init);
         assert.equal(response.status, item.status, item.name);
         assert.equal(response.headers.get(ASK_COST_HEADER), "0", item.name);
+        assert.equal(response.headers.get(ASK_OUTCOME_HEADER), item.name.startsWith("connected:false") ? "unanswered" : null, item.name);
         await response.body?.cancel();
       });
     }
@@ -188,10 +189,42 @@ test("CLA-266 public-readonly Ask: every answer without a gateway call reports c
     await withHandler(publicHandler(scanRoot, gateway.baseUrl), async origin => {
       const response = await fetch(`${origin}/api/ask`, askInit(scoped));
       assert.equal(response.headers.get(ASK_COST_HEADER), "0.001");
+      assert.equal(response.headers.get(ASK_OUTCOME_HEADER), null, "an answer keeps the account's Ask");
     });
     assert.equal(gateway.calls(), 1);
   } finally {
     await close(gateway.server);
+    rmSync(scanRoot, { recursive: true, force: true });
+  }
+});
+
+test("CLA-472 public-readonly Ask: a gateway failure is marked unanswered; a reply with reported usage is not", async () => {
+  const scanRoot = mkdtempSync(join(tmpdir(), "okie-public-ask-unanswered-"));
+  let status = 401;
+  let usage: Record<string, unknown> | undefined;
+  const server = createServer((_request, response) => {
+    response.writeHead(status, { "content-type": "application/json" });
+    response.end(status === 200 ? JSON.stringify({ choices: [{ message: { content: JSON.stringify({ answer: "", citations: [] }) } }], ...(usage ? { usage } : {}) }) : JSON.stringify({ error: { message: "API key expired" } }));
+  });
+  const baseUrl = `${await listen(server)}/v1`;
+  try {
+    const scoped = { question: "Where?", packets: [{ id: "container:web", name: "Web", kind: "container" }], atlas };
+    await withHandler(publicHandler(scanRoot, baseUrl), async origin => {
+      const failed = await fetch(`${origin}/api/ask`, askInit(scoped));
+      assert.equal(failed.status, 200);
+      assert.equal("answer" in (await failed.json() as Record<string, unknown>), false);
+      assert.equal(failed.headers.get(ASK_OUTCOME_HEADER), "unanswered");
+      assert.equal(failed.headers.get(ASK_COST_HEADER), null, "the edge keeps its dollar estimate");
+
+      status = 200;
+      usage = { total_tokens: 40, cost: 0.0002 };
+      const billed = await fetch(`${origin}/api/ask`, askInit(scoped));
+      assert.equal("answer" in (await billed.json() as Record<string, unknown>), false);
+      assert.equal(billed.headers.get(ASK_COST_HEADER), "0.0002");
+      assert.equal(billed.headers.get(ASK_OUTCOME_HEADER), null, "the model did the work");
+    });
+  } finally {
+    await close(server);
     rmSync(scanRoot, { recursive: true, force: true });
   }
 });

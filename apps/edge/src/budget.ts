@@ -12,6 +12,8 @@ import type { EdgeEnv } from './env';
  *     reservation settles to the real cost (`x-okie-ask-cost-usd`) or keeps the estimate.
  *
  * A reservation whose settle never arrives (isolate died mid-request) stays counted — fail closed.
+ * CLA-472: a settle marked unanswered also gives the account's daily Ask back, at most five times per account per day
+ * (the bucket count and dollars stand).
  * All methods are synchronous SQL inside one Durable Object, so admission is atomic.
  */
 
@@ -41,6 +43,8 @@ export type DayUsage = {
 };
 
 const KEEP_DAYS = 14;
+const USER_DAILY_ASKS = 5;
+const USER_DAILY_REFUNDS = 5;
 
 function dayMinus(day: string, days: number): string {
   const date = new Date(`${day}T00:00:00.000Z`);
@@ -58,6 +62,8 @@ export class AtlasBudget extends DurableObject<EdgeEnv> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS request_counts (day TEXT NOT NULL, bucket TEXT NOT NULL, requests INTEGER NOT NULL, PRIMARY KEY (day, bucket))`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS dollar_spent (day TEXT PRIMARY KEY, spent REAL NOT NULL)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS dollar_reservations (id TEXT PRIMARY KEY, day TEXT NOT NULL, amount REAL NOT NULL)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS ask_admissions (reservation_id TEXT PRIMARY KEY, day TEXT NOT NULL, account_id TEXT NOT NULL)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS ask_refunds (day TEXT NOT NULL, account_id TEXT NOT NULL, refunds INTEGER NOT NULL, PRIMARY KEY (day, account_id))`);
   }
 
   private requests(day: string, bucket: BudgetBucket): number {
@@ -79,11 +85,13 @@ export class AtlasBudget extends DurableObject<EdgeEnv> {
     this.sql.exec('DELETE FROM user_requests WHERE day < ?', cutoff);
     if (input.bucket === 'ask') {
       const count = this.sql.exec<{ requests: number }>('SELECT requests FROM user_requests WHERE day = ? AND account_id = ?', input.day, input.accountId!).toArray()[0]?.requests ?? 0;
-      if (count >= 5) return { ok: false, reason: 'user' };
+      if (count >= USER_DAILY_ASKS) return { ok: false, reason: 'user' };
     }
     this.sql.exec('DELETE FROM request_counts WHERE day < ?', cutoff);
     this.sql.exec('DELETE FROM dollar_spent WHERE day < ?', cutoff);
     this.sql.exec('DELETE FROM dollar_reservations WHERE day < ?', cutoff);
+    this.sql.exec('DELETE FROM ask_admissions WHERE day < ?', cutoff);
+    this.sql.exec('DELETE FROM ask_refunds WHERE day < ?', cutoff);
 
     if (this.requests(input.day, input.bucket) + 1 > input.maxRequests) return { ok: false, reason: 'requests' };
     let reservationId: string | undefined;
@@ -99,11 +107,25 @@ export class AtlasBudget extends DurableObject<EdgeEnv> {
       input.bucket,
     );
     if (input.bucket === 'ask') this.sql.exec('INSERT INTO user_requests (day, account_id, requests) VALUES (?, ?, 1) ON CONFLICT (day, account_id) DO UPDATE SET requests = requests + 1', input.day, input.accountId!);
+    if (input.bucket === 'ask' && reservationId) this.sql.exec('INSERT INTO ask_admissions (reservation_id, day, account_id) VALUES (?, ?, ?)', reservationId, input.day, input.accountId!);
     return reservationId ? { ok: true, reservationId } : { ok: true };
   }
 
-  /** Close a reservation at the real cost (`undefined`/invalid → keep the estimate). Unknown ids are ignored. */
-  settle(reservationId: string, actualDollars?: number): void {
+  /**
+   * Close a reservation at the real cost (`undefined`/invalid → keep the estimate). Unknown ids are ignored.
+   * `unanswered` (CLA-472) also returns the account's daily Ask, once per reservation and at most five times per
+   * account per day, so one account cannot spend the shared daily bucket on refunded failures.
+   */
+  settle(reservationId: string, actualDollars?: number, unanswered = false): void {
+    const admission = this.sql.exec<{ day: string; account_id: string }>('SELECT day, account_id FROM ask_admissions WHERE reservation_id = ?', reservationId).toArray()[0];
+    if (admission) {
+      this.sql.exec('DELETE FROM ask_admissions WHERE reservation_id = ?', reservationId);
+      const refunds = this.sql.exec<{ refunds: number }>('SELECT refunds FROM ask_refunds WHERE day = ? AND account_id = ?', admission.day, admission.account_id).toArray()[0]?.refunds ?? 0;
+      if (unanswered && refunds < USER_DAILY_REFUNDS) {
+        this.sql.exec('UPDATE user_requests SET requests = requests - 1 WHERE day = ? AND account_id = ? AND requests > 0', admission.day, admission.account_id);
+        this.sql.exec('INSERT INTO ask_refunds (day, account_id, refunds) VALUES (?, ?, 1) ON CONFLICT (day, account_id) DO UPDATE SET refunds = refunds + 1', admission.day, admission.account_id);
+      }
+    }
     const row = this.sql.exec<{ day: string; amount: number }>('SELECT day, amount FROM dollar_reservations WHERE id = ?', reservationId).toArray()[0];
     if (!row) return;
     const amount = typeof actualDollars === 'number' && Number.isFinite(actualDollars) && actualDollars >= 0 ? actualDollars : row.amount;

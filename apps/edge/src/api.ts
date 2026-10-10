@@ -2,7 +2,7 @@ import { backendUnavailable, devBackendOrigin, proxiedRequest, publicBackendResp
 import type { BudgetBucket } from './budget';
 import { accountsEnabled, currentUser, handleAuthRoute, resolveAuthSetup } from './auth';
 import { askEnabled, type EdgeEnv } from './env';
-import { budgetStub, reportedAskCost, runGuards, type Guard, type GuardContext } from './guards';
+import { askUnanswered, budgetStub, reportedAskCost, runGuards, type Guard, type GuardContext } from './guards';
 import { jsonResponse, notFoundJson } from './http';
 
 /**
@@ -151,17 +151,17 @@ export async function handleApiRoute(request: Request, env: EdgeEnv, context: Ap
   if (refused) return refused;
 
   const reservationId = guardContext.reservationId;
-  const settle = (dollars: number | undefined) => {
+  const settle = (dollars: number | undefined, unanswered: boolean) => {
     const stub = reservationId ? budgetStub(env) : undefined;
-    if (stub && reservationId) context.waitUntil(Promise.resolve(stub.settle(reservationId, dollars)).catch(() => undefined));
+    if (stub && reservationId) context.waitUntil(Promise.resolve(stub.settle(reservationId, dollars, unanswered)).catch(() => undefined));
   };
   let response: Response;
   try {
     response = await context.backend.fetch(proxiedRequest(request, context.backend.origin, url.pathname, url.search));
   } catch {
-    settle(undefined); // A lost response does not prove the model incurred no cost.
+    settle(undefined, true); // A lost response does not prove the model incurred no cost; the caller got no answer.
     return backendUnavailable();
   }
-  settle(reportedAskCost(response));
+  settle(reportedAskCost(response), askUnanswered(response));
   return publicBackendResponse(response);
 }
