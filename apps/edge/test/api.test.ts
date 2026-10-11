@@ -115,6 +115,9 @@ describe('/api at the edge', () => {
       'cf-connecting-ip': '203.0.113.9',
       'x-okie-client-ip': '6.6.6.6',
       'cf-turnstile-response': 'token',
+      'x-okie-ask-outcome': 'unanswered',
+      'x-okie-ask-cost-usd': '0',
+      'x-okie-ask-tokens': '1',
       accept: 'application/json',
     };
     await edgeFetch('/api/ask', { backend, env: ON, init: { headers: sensitive } });
@@ -129,7 +132,7 @@ describe('/api at the edge', () => {
       expect(request.headers.get('cf-connecting-ip')).toBe('203.0.113.9');
       expect(request.headers.get('x-okie-client-ip')).toBe('203.0.113.9');
       expect(request.headers.get('accept')).toBe('application/json');
-      for (const name of ['cookie', 'authorization', 'cf-access-client-id', 'cf-access-client-secret', 'cf-access-jwt-assertion', 'x-forwarded-for', 'x-real-ip', 'forwarded', 'cf-turnstile-response']) {
+      for (const name of ['cookie', 'authorization', 'cf-access-client-id', 'cf-access-client-secret', 'cf-access-jwt-assertion', 'x-forwarded-for', 'x-real-ip', 'forwarded', 'cf-turnstile-response', 'x-okie-ask-outcome', 'x-okie-ask-cost-usd', 'x-okie-ask-tokens']) {
         expect(request.headers.get(name), name).toBeNull();
       }
     }
@@ -141,12 +144,13 @@ describe('/api at the edge', () => {
 
   it('strips the container cost headers and cookies from responses', async () => {
     const { backend } = recordingBackend(() => new Response('{"connected":true}\n', {
-      headers: { 'content-type': 'application/json', 'x-okie-ask-cost-usd': '0.004', 'x-okie-ask-tokens': '1200', 'set-cookie': 'a=b' },
+      headers: { 'content-type': 'application/json', 'x-okie-ask-cost-usd': '0.004', 'x-okie-ask-tokens': '1200', 'x-okie-ask-outcome': 'unanswered', 'set-cookie': 'a=b' },
     }));
     const response = await edgeFetch('/api/ask', { backend, env: ON, ...post() });
     expect(response.status).toBe(200);
     expect(response.headers.get('x-okie-ask-cost-usd')).toBeNull();
     expect(response.headers.get('x-okie-ask-tokens')).toBeNull();
+    expect(response.headers.get('x-okie-ask-outcome')).toBeNull();
     expect(response.headers.get('set-cookie')).toBeNull();
     expect(await response.text()).toBe('{"connected":true}\n');
   });
@@ -443,6 +447,49 @@ describe('signed-in Ask security boundary', () => {
     const tomorrow = new Date('2035-01-04T00:00:00Z');
     expect((await rawEdgeFetch('/api/ask',{backend,env:authEnv,now:()=>tomorrow,guards:[budgetGuard],...request(token)})).status).toBe(200);
     expect((await rawEdgeFetch('/api/ask',{backend,env:authEnv,now:()=>at,guards:[budgetGuard],...request(await session(8106,at))})).status).toBe(200);
+  });
+  it('gives the daily Ask back when the reply has no answer, the container 5xxs, or the response is lost (CLA-472)', async () => {
+    const at = new Date('2035-01-07T12:00:00Z');
+    const day = '2035-01-07';
+    const stub = edgeEnv.ATLAS_BUDGET!.getByName('global');
+    let reply: () => Response = () => new Response('{"connected":true,"error":"llm gateway 401: API key expired"}', { headers: { 'x-okie-ask-outcome': 'unanswered' } });
+    const backend = { origin: 'http://backend.test', fetch: async () => reply() };
+    const askAs = async (token: string) => rawEdgeFetch('/api/ask',{backend,env:authEnv,now:()=>at,guards:[budgetGuard],...request(token)});
+
+    // A 502 and a lost response are refunded too.
+    const other = await session(8122,at);
+    reply = () => new Response('{"error":"boom"}', { status: 502 });
+    expect((await askAs(other)).status).toBe(502);
+    reply = () => { throw new Error('lost'); };
+    expect((await askAs(other)).status).toBe(503);
+    reply = () => new Response('{"connected":true,"answer":"ok"}');
+    for (let i = 0; i < 5; i += 1) expect((await askAs(other)).status).toBe(200);
+    expect((await askAs(other)).status).toBe(429);
+
+    // Five refunds per account per day: the sixth unanswered reply spends the Ask.
+    const token = await session(8120,at);
+    reply = () => new Response('{"connected":true,"error":"llm gateway 401: API key expired"}', { headers: { 'x-okie-ask-outcome': 'unanswered' } });
+    for (let i = 0; i < 6; i += 1) {
+      const response = await askAs(token);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('x-okie-ask-outcome')).toBeNull();
+    }
+    reply = () => new Response('{"connected":true,"answer":"ok"}', { headers: { 'x-okie-ask-cost-usd': '0.001' } });
+    const statuses: number[] = [];
+    for (let i = 0; i < 5; i += 1) statuses.push((await askAs(token)).status);
+    expect(statuses).toEqual([200, 200, 200, 200, 429]);
+    // The bucket count and the dollar ledger still record every admission.
+    expect((await stub.usage(day)).requests.ask).toBe(7 + 10);
+    expect((await stub.usage(day)).openReservations).toBe(0);
+
+    // A refund is once per reservation: settling one admission twice returns one Ask.
+    const admit = () => stub.admit({ bucket: 'ask', accountId: '8121', day, maxRequests: 1000, dollars: { estimate: 0, max: 100 } });
+    const ids = [];
+    for (let i = 0; i < 3; i += 1) ids.push((await admit() as { reservationId: string }).reservationId);
+    await stub.settle(ids[0]!, 0, true);
+    await stub.settle(ids[0]!, 0, true);
+    for (let i = 0; i < 3; i += 1) expect((await admit()).ok).toBe(true);
+    expect(await admit()).toEqual({ ok: false, reason: 'user' });
   });
   it('keeps optional block-plan off and authenticates status before probing runtime', async () => {
     const at = new Date('2035-01-05T12:00:00Z');
