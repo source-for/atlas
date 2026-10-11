@@ -1,6 +1,6 @@
 import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { AtlasApiContainer, containerEnvVars } from '../src/container';
+import { AtlasApiContainer, containerEnvFingerprint, containerEnvVars } from '../src/container';
 import { CONTAINER_INSTANCE_NAME, CONTAINER_ORIGIN, devBackendOrigin, selectBackend } from '../src/backend';
 import { STORE_HOST, atlasStoreOutbound } from '../src/store';
 import { edgeEnv, edgeFetch, seedAtlas } from './helpers';
@@ -22,6 +22,83 @@ describe('AtlasApiContainer', () => {
       await instance.applyOutboundInterceptionPromise;
       await state.storage.deleteAlarm();
     });
+  });
+
+  it('destroys a running container that was started with a different env, and only then (CLA-483)', async () => {
+    const stub = edgeEnv.ATLAS_BUDGET!.getByName('container-env-restart-probe');
+    await runInDurableObject(stub, async (_budget, state) => {
+      let destroyed = 0;
+      // Like the runtime: `running` turns false a little after destroy resolves.
+      let destroy = async () => { destroyed += 1; setTimeout(() => { container.running = false; }, 120); };
+      const container = { running: true, monitor: () => new Promise<void>(() => undefined), destroy: () => destroy(), interceptOutboundHttp: async () => undefined, interceptAllOutboundHttp: async () => undefined };
+      Object.defineProperty(state, 'container', { value: container, configurable: true });
+      const build = async (env: typeof edgeEnv, timeoutMs?: number) => {
+        const instance = new AtlasApiContainer(state as never, env, timeoutMs);
+        await instance.envCheck;
+        await Promise.resolve(instance.applyOutboundInterceptionPromise).catch(() => undefined);
+        return instance;
+      };
+      const recorded = () => state.storage.get<string>('okie:container-env-fingerprint');
+      const fingerprint = (env: typeof edgeEnv) => containerEnvFingerprint(containerEnvVars(env));
+      const oldEnv = { ...edgeEnv, OKIE_LLM_API_KEY: 'old-key' };
+      const newEnv = { ...edgeEnv, OKIE_LLM_API_KEY: 'new-key' };
+
+      // Running with no record of what it started with (the deploy that adds this check): restart once,
+      // and the check does not finish until the container reports stopped.
+      const first = await build(oldEnv);
+      expect(destroyed).toBe(1);
+      expect(container.running).toBe(false);
+      // It starts again and records its env; a Durable Object restart with the same env leaves it running.
+      container.running = true;
+      await first.onStart();
+      expect(await recorded()).toBe(await fingerprint(oldEnv));
+      await build(oldEnv);
+      expect(destroyed).toBe(1);
+      // A rotated key: the running container is destroyed so the next request starts it with the new one.
+      const rotated = await build(newEnv);
+      expect(destroyed).toBe(2);
+      expect(container.running).toBe(false);
+      // Not running: nothing to do.
+      await build({ ...edgeEnv, OKIE_LLM_API_KEY: 'unused-key' });
+      expect(destroyed).toBe(2);
+      container.running = true;
+      await rotated.onStart();
+      expect(await recorded()).toBe(await fingerprint(newEnv));
+
+      // A destroy that throws: the constructor completes, and the old container's env is not recorded as current.
+      destroy = async () => { destroyed += 1; throw new Error('no runtime'); };
+      const failed = await build(oldEnv);
+      expect(destroyed).toBe(3);
+      await failed.onStart();
+      expect(await recorded()).toBe(await fingerprint(newEnv));
+      // A destroy that hangs: the check gives up at its timeout, with the same result.
+      destroy = () => { destroyed += 1; return new Promise<never>(() => undefined); };
+      const hung = await build(oldEnv, 150);
+      expect(destroyed).toBe(4);
+      await hung.onStart();
+      expect(await recorded()).toBe(await fingerprint(newEnv));
+      // A failed write in onStart does not throw into the request that started the container.
+      destroy = async () => { destroyed += 1; container.running = false; };
+      const writer = await build(oldEnv);
+      container.running = true;
+      const put = state.storage.put.bind(state.storage);
+      state.storage.put = (async () => { throw new Error('storage down'); }) as typeof state.storage.put;
+      await expect(writer.onStart()).resolves.toBeUndefined();
+      state.storage.put = put;
+
+      // The stored value is a digest, never the key.
+      const stored = [...(await state.storage.list<string>()).values()].filter(value => typeof value === 'string').join(' ');
+      expect(stored).not.toContain('new-key');
+      await state.storage.deleteAlarm();
+    });
+  });
+
+  it('fingerprints the env independent of key order and changes with any value', async () => {
+    const a = await containerEnvFingerprint({ A: '1', B: '2' });
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+    expect(await containerEnvFingerprint({ B: '2', A: '1' })).toBe(a);
+    expect(await containerEnvFingerprint({ A: '1', B: '3' })).not.toBe(a);
+    expect(await containerEnvFingerprint({ A: '1' })).not.toBe(a);
   });
 
   it('builds container env vars from the Worker env, forwarding secrets only when set', () => {

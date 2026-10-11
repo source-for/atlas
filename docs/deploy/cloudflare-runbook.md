@@ -53,6 +53,11 @@ print a one-line note if they found one.
    | `JEV_API` | Jev block planner. Passed into the container env. | only with `OKIE_JEV_BLOCK_PLANNER=on` |
    | `TURNSTILE_SECRET_KEY` | Turnstile guard | only with `TURNSTILE_ENABLED=1` |
 
+   A container reads these once, when it starts. After `wrangler secret put` (which deploys a new Worker version)
+   the Worker notices that the running container was started with a different env and destroys it; the next Ask
+   starts a fresh one with the new value (CLA-483). Check with
+   `pnpm --filter @okie/edge exec wrangler containers instances <application id>`.
+
    Optional non-secret vars (set in `wrangler.jsonc` per env): `ASK_ENABLED` (`"1"` enables signed-in Ask),
    `BLOCK_PLAN_ENABLED` (keep `"0"`), `OKIE_LLM_MODEL`,
    `OKIE_ASK_PER_IP_WINDOW`, the budget caps below, and `TURNSTILE_ENABLED`. Nothing is baked into the image.

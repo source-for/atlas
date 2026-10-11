@@ -28,14 +28,67 @@ export function containerEnvVars(env: Partial<EdgeEnv>): Record<string, string> 
   return vars;
 }
 
+/** SHA-256 of the env a container would start with. Stored to tell a changed secret; never the values. */
+export async function containerEnvFingerprint(vars: Record<string, string>): Promise<string> {
+  const text = JSON.stringify(Object.entries(vars).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+const ENV_FINGERPRINT_KEY = 'okie:container-env-fingerprint';
+/** The whole env check, and the wait for a destroyed container to report stopped. */
+export const ENV_CHECK_TIMEOUT_MS = 10_000;
+const STOPPED_POLL_MS = 50;
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
 export class AtlasApiContainer extends Container<EdgeEnv> {
   override defaultPort = 8080;
   override sleepAfter = '10m';
   override enableInternet = true;
+  /** Settles (never rejects) once the constructor has checked the running container's env (CLA-483). */
+  readonly envCheck: Promise<void>;
+  /** The running container may still hold an old env: do not record the current one for it. */
+  private envUnverified = false;
 
-  constructor(ctx: ConstructorParameters<typeof Container<EdgeEnv>>[0], env: EdgeEnv) {
+  constructor(ctx: ConstructorParameters<typeof Container<EdgeEnv>>[0], env: EdgeEnv, timeoutMs = ENV_CHECK_TIMEOUT_MS) {
     super(ctx, env);
     this.envVars = containerEnvVars(env);
+    // Bounded: a destroy that hangs must not hold the input gate until the runtime resets this object.
+    this.envCheck = ctx.blockConcurrencyWhile(() => Promise.race([
+      this.destroyIfEnvChanged(timeoutMs),
+      sleep(timeoutMs).then(() => { if (this.ctx.container?.running) this.envUnverified = true; }),
+    ])).catch(() => { this.envUnverified = true; });
+  }
+
+  /**
+   * CLA-483: a container reads its env once, when it starts. A secret put or a deploy with an unchanged image
+   * restarts this Durable Object but leaves the container running with the old values (an expired gateway key kept
+   * failing Ask). If the running container was started with a different env, destroy it and wait until it reports
+   * stopped, so the next request starts it with the current one. A check that fails leaves the container alone and
+   * unrecorded, so the next construction tries again.
+   */
+  private async destroyIfEnvChanged(timeoutMs: number): Promise<void> {
+    try {
+      const container = this.ctx.container;
+      if (!container?.running) return;
+      const started = await this.ctx.storage.get<string>(ENV_FINGERPRINT_KEY);
+      if (started === await containerEnvFingerprint(this.envVars ?? {})) return;
+      this.envUnverified = true;
+      await this.destroy();
+      // `running` turns false when the runtime's monitor settles, which can be after destroy resolves.
+      const deadline = Date.now() + timeoutMs;
+      while (container.running && Date.now() < deadline) await sleep(STOPPED_POLL_MS);
+      if (!container.running) this.envUnverified = false;
+    } catch { this.envUnverified = true; }
+  }
+
+  /** Runs on a real start and when the library adopts an already-running container; only the first is recorded. */
+  override async onStart(): Promise<void> {
+    if (this.envUnverified) return;
+    try {
+      await this.ctx.storage.put(ENV_FINGERPRINT_KEY, await containerEnvFingerprint(this.envVars ?? {}));
+    } catch { /* unrecorded: the next construction restarts the container once */ }
   }
 }
 
