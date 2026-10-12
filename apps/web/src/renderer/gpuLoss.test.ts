@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { createRejectedCallReports, listenForWebGlContextLoss, nextBackendAfterLoss, REJECTED_CALL_EPISODE_MS, REJECTED_CALL_ERROR_NAME, rendererFailureKind } from './gpuLoss';
+import { createRejectedCallReports, listenForWebGlContextLoss, nextBackendAfterLoss, REJECTED_CALL_EPISODE_MS, REJECTED_CALL_ERROR_NAME, REJECTED_CALL_REMEMBERED_MESSAGES, rendererFailureKind } from './gpuLoss';
 
 describe('GPU loss recovery policy', () => {
   it('moves auto WebGPU to one fresh WebGL2 attempt without looping', () => {
@@ -76,12 +76,34 @@ describe('createRejectedCallReports', () => {
     expect(due('a', REJECTED_CALL_EPISODE_MS + 1, undefined)).toEqual(none);
   });
 
-  it('always reports a message that differs from the last one reported', () => {
+  it('reports a new message at once, and each message once per episode when they alternate', () => {
     const due = createRejectedCallReports();
-    expect(due('a', 0, 1)).toEqual({ console: true, trace: true });
-    expect(due('b', 1, 1)).toEqual({ console: true, trace: true });
+    const both = { console: true, trace: true };
+    expect(due('a', 0, 1)).toEqual(both);
+    expect(due('b', 1, 1)).toEqual(both);
     expect(due('b', 2, 1)).toEqual(none);
-    expect(due('a', 3, 1)).toEqual({ console: true, trace: true });
+    expect(due('a', 3, 1)).toEqual(none);
+    // 40 alternating rejections, 100 ms apart.
+    for (let index = 0; index < 40; index += 1) expect(due(index % 2 ? 'b' : 'a', 100 + index * 100, 1)).toEqual(none);
+    expect(due('a', REJECTED_CALL_EPISODE_MS, 1)).toEqual(both);
+    expect(due('b', REJECTED_CALL_EPISODE_MS, 1)).toEqual(none);
+    expect(due('b', REJECTED_CALL_EPISODE_MS + 1, 1)).toEqual(both);
+  });
+
+  it('remembers a bounded number of messages, forgetting the one reported longest ago', () => {
+    const due = createRejectedCallReports();
+    for (let index = 0; index < REJECTED_CALL_REMEMBERED_MESSAGES; index += 1) expect(due(`message ${index}`, index, undefined).console).toBe(true);
+    // All are remembered; reporting one more forgets only the oldest.
+    for (let index = 0; index < REJECTED_CALL_REMEMBERED_MESSAGES; index += 1) expect(due(`message ${index}`, 100, undefined).console).toBe(false);
+    expect(due('one more', 101, undefined).console).toBe(true);
+    expect(due('message 1', 102, undefined).console).toBe(false);
+    expect(due('message 0', 103, undefined).console).toBe(true);
+    // A message reported again is the newest: the next two new ones do not push it out.
+    const later = REJECTED_CALL_EPISODE_MS + 200;
+    expect(due('message 2', later, undefined).console).toBe(true);
+    expect(due('new 1', later, undefined).console).toBe(true);
+    expect(due('new 2', later, undefined).console).toBe(true);
+    expect(due('message 2', later + 1, undefined).console).toBe(false);
   });
 
   it('reports to each new recording, and to none while not recording', () => {
