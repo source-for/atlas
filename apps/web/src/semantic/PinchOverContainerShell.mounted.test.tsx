@@ -41,9 +41,9 @@ function wheel(init: WheelEventInit) {
   Object.defineProperty(event, 'timeStamp', { value: inputTime += 16 });
   return event;
 }
-async function pinchTo(zoom: number) {
+async function pinchTo(zoom: number, at = pointer) {
   const deltaY = -Math.log(zoom / captured.camera.zoom) / .01;
-  await act(async () => canvas.dispatchEvent(wheel({ ctrlKey: true, deltaMode: 0, deltaY, clientX: pointer.x, clientY: pointer.y })));
+  await act(async () => canvas.dispatchEvent(wheel({ ctrlKey: true, deltaMode: 0, deltaY, clientX: at.x, clientY: at.y })));
 }
 // The first mount also imports the App module, and a loop re-requests on every sample; both are slow on a loaded machine.
 vi.setConfig({ testTimeout: 60_000 });
@@ -70,21 +70,22 @@ afterEach(async () => { await act(async () => root?.unmount()); host?.remove(); 
  * Mount inside the web app container with the pointer on `overId` (a card that is not the
  * file the code handoff picks), then pinch past that file's whole reveal window while its
  * compile is still pending, so the L3→L4 bridge is published late, at progress 0.
+ * `selectedId` is the selection the URL restores; it defaults to the file the shell opens.
  */
-async function publishLateCodeBridgeUnder(overId: string) {
+async function publishLateCodeBridgeUnder(overId: string, selectedId?: string, point?: { x: number; y: number }) {
   const source = fixture.createScene('container:web-app');
   const over = semanticBounds(source, overId, 'component')!;
-  let point: { x: number; y: number } | undefined;
   for (let row = 1; row < 40 && !point; row++) for (let column = 1; column < 40 && !point; column++) {
     const candidate = { x: over.x + over.width * column / 40, y: over.y + over.height * row / 40 };
     if (scanZoomEntityUnderPointer(source, { ...candidate, zoom: 4 }, viewport, pointer, 'component') === overId) point = candidate;
   }
   expect(point).toBeDefined();
+  expect(scanZoomEntityUnderPointer(source, { ...point!, zoom: 4 }, viewport, pointer, 'component')).toBe(overId);
   // The shell resolves to this file; selecting it makes a card outside the container fall back to it too.
   const fileId = scanZoomCompileHandoff(source, fixture.snapshot as ArchitectureSnapshot, 'container:web-app', 'system:okie', 'code')!.compileFocus;
   expect(fileId).not.toBe(overId);
   const reveal = scanCodeRevealWindow(semanticBounds(source, fileId, 'component')!)!;
-  window.history.replaceState(null, '', `/?fixture=scan&backend=canvas2d&root=container%3Aweb-app&sel=${encodeURIComponent(fileId)}&detail=context&lens=system%3Aokie&lens=container%3Aweb-app&cx=${point!.x}&cy=${point!.y}&z=${reveal.startZoom * .98}`);
+  window.history.replaceState(null, '', `/?fixture=scan&backend=canvas2d&root=container%3Aweb-app&sel=${encodeURIComponent(selectedId ?? fileId)}&detail=context&lens=system%3Aokie&lens=container%3Aweb-app&cx=${point!.x}&cy=${point!.y}&z=${reveal.startZoom * .98}`);
   setActiveScanFixture(fixture);
   const module = await import('../App'); module.refreshAppScanFixture();
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
@@ -102,24 +103,70 @@ async function publishLateCodeBridgeUnder(overId: string) {
   return fileId;
 }
 
-it.each([
-  ['the container shell', 'container:web-app'],
-  ['a peer container', 'container:architecture-model'],
-])('reveals code when the pinch pointer is over %s (CLA-417)', async (_label, overId) => {
-  const fileId = await publishLateCodeBridgeUnder(overId);
-  const requests = vi.spyOn(fixture, 'ensureNeighborhood');
+async function continueInwardPinch(at = pointer) {
   for (let step = 0; step < 14; step++) {
     // Chrome delivers wheel input at the start of a frame, after that frame's timestamp is
     // fixed, so the reveal tick that follows a publication sees no elapsed time.
     clock += 16;
     const frameTime = clock;
     clock += 1;
-    await pinchTo(captured.camera.zoom * 1.002); await settle();
+    await pinchTo(captured.camera.zoom * 1.002, at); await settle();
     const pending = [...rafFrames.values()]; rafFrames.clear();
     await act(async () => { for (const callback of pending) callback(frameTime); }); await settle();
   }
+}
+
+it.each([
+  ['the container shell', 'container:web-app'],
+  ['a peer container', 'container:architecture-model'],
+])('reveals code when the pinch pointer is over %s (CLA-417)', async (_label, overId) => {
+  const fileId = await publishLateCodeBridgeUnder(overId);
+  const requests = vi.spyOn(fixture, 'ensureNeighborhood');
+  await continueInwardPinch();
   // Before the fix every inward sample released the bridge at progress 0 and requested the same file again.
   expect(requests).not.toHaveBeenCalled();
+  expect(diagnostic().bridge).toMatchObject({ focusId: fileId, progress: 1 });
+  expect(shell().getAttribute('data-detail')).toBe('code');
+  expect(shell().getAttribute('data-root-entity-id')).toBe(fileId);
+});
+
+it('keeps a code bridge for its own file when another file is selected and the pointer moves to a peer container (CLA-417)', async () => {
+  const peerId = 'container:rust-renderer';
+  const source = fixture.createScene('container:web-app');
+  const snapshotModel = fixture.snapshot as ArchitectureSnapshot;
+  const under = (world: { x: number; y: number }) => scanZoomEntityUnderPointer(source, { ...world, zoom: 4 }, viewport, pointer, 'component');
+  const opens = (id: string) => scanZoomCompileHandoff(source, snapshotModel, id, 'system:okie', 'code')?.compileFocus;
+  const shellFile = opens('container:web-app')!;
+  // The URL restores a selection that is another file card of the same container.
+  const selectedId = (source.projection?.entityIdsByDetail.component ?? []).find(id => id !== shellFile && opens(id) === id)!;
+  expect(selectedId).toBeDefined();
+  // The peer overlaps the opened container's box. Take the closest pair of points, one over
+  // the shell and one over the peer, so a short pointer move on screen reaches the peer.
+  const box = semanticBounds(source, 'container:web-app', 'component')!;
+  const grid = Array.from({ length: 39 * 39 }, (_, index) => ({ x: box.x + box.width * (index % 39 + 1) / 40, y: box.y + box.height * (Math.floor(index / 39) + 1) / 40 }));
+  const overShell = grid.filter(point => under(point) === 'container:web-app');
+  const overPeerCard = grid.filter(point => under(point) === peerId);
+  let pair: { shell: { x: number; y: number }; peer: { x: number; y: number }; distance: number } | undefined;
+  for (const onShell of overShell) for (const onPeer of overPeerCard) {
+    const distance = Math.hypot(onPeer.x - onShell.x, onPeer.y - onShell.y);
+    if (!pair || distance < pair.distance) pair = { shell: onShell, peer: onPeer, distance };
+  }
+  expect(pair).toBeDefined();
+  // The pinch starts over the shell, so the handoff opens the shell's file, not the selection.
+  const fileId = await publishLateCodeBridgeUnder('container:web-app', selectedId, pair!.shell);
+  expect(fileId).toBe(shellFile);
+  expect(new URL(window.location.href).searchParams.get('sel')).toBe(selectedId);
+  // The pointer then moves to the peer container while the bridge is still dormant.
+  const camera = captured.camera;
+  const overPeer = { x: pointer.x + (pair!.peer.x - camera.x) * camera.zoom, y: pointer.y + (pair!.peer.y - camera.y) * camera.zoom };
+  expect(overPeer.x).toBeGreaterThan(0); expect(overPeer.x).toBeLessThan(mapWidth);
+  expect(overPeer.y).toBeGreaterThan(0); expect(overPeer.y).toBeLessThan(mapHeight);
+  expect(scanZoomEntityUnderPointer(source, camera, viewport, overPeer, 'component')).toBe(peerId);
+  const requests = vi.spyOn(fixture, 'ensureNeighborhood');
+  await continueInwardPinch(overPeer);
+  // A fresh handoff over the peer would fall back to the selection; the bridge keeps its own
+  // file, so neither that file nor the selected one is requested.
+  expect(requests.mock.calls.map(call => call[0])).toEqual([]);
   expect(diagnostic().bridge).toMatchObject({ focusId: fileId, progress: 1 });
   expect(shell().getAttribute('data-detail')).toBe('code');
   expect(shell().getAttribute('data-root-entity-id')).toBe(fileId);
