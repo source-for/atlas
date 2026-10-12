@@ -45,7 +45,7 @@ async function pinchTo(zoom: number, at = pointer) {
   const deltaY = -Math.log(zoom / captured.camera.zoom) / .01;
   await act(async () => canvas.dispatchEvent(wheel({ ctrlKey: true, deltaMode: 0, deltaY, clientX: at.x, clientY: at.y })));
 }
-// The first mount also imports the App module, and a loop re-requests on every sample; both are slow on a loaded machine.
+// The first mount also imports the App module, and without the fix this test re-requests on every sample; both are slow on a loaded machine.
 vi.setConfig({ testTimeout: 60_000 });
 beforeEach(() => {
   inputTime = 0;
@@ -105,8 +105,9 @@ async function publishLateCodeBridgeUnder(overId: string, selectedId?: string, p
 
 async function continueInwardPinch(at = pointer) {
   for (let step = 0; step < 14; step++) {
-    // Chrome delivers wheel input at the start of a frame, after that frame's timestamp is
-    // fixed, so the reveal tick that follows a publication sees no elapsed time.
+    // The clock is held still between a publication and its reveal tick, so the tick sees no
+    // elapsed time and leaves progress at 0. That is the worst case for the release rule,
+    // not what a browser does: there the clock advances before the next sample.
     clock += 16;
     const frameTime = clock;
     clock += 1;
@@ -123,7 +124,9 @@ it.each([
   const fileId = await publishLateCodeBridgeUnder(overId);
   const requests = vi.spyOn(fixture, 'ensureNeighborhood');
   await continueInwardPinch();
-  // Before the fix every inward sample released the bridge at progress 0 and requested the same file again.
+  // With the clock held, the old rule released the bridge at progress 0 on every inward sample
+  // and requested the same file again. Browser QA on main saw one release and one repeat
+  // request per pinch, then the reveal; not a loop.
   expect(requests).not.toHaveBeenCalled();
   expect(diagnostic().bridge).toMatchObject({ focusId: fileId, progress: 1 });
   expect(shell().getAttribute('data-detail')).toBe('code');
