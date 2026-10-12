@@ -54,8 +54,8 @@ export type ZoomMotionFrame = {
  */
 export type ZoomMotionRendererEvent = {
   timeMs: number;
-  phase: 'lost' | 'recovered' | 'recovery-failed';
-  /** The backend that failed (`lost`) or the one now active (`recovered`). */
+  phase: 'lost' | 'recovered' | 'recovery-failed' | 'rejected';
+  /** The backend that failed (`lost`), kept a rejected call (`rejected`), or is now active (`recovered`). */
   backend: string;
   /** The thrown error's message, or the new renderer's own fallback message. */
   reason: string;

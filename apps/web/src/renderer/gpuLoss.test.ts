@@ -1,5 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { listenForWebGlContextLoss, nextBackendAfterLoss } from './gpuLoss';
+import { listenForWebGlContextLoss, nextBackendAfterLoss, REJECTED_CALL_ERROR_NAME, rendererFailureKind } from './gpuLoss';
 
 describe('GPU loss recovery policy', () => {
   it('moves auto WebGPU to one fresh WebGL2 attempt without looping', () => {
@@ -26,5 +27,39 @@ describe('listenForWebGlContextLoss', () => {
     detach();
     canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }));
     expect(onLoss).toHaveBeenCalledOnce();
+  });
+});
+
+describe('rendererFailureKind', () => {
+  const bridge = readFileSync(new URL('../../../../crates/atlas-wasm/src/browser.rs', import.meta.url), 'utf8');
+  // The message literal each bridge constructor is given, as written in browser.rs.
+  const messages = (constructor: string) => [...bridge.matchAll(new RegExp(`\\b${constructor}\\((?:format!\\()?\\s*"([^"]+)"`, 'g'))].map(match => match[1]!);
+  const tagged = (message: string) => Object.assign(new Error(message), { name: REJECTED_CALL_ERROR_NAME });
+
+  it('reads the name the bridge gives a rejected call', () => {
+    expect(bridge).toContain(`error.set_name("${REJECTED_CALL_ERROR_NAME}")`);
+  });
+
+  it('keeps the renderer for the calls the engine refuses', () => {
+    const rejected = messages('rejected_call');
+    for (const message of ['visibility filter failed: {error}', 'scene patch failed: {error}', 'setScene must be called first']) expect(rejected).toContain(message);
+    for (const message of rejected) expect(rendererFailureKind(tagged(message))).toBe('rejected');
+    expect(rendererFailureKind(tagged('visibility filter failed: unknown object visual-node:code:gone'))).toBe('rejected');
+    expect(rendererFailureKind(tagged('scene patch failed: revision mismatch: expected 4, received 3'))).toBe('rejected');
+  });
+
+  it('treats a surface error, and anything it cannot identify, as a loss', () => {
+    const lost = messages('js_error');
+    for (const message of ['render failed: {error}', 'renderer health check failed: {error}', 'renderer has been disposed']) expect(lost).toContain(message);
+    for (const message of lost) {
+      expect(messages('rejected_call')).not.toContain(message);
+      expect(rendererFailureKind(new Error(message))).toBe('lost');
+    }
+    // The message alone never decides: an untagged validation message is still a loss.
+    expect(rendererFailureKind(new Error('visibility filter failed: unknown object a'))).toBe('lost');
+    expect(rendererFailureKind('WebGL context lost.')).toBe('lost');
+    expect(rendererFailureKind(Object.assign(new Error('unreachable'), { name: 'RuntimeError' }))).toBe('lost');
+    expect(rendererFailureKind({ name: REJECTED_CALL_ERROR_NAME, message: 'not an Error' })).toBe('lost');
+    expect(rendererFailureKind(undefined)).toBe('lost');
   });
 });

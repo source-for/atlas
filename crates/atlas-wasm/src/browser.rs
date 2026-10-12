@@ -94,7 +94,7 @@ impl WasmAtlasRenderer {
     #[wasm_bindgen(js_name = setScene)]
     pub fn set_scene(&mut self, value: JsValue) -> Result<(), JsValue> {
         let snapshot: SceneSnapshot = serde_wasm_bindgen::from_value(value)
-            .map_err(|error| js_error(format!("invalid scene snapshot: {error}")))?;
+            .map_err(|error| rejected_call(format!("invalid scene snapshot: {error}")))?;
         let center = Vec2::new(
             f64::from(snapshot.world_bounds.x + snapshot.world_bounds.width / 2.0),
             f64::from(snapshot.world_bounds.y + snapshot.world_bounds.height / 2.0),
@@ -111,7 +111,7 @@ impl WasmAtlasRenderer {
         );
         self.engine = Some(
             ProtocolEngine::try_new(snapshot, camera)
-                .map_err(|error| js_error(format!("scene validation failed: {error}")))?,
+                .map_err(|error| rejected_call(format!("scene validation failed: {error}")))?,
         );
         if let Some(gpu) = &mut self.gpu {
             gpu.reset_scene_diagnostics();
@@ -125,28 +125,28 @@ impl WasmAtlasRenderer {
     #[wasm_bindgen(js_name = applyPatch)]
     pub fn apply_patch(&mut self, value: JsValue) -> Result<(), JsValue> {
         let patch: ScenePatch = serde_wasm_bindgen::from_value(value)
-            .map_err(|error| js_error(format!("invalid scene patch: {error}")))?;
+            .map_err(|error| rejected_call(format!("invalid scene patch: {error}")))?;
         self.engine_mut()?
             .apply_patch(&patch)
-            .map_err(|error| js_error(format!("scene patch failed: {error}")))
+            .map_err(|error| rejected_call(format!("scene patch failed: {error}")))
     }
 
     #[wasm_bindgen(js_name = setTimeline)]
     pub fn set_timeline(&mut self, value: JsValue) -> Result<(), JsValue> {
         let timeline: Timeline = serde_wasm_bindgen::from_value(value)
-            .map_err(|error| js_error(format!("invalid timeline: {error}")))?;
+            .map_err(|error| rejected_call(format!("invalid timeline: {error}")))?;
         self.engine_mut()?
             .set_timeline(timeline)
-            .map_err(|error| js_error(format!("timeline validation failed: {error}")))
+            .map_err(|error| rejected_call(format!("timeline validation failed: {error}")))
     }
 
     #[wasm_bindgen(js_name = setVisibility)]
     pub fn set_visibility(&mut self, value: JsValue) -> Result<(), JsValue> {
         let filter: VisibilityFilter = serde_wasm_bindgen::from_value(value)
-            .map_err(|error| js_error(format!("invalid visibility filter: {error}")))?;
+            .map_err(|error| rejected_call(format!("invalid visibility filter: {error}")))?;
         self.engine_mut()?
             .set_visibility(filter)
-            .map_err(|error| js_error(format!("visibility filter failed: {error}")))
+            .map_err(|error| rejected_call(format!("visibility filter failed: {error}")))
     }
 
     #[wasm_bindgen(js_name = setProjectionOverride)]
@@ -155,20 +155,21 @@ impl WasmAtlasRenderer {
             None
         } else {
             Some(
-                serde_wasm_bindgen::from_value::<ProjectionOverride>(value)
-                    .map_err(|error| js_error(format!("invalid projection override: {error}")))?,
+                serde_wasm_bindgen::from_value::<ProjectionOverride>(value).map_err(|error| {
+                    rejected_call(format!("invalid projection override: {error}"))
+                })?,
             )
         };
         self.engine_mut()?
             .set_projection_override(projection)
-            .map_err(|error| js_error(format!("projection override failed: {error}")))
+            .map_err(|error| rejected_call(format!("projection override failed: {error}")))
     }
 
     #[wasm_bindgen(js_name = setProjectionProgress)]
     pub fn set_projection_progress(&mut self, id: &str, progress: f32) -> Result<(), JsValue> {
         self.engine_mut()?
             .set_projection_override_progress(id, progress)
-            .map_err(|error| js_error(format!("projection progress failed: {error}")))
+            .map_err(|error| rejected_call(format!("projection progress failed: {error}")))
     }
 
     #[wasm_bindgen(js_name = setReducedMotion)]
@@ -182,7 +183,7 @@ impl WasmAtlasRenderer {
         let snapshot = self
             .engine
             .as_ref()
-            .ok_or_else(|| js_error("setScene must be called first"))?
+            .ok_or_else(|| rejected_call("setScene must be called first"))?
             .visible_snapshot();
         serde_wasm_bindgen::to_value(&snapshot)
             .map_err(|error| js_error(format!("visible scene serialization failed: {error}")))
@@ -272,7 +273,7 @@ impl WasmAtlasRenderer {
         let engine = self
             .engine
             .as_mut()
-            .ok_or_else(|| js_error("setScene must be called before render"))?;
+            .ok_or_else(|| rejected_call("setScene must be called before render"))?;
         engine.tick(time_ms);
         let mut frame = engine.prepare_frame(gpu.backend());
         self.last_lod = frame.lod.clone();
@@ -423,7 +424,7 @@ impl WasmAtlasRenderer {
     fn engine_mut(&mut self) -> Result<&mut ProtocolEngine, JsValue> {
         self.engine
             .as_mut()
-            .ok_or_else(|| js_error("setScene must be called first"))
+            .ok_or_else(|| rejected_call("setScene must be called first"))
     }
 
     fn active_backend_name(&self) -> &'static str {
@@ -449,6 +450,15 @@ fn backend_error(requested: &str, error: GpuError) -> JsValue {
 
 fn js_error(message: impl AsRef<str>) -> JsValue {
     js_sys::Error::new(message.as_ref()).into()
+}
+
+/// A call the engine refused: bad input, or a call before the first scene. The
+/// renderer is intact, and the host tells this from a lost surface by the error
+/// name alone (`REJECTED_CALL_ERROR_NAME` in apps/web/src/renderer/gpuLoss.ts).
+fn rejected_call(message: impl AsRef<str>) -> JsValue {
+    let error = js_sys::Error::new(message.as_ref());
+    error.set_name("AtlasRejectedCall");
+    error.into()
 }
 
 fn performance_now() -> f64 {

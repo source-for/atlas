@@ -91,3 +91,21 @@ it('applies a patch only when it starts from the scene the engine holds', async 
   expect(native.applyPatch).toHaveBeenCalledTimes(2);
   expect(native.setScene).toHaveBeenCalledTimes(5);
 });
+
+it('sends the full scene after a rejected patch instead of the same patch again (CLA-413)', async () => {
+  const { WasmRendererAdapter } = await import('./WasmRendererAdapter');
+  const adapter = await WasmRendererAdapter.create({} as HTMLCanvasElement, 'webgpu');
+  adapter.setScene(scene(['a'], [], 1));
+  const patched = scene(['a', 'b'], [], 2, { baseRevision: 1, revision: 2, upsertObjects: [{ id: 'b' }], removeObjectIds: [] });
+  native.applyPatch.mockImplementationOnce(() => { throw new Error('scene patch failed: duplicate id b'); });
+  expect(() => adapter.setScene(patched)).toThrow('scene patch failed');
+  adapter.forgetScene();
+  adapter.setScene(patched);
+  expect(native.applyPatch).toHaveBeenCalledTimes(1);
+  expect(native.setScene).toHaveBeenCalledTimes(2);
+  // The camera and render state follow the full scene.
+  adapter.setCamera({ x: 1, y: 2, zoom: 3 });
+  adapter.setRenderState(state({}));
+  expect(native.setCamera).toHaveBeenCalledExactlyOnceWith(1, 2, 3);
+  expect(native.setVisibility).toHaveBeenCalledTimes(1);
+});
