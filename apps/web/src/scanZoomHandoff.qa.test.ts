@@ -38,7 +38,7 @@ import {
   semanticBounds,
 } from './renderer/goldenC4Scene';
 import { scanCompileFocusForBand, scanEntityIsInSubtree } from './renderer/lazyBandCompile';
-import { compileScanNeighborhoodFixture, SCAN_BAND_DEPTH_MIN_ENTITIES, SCAN_RESIDENT_NODES_PER_BAND } from './renderer/scanFixture';
+import { compileScanFixture, compileScanNeighborhoodFixture, SCAN_BAND_DEPTH_MIN_ENTITIES, SCAN_RESIDENT_NODES_PER_BAND } from './renderer/scanFixture';
 import { semanticLensSessionDetail } from './semantic/semanticLens';
 import {
   frameCodePeerArrivalCamera,
@@ -1199,7 +1199,54 @@ describe('dormant container bridge retarget', () => {
     expect(retargets(other)).toBe(true);
   });
 
-  it('is what the zoom path asks before releasing a container bridge', () => {
-    expect(handleSemanticZoom).toContain("dormantBridge.sourceDetail !== 'container' || !scanFixture || scanDormantBridgeRetargets(dormantBridge.sourceScene,");
+  it('is what the zoom path asks before releasing a bridge', () => {
+    expect(handleSemanticZoom).toContain("!scanFixture || scanDormantBridgeRetargets(dormantBridge.sourceScene, activeSnapshot,");
+    expect(handleSemanticZoom).toContain("dormantBridge.focusId, dormantTarget, dormantBridge.targetDetail)");
+  });
+
+  describe('code bridge (CLA-417)', () => {
+    // The whole snapshot: the L1 neighborhood above has not loaded the container's files.
+    const full = compileScanFixture({ snapshot: structuredClone(demoSnapshot), view: structuredClone(demoView), story: structuredClone(demoStory) });
+    const l3Scene = full.createScene('container:web-app');
+    const cards = l3Scene.projection?.entityIdsByDetail.component ?? [];
+    const inside = (id: string | undefined) => Boolean(id && scanEntityIsInSubtree(full.snapshot, id, 'container:web-app'));
+    const opensFile = (id: string) => scanZoomCompileHandoff(l3Scene, full.snapshot, id, viewRootId, 'code')?.compileFocus;
+    const fileId = opensFile('container:web-app')!;
+    const retargetsFile = (focusId: string, underPointer: string | undefined) =>
+      scanDormantBridgeRetargets(l3Scene, full.snapshot, viewRootId, focusId, underPointer, 'code');
+
+    it('keeps the bridge over the container shell, its own file, and a miss', () => {
+      // The shell is not a file; the handoff resolves it to a file inside the container.
+      expect(fileId).not.toBe('container:web-app');
+      expect(retargetsFile(fileId, 'container:web-app')).toBe(false);
+      expect(retargetsFile(fileId, fileId)).toBe(false);
+      expect(retargetsFile(fileId, undefined)).toBe(false);
+    });
+
+    it('keeps the bridge over every card outside the opened container', () => {
+      // The handoff ignores those cards and falls back to the selection.
+      const outside = cards.filter(id => !inside(id));
+      expect(outside.length).toBeGreaterThan(0);
+      for (const id of outside) for (const focusId of cards.filter(inside)) expect(retargetsFile(focusId, id), `${focusId} → ${id}`).toBe(false);
+    });
+
+    it('releases the bridge for another file in the container', () => {
+      const other = cards.find(id => id !== fileId && opensFile(id) === id);
+      expect(other).toBeDefined();
+      expect(retargetsFile(fileId, other)).toBe(true);
+    });
+
+    it('never releases a bridge for a card whose handoff would choose that bridge again', () => {
+      const files = cards.filter(id => opensFile(id) === id);
+      expect(files.length).toBeGreaterThan(1);
+      for (const focusId of files) for (const underPointer of cards) {
+        if (!retargetsFile(focusId, underPointer)) continue;
+        // A released bridge is followed by the handoff for the card under the pointer,
+        // which the handoff only prefers inside the opened container.
+        expect(inside(underPointer), `${focusId} → ${underPointer}`).toBe(true);
+        expect(opensFile(underPointer), `${focusId} → ${underPointer}`).toBeDefined();
+        expect(opensFile(underPointer), `${focusId} → ${underPointer}`).not.toBe(focusId);
+      }
+    });
   });
 });
