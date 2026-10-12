@@ -135,4 +135,21 @@ describe('zoom motion trace', () => {
     trace.recordRendererEvent({ timeMs: 1, phase: 'lost', backend: 'webgpu', reason: { code: 7 } as unknown as string, stack: 42 as unknown as string });
     expect(trace.stop()!.samples[0]).toMatchObject({ reason: '[object Object]', stack: '42' });
   });
+
+  it('names each recording apart, and none while stopped', () => {
+    const trace = createZoomMotionTrace();
+    expect(trace.recordingId()).toBeUndefined();
+    trace.start(metadata);
+    const first = trace.recordingId();
+    expect(first).toBeDefined();
+    expect(trace.recordingId()).toBe(first);
+    trace.stop();
+    expect(trace.recordingId()).toBeUndefined();
+    trace.start(metadata);
+    expect(trace.recordingId()).not.toBe(first);
+    // Starting again without a stop is a new recording too.
+    const second = trace.recordingId();
+    trace.start(metadata);
+    expect(trace.recordingId()).not.toBe(second);
+  });
 });

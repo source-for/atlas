@@ -88,6 +88,8 @@ export type ZoomMotionTraceCollector = {
   recordFrame(frame: ZoomMotionFrame): void;
   recordRendererEvent(event: ZoomMotionRendererEvent): void;
   isRecording(): boolean;
+  /** Differs for every recording; undefined while not recording. */
+  recordingId(): number | undefined;
   readonly active: boolean;
 };
 
@@ -132,6 +134,7 @@ export function createZoomMotionTrace(options: ZoomMotionTraceOptions = {}): Zoo
   let droppedSamples = 0;
   let nextSequence = 0;
   let rendererEvents = 0;
+  let recordings = 0;
 
   const append = (sample: UnsequencedZoomMotionTraceSample) => {
     if (!header) return;
@@ -154,8 +157,12 @@ export function createZoomMotionTrace(options: ZoomMotionTraceOptions = {}): Zoo
     isRecording() {
       return header !== undefined;
     },
+    recordingId() {
+      return header ? recordings : undefined;
+    },
     start(metadata) {
       header = copyMetadata(metadata);
+      recordings += 1;
       samples = [];
       truncated = false;
       droppedSamples = 0;

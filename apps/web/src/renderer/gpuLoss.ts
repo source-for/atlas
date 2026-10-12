@@ -34,7 +34,7 @@ export function nextBackendAfterLoss(requestedBackend: string, failedBackend: st
 export const REJECTED_CALL_ERROR_NAME = 'AtlasRejectedCall';
 /** A renderer that rejects this many calls in a row, with no frame drawn between, is replaced. */
 export const MAX_CONSECUTIVE_REJECTED_CALLS = 5;
-/** Rejected calls closer together than this are one episode, and are reported once. */
+/** The same rejected-call message is reported at most once in this long. */
 export const REJECTED_CALL_EPISODE_MS = 5_000;
 
 /**
@@ -43,6 +43,36 @@ export const REJECTED_CALL_EPISODE_MS = 5_000;
  */
 export function rendererFailureKind(error: unknown): 'rejected' | 'lost' {
   return error instanceof Error && error.name === REJECTED_CALL_ERROR_NAME ? 'rejected' : 'lost';
+}
+
+/**
+ * Decides where a rejected call is reported. A message that differs from the last one
+ * reported is always due; the same message is due again REJECTED_CALL_EPISODE_MS after
+ * its last report. The zoom trace is judged apart from the console and afresh for every
+ * recording (`recordingId`, undefined while not recording), because a trace keeps nothing
+ * from before it started.
+ */
+export function createRejectedCallReports() {
+  const sink = () => {
+    let reported: string | undefined;
+    let reportedAt = Number.NEGATIVE_INFINITY;
+    return (message: string, nowMs: number) => {
+      if (message === reported && nowMs - reportedAt < REJECTED_CALL_EPISODE_MS) return false;
+      reported = message;
+      reportedAt = nowMs;
+      return true;
+    };
+  };
+  const consoleDue = sink();
+  let traceDue = sink();
+  let recording: number | undefined;
+  return (message: string, nowMs: number, recordingId: number | undefined) => {
+    if (recordingId !== recording) {
+      recording = recordingId;
+      traceDue = sink();
+    }
+    return { console: consoleDue(message, nowMs), trace: recordingId !== undefined && traceDue(message, nowMs) };
+  };
 }
 
 export function listenForWebGlContextLoss(canvas: EventTarget, onLoss: (message: string) => void) {

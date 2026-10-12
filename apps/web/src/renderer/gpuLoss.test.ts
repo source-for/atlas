@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { listenForWebGlContextLoss, nextBackendAfterLoss, REJECTED_CALL_ERROR_NAME, rendererFailureKind } from './gpuLoss';
+import { createRejectedCallReports, listenForWebGlContextLoss, nextBackendAfterLoss, REJECTED_CALL_EPISODE_MS, REJECTED_CALL_ERROR_NAME, rendererFailureKind } from './gpuLoss';
 
 describe('GPU loss recovery policy', () => {
   it('moves auto WebGPU to one fresh WebGL2 attempt without looping', () => {
@@ -61,5 +61,39 @@ describe('rendererFailureKind', () => {
     expect(rendererFailureKind(Object.assign(new Error('unreachable'), { name: 'RuntimeError' }))).toBe('lost');
     expect(rendererFailureKind({ name: REJECTED_CALL_ERROR_NAME, message: 'not an Error' })).toBe('lost');
     expect(rendererFailureKind(undefined)).toBe('lost');
+  });
+});
+
+describe('createRejectedCallReports', () => {
+  const none = { console: false, trace: false };
+
+  it('reports the same message once per episode, measured from the last report', () => {
+    const due = createRejectedCallReports();
+    expect(due('a', 0, undefined)).toEqual({ console: true, trace: false });
+    // Suppressed rejections do not move the window.
+    for (let nowMs = 1_000; nowMs < REJECTED_CALL_EPISODE_MS; nowMs += 1_000) expect(due('a', nowMs, undefined)).toEqual(none);
+    expect(due('a', REJECTED_CALL_EPISODE_MS, undefined)).toEqual({ console: true, trace: false });
+    expect(due('a', REJECTED_CALL_EPISODE_MS + 1, undefined)).toEqual(none);
+  });
+
+  it('always reports a message that differs from the last one reported', () => {
+    const due = createRejectedCallReports();
+    expect(due('a', 0, 1)).toEqual({ console: true, trace: true });
+    expect(due('b', 1, 1)).toEqual({ console: true, trace: true });
+    expect(due('b', 2, 1)).toEqual(none);
+    expect(due('a', 3, 1)).toEqual({ console: true, trace: true });
+  });
+
+  it('reports to each new recording, and to none while not recording', () => {
+    const due = createRejectedCallReports();
+    expect(due('a', 0, undefined)).toEqual({ console: true, trace: false });
+    expect(due('a', 1, 1)).toEqual({ console: false, trace: true });
+    expect(due('a', 2, 1)).toEqual(none);
+    expect(due('a', 3, 2)).toEqual({ console: false, trace: true });
+    expect(due('a', 4, undefined)).toEqual(none);
+    // The recording's own window is fixed too.
+    expect(due('a', 5, 3)).toEqual({ console: false, trace: true });
+    expect(due('a', REJECTED_CALL_EPISODE_MS + 4, 3)).toEqual({ console: true, trace: false });
+    expect(due('a', REJECTED_CALL_EPISODE_MS + 5, 3)).toEqual({ console: false, trace: true });
   });
 });

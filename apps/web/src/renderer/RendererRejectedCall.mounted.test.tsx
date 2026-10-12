@@ -2,7 +2,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { MAX_CONSECUTIVE_REJECTED_CALLS, REJECTED_CALL_ERROR_NAME } from './gpuLoss';
+import { MAX_CONSECUTIVE_REJECTED_CALLS, REJECTED_CALL_EPISODE_MS, REJECTED_CALL_ERROR_NAME } from './gpuLoss';
 import type { ZoomMotionTraceCollector } from '../zoomMotionTrace';
 
 const control = vi.hoisted(() => ({ failRender: undefined as unknown, rendered: 0, forgotten: 0, recovered: 0, frames: [] as FrameRequestCallback[], trace: undefined as ZoomMotionTraceCollector | undefined }));
@@ -47,6 +47,20 @@ async function frame() {
 }
 const rejected = (message: string) => Object.assign(new Error(message), { name: REJECTED_CALL_ERROR_NAME });
 const reports = (text: string) => error.mock.calls.filter(call => String(call[0]).includes(text));
+/** Holds performance.now still, on a whole millisecond, so only the test moves the report window. */
+function holdClock() {
+  const clock = { nowMs: Math.ceil(performance.now()) };
+  vi.spyOn(performance, 'now').mockImplementation(() => clock.nowMs);
+  return clock;
+}
+/** One rejected frame, then a drawn one. */
+async function rejectOnce(failure: Error) {
+  control.failRender = failure;
+  await input();
+  await frame();
+  control.failRender = undefined;
+  await frame();
+}
 
 beforeEach(async () => {
   Object.assign(control, { failRender: undefined, rendered: 0, forgotten: 0, recovered: 0, frames: [] });
@@ -129,4 +143,46 @@ it('replaces the renderer at once when the surface is lost', async () => {
   expect(control.forgotten).toBe(0);
   expect(reports('renderer rejected a call')).toHaveLength(0);
   expect(error).toHaveBeenCalledWith('[atlas] webgpu renderer lost: render failed: surface lost', failure);
+});
+
+it('reports a different rejection inside the same episode', async () => {
+  holdClock();
+  control.failRender = rejected('visibility filter failed: unknown object visual-node:code:gone');
+  await input();
+  await frame();
+  control.failRender = rejected('timeline validation failed: unknown path visual-edge:gone');
+  await frame();
+  expect(reports('renderer rejected a call: visibility filter failed')).toHaveLength(1);
+  expect(reports('renderer rejected a call: timeline validation failed')).toHaveLength(1);
+});
+
+it('reports a rejection that keeps happening once per episode, not once for ever', async () => {
+  const clock = holdClock();
+  const failure = rejected('visibility filter failed: unknown object visual-node:code:gone');
+  // A rejection every second, each followed by a drawn frame.
+  const seconds = REJECTED_CALL_EPISODE_MS / 1_000;
+  for (let second = 0; second < seconds; second += 1) {
+    await rejectOnce(failure);
+    clock.nowMs += 1_000;
+  }
+  expect(reports('renderer rejected a call')).toHaveLength(1);
+  await rejectOnce(failure);
+  expect(reports('renderer rejected a call')).toHaveLength(2);
+  expect(control.recovered).toBe(0);
+});
+
+it('gives a zoom trace started after the console report its own rejected event', async () => {
+  holdClock();
+  const failure = rejected('visibility filter failed: unknown object visual-node:code:gone');
+  await rejectOnce(failure);
+  for (let recording = 0; recording < 2; recording += 1) {
+    control.trace!.start({ timeOrigin: 0, startedAtMs: 0 });
+    await rejectOnce(failure);
+    await rejectOnce(failure);
+    const events = control.trace!.stop()!.samples.filter(sample => sample.kind === 'renderer');
+    // One event for the recording, however many frames were rejected.
+    expect(events).toEqual([expect.objectContaining({ phase: 'rejected', backend: 'webgpu', reason: failure.message })]);
+  }
+  // The console line was printed before the first recording and is not repeated.
+  expect(reports('renderer rejected a call')).toHaveLength(1);
 });

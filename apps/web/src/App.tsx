@@ -89,7 +89,7 @@ import {
 } from './renderer/cameraBounds';
 import { createDemandFrameScheduler, type DemandFrameScheduler } from './renderer/demandFrameScheduler';
 import { createInspectorFlightFrameSink, type InspectorFlightFrameSink } from './renderer/inspectorFlightFrameSink';
-import { brandHomeLinkProps, EMBED_FRAME_IDLE_KICK_MS, initialInspectorOpen, isEmbedChrome, isEmbedQueryFlag, isFramedBrowsingContext, isUsableAtlasViewport, listenForWebGlContextLoss, MAX_CONSECUTIVE_REJECTED_CALLS, REJECTED_CALL_EPISODE_MS, rendererFailureKind } from './renderer/gpuLoss';
+import { brandHomeLinkProps, EMBED_FRAME_IDLE_KICK_MS, initialInspectorOpen, isEmbedChrome, isEmbedQueryFlag, isFramedBrowsingContext, isUsableAtlasViewport, createRejectedCallReports, listenForWebGlContextLoss, MAX_CONSECUTIVE_REJECTED_CALLS, rendererFailureKind } from './renderer/gpuLoss';
 import { listenForGesturePinch, listenForWheel } from './renderer/wheelInput';
 import { createWheelIntentClassifier, PINCH_DELTA_CLAMP, PINCH_ZOOM_GAIN, wheelSampleFromEvent, wheelZoomFactor, type WheelIntent } from './renderer/wheelIntent';
 import { presentBackend } from './renderer/backendPresentation';
@@ -547,7 +547,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
     let disposed = false;
     let recovering = false;
     let rejectedCalls = 0;
-    let lastRejectedAt = Number.NEGATIVE_INFINITY;
+    const rejectedCallReports = createRejectedCallReports();
     const abortController = new AbortController();
     let detachLossListener = () => {};
     let detachWheelListener = () => {};
@@ -859,7 +859,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
     // The recovery replaces the canvas and the diagnostics message, so this is the
     // only durable record of what failed (CLA-401). Not dev-gated: the report is
     // needed from production sessions. A report must never stop the recovery.
-    const report = (phase: 'lost' | 'recovered' | 'recovery-failed' | 'rejected', backend: string, text: string, cause?: unknown) => {
+    const report = (phase: 'lost' | 'recovered' | 'recovery-failed' | 'rejected', backend: string, text: string, cause?: unknown, to = { console: true, trace: true }) => {
       try {
         const line = phase === 'lost' ? `[atlas] ${backend} renderer lost: ${text}`
           : phase === 'rejected' ? `[atlas] ${backend} renderer rejected a call: ${text}`
@@ -867,8 +867,8 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
               : `[atlas] renderer recovery failed: ${text}`;
         const log = phase === 'recovered' ? console.warn : console.error;
         // A context-loss listener passes the message itself; do not print it twice.
-        if (cause instanceof Error) log(line, cause); else log(line);
-        zoomMotionTrace.recordRendererEvent({
+        if (to.console) { if (cause instanceof Error) log(line, cause); else log(line); }
+        if (to.trace) zoomMotionTrace.recordRendererEvent({
           timeMs: performance.now(),
           phase,
           backend,
@@ -886,9 +886,8 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
         void recoverFromLoss(error);
         return;
       }
-      const now = performance.now();
-      if (now - lastRejectedAt > REJECTED_CALL_EPISODE_MS) report('rejected', renderer.kind, (error as Error).message, error);
-      lastRejectedAt = now;
+      const { message } = error as Error;
+      report('rejected', renderer.kind, message, error, rejectedCallReports(message, performance.now(), zoomMotionTrace.recordingId()));
       try {
         renderer.forgetScene?.();
       } catch (forgetError) {
