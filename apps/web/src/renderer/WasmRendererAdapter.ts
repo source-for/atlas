@@ -26,6 +26,11 @@ function protocolIds(items: unknown): ReadonlySet<string> | undefined {
   return new Set(items.flatMap(item => typeof (item as { id?: unknown })?.id === 'string' ? [(item as { id: string }).id] : []));
 }
 
+/** False for a transition whose length the engine would refuse: under a millisecond, or not a finite number. */
+function playableTransition(transition: { durationMs: number }) {
+  return Number.isFinite(transition.durationMs) && transition.durationMs >= 1;
+}
+
 function validPick(value: unknown): PickResult | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const candidate = value as { kind?: unknown; id?: unknown };
@@ -137,19 +142,24 @@ export class WasmRendererAdapter implements AtlasRenderer {
         const targetObjects = this.visualObjectIds(transition.targetFocusedIds);
         const sourcePaths = this.visualPathIds(transition.sourceRelationIds);
         const targetPaths = this.visualPathIds(transition.targetRelationIds);
-        const focusStartMs = Math.max(0, transition.durationMs - 200);
+        // The engine rejects a timeline of no length (CLA-544). A transition with nothing
+        // to play is sent as its target state alone.
+        const playable = playableTransition(transition);
+        const durationMs = playable ? transition.durationMs : 1;
+        const focusStartMs = Math.max(0, durationMs - 200);
         const departureEndMs = Math.min(120, focusStartMs);
         const sourceState = {
           objectStates: sourceObjects.length ? [{ objectIds: sourceObjects, opacity: 1, emphasis: 1 }] : [],
           pathStates: sourcePaths.length ? [{ pathIds: sourcePaths, opacity: 1, color: [0.851, 1, 0.439, 1], flowSpeed: 0, emphasis: 1 }] : [],
         };
-        const keyframes = [{ id: 'flight-source', atMs: 0, easing: 'linear', ...sourceState }];
+        const sourceKeyframe = { id: 'flight-source', atMs: 0, easing: 'linear', ...sourceState };
+        const keyframes: Array<typeof sourceKeyframe> = playable ? [sourceKeyframe] : [];
         const neutralState = { objectStates: [], pathStates: [] };
-        if (departureEndMs > 0) keyframes.push({ id: 'flight-source-faded', atMs: departureEndMs, easing: 'easeOut', ...neutralState });
-        if (focusStartMs > departureEndMs) keyframes.push({ id: 'flight-focus-start', atMs: focusStartMs, easing: 'linear', ...neutralState });
+        if (playable && departureEndMs > 0) keyframes.push({ id: 'flight-source-faded', atMs: departureEndMs, easing: 'easeOut', ...neutralState });
+        if (playable && focusStartMs > departureEndMs) keyframes.push({ id: 'flight-focus-start', atMs: focusStartMs, easing: 'linear', ...neutralState });
         keyframes.push({
           id: 'flight-target',
-          atMs: transition.durationMs,
+          atMs: playable ? durationMs : 0,
           easing: 'easeInOut',
           objectStates: targetObjects.length ? [{ objectIds: targetObjects, opacity: 1, emphasis: 1 }] : [],
           pathStates: targetPaths.length ? [{ pathIds: targetPaths, opacity: 1, color: [0.851, 1, 0.439, 1], flowSpeed: 0, emphasis: 1 }] : [],
@@ -159,7 +169,7 @@ export class WasmRendererAdapter implements AtlasRenderer {
           timelineVersion: 2,
           id: `timeline:cinematic:${this.scene.id}:${transition.id}`,
           sceneId: this.protocolSceneId,
-          durationMs: transition.durationMs,
+          durationMs,
           looped: false,
           keyframes,
         });
@@ -195,7 +205,9 @@ export class WasmRendererAdapter implements AtlasRenderer {
       this.transitionPositionMs = -1;
     }
     if (transition) {
-      const positionMs = Math.max(0, Math.min(transition.durationMs, Math.round(transition.positionMs)));
+      const positionMs = playableTransition(transition)
+        ? Math.max(0, Math.min(transition.durationMs, Math.round(transition.positionMs)))
+        : 0;
       if (positionMs !== this.transitionPositionMs) {
         this.native.seekTimeline(positionMs);
         this.transitionPositionMs = positionMs;
