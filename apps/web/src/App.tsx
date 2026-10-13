@@ -89,7 +89,7 @@ import {
 } from './renderer/cameraBounds';
 import { createDemandFrameScheduler, type DemandFrameScheduler } from './renderer/demandFrameScheduler';
 import { createInspectorFlightFrameSink, type InspectorFlightFrameSink } from './renderer/inspectorFlightFrameSink';
-import { brandHomeLinkProps, EMBED_FRAME_IDLE_KICK_MS, initialInspectorOpen, isEmbedChrome, isEmbedQueryFlag, isFramedBrowsingContext, isUsableAtlasViewport, listenForWebGlContextLoss } from './renderer/gpuLoss';
+import { brandHomeLinkProps, EMBED_FRAME_IDLE_KICK_MS, initialInspectorOpen, isEmbedChrome, isEmbedQueryFlag, isFramedBrowsingContext, isUsableAtlasViewport, createRejectedCallReports, listenForWebGlContextLoss, MAX_CONSECUTIVE_REJECTED_CALLS, rendererFailureKind } from './renderer/gpuLoss';
 import { listenForGesturePinch, listenForWheel } from './renderer/wheelInput';
 import { createWheelIntentClassifier, PINCH_DELTA_CLAMP, PINCH_ZOOM_GAIN, wheelSampleFromEvent, wheelZoomFactor, type WheelIntent } from './renderer/wheelIntent';
 import { presentBackend } from './renderer/backendPresentation';
@@ -546,6 +546,8 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
     let renderer: AtlasRenderer | undefined;
     let disposed = false;
     let recovering = false;
+    let rejectedCalls = 0;
+    const rejectedCallReports = createRejectedCallReports();
     const abortController = new AbortController();
     let detachLossListener = () => {};
     let detachWheelListener = () => {};
@@ -631,8 +633,9 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
         const lodState = renderer.lodState();
         onLodStateRef.current(lodState);
         if (lodState?.transitioning && !current.reduceMotion) schedulerRef.current?.wake();
+        rejectedCalls = 0;
       } catch (error) {
-        void recoverFromLoss(error);
+        handleRendererFailure(error);
       }
     }, {
       requestFrame: callback => requestAnimationFrame(callback),
@@ -778,6 +781,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
       wheelClassifier.reset();
       renderer = session.renderer;
       rendererRef.current = renderer;
+      rejectedCalls = 0;
       detachLossListener = listenForWebGlContextLoss(session.canvas, message => { void recoverFromLoss(message); });
       detachWheelListener = listenForWheel(session.canvas, event => {
         // Reads deltaMode first (Firefox reports pixels once the deltas are read).
@@ -852,32 +856,53 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
       publishDiagnostics(true);
     };
 
+    // The recovery replaces the canvas and the diagnostics message, so this is the
+    // only durable record of what failed (CLA-401). Not dev-gated: the report is
+    // needed from production sessions. A report must never stop the recovery.
+    const report = (phase: 'lost' | 'recovered' | 'recovery-failed' | 'rejected', backend: string, text: string, cause?: unknown, to = { console: true, trace: true }) => {
+      try {
+        const line = phase === 'lost' ? `[atlas] ${backend} renderer lost: ${text}`
+          : phase === 'rejected' ? `[atlas] ${backend} renderer rejected a call: ${text}`
+            : phase === 'recovered' ? `[atlas] renderer recovered on ${backend}${text ? `: ${text}` : ''}`
+              : `[atlas] renderer recovery failed: ${text}`;
+        const log = phase === 'recovered' ? console.warn : console.error;
+        // A context-loss listener passes the message itself; do not print it twice.
+        if (to.console) { if (cause instanceof Error) log(line, cause); else log(line); }
+        if (to.trace) zoomMotionTrace.recordRendererEvent({
+          timeMs: performance.now(),
+          phase,
+          backend,
+          reason: text,
+          ...(cause instanceof Error && cause.stack ? { stack: cause.stack } : {}),
+        });
+      } catch { /* Diagnostics only. */ }
+    };
+
+    // The engine refusing one call is not a lost surface (CLA-413): the frame is skipped,
+    // the renderer is kept, and the next frame sends the full scene. A renderer that keeps
+    // rejecting is replaced after all.
+    const handleRendererFailure = (error: unknown) => {
+      if (rendererFailureKind(error) === 'lost' || !renderer || ++rejectedCalls >= MAX_CONSECUTIVE_REJECTED_CALLS) {
+        void recoverFromLoss(error);
+        return;
+      }
+      const { message } = error as Error;
+      report('rejected', renderer.kind, message, error, rejectedCallReports(message, performance.now(), zoomMotionTrace.recordingId()));
+      try {
+        renderer.forgetScene?.();
+      } catch (forgetError) {
+        void recoverFromLoss(forgetError);
+        return;
+      }
+      scheduler.wake();
+    };
+
     const recoverFromLoss = async (error: unknown) => {
       if (recovering || disposed || !host.isConnected) return;
       recovering = true;
       const reason = error instanceof Error ? error.message : String(error);
       const failedBackend = renderer?.kind ?? requestedBackend;
       const previousRenderer = renderer;
-      // The recovery replaces the canvas and the diagnostics message, so this is the
-      // only durable record of what failed (CLA-401). Not dev-gated: the report is
-      // needed from production sessions. A report must never stop the recovery.
-      const report = (phase: 'lost' | 'recovered' | 'recovery-failed', backend: string, text: string, cause?: unknown) => {
-        try {
-          const line = phase === 'lost' ? `[atlas] ${backend} renderer lost: ${text}`
-            : phase === 'recovered' ? `[atlas] renderer recovered on ${backend}${text ? `: ${text}` : ''}`
-              : `[atlas] renderer recovery failed: ${text}`;
-          const log = phase === 'recovered' ? console.warn : console.error;
-          // A context-loss listener passes the message itself; do not print it twice.
-          if (cause instanceof Error) log(line, cause); else log(line);
-          zoomMotionTrace.recordRendererEvent({
-            timeMs: performance.now(),
-            phase,
-            backend,
-            reason: text,
-            ...(cause instanceof Error && cause.stack ? { stack: cause.stack } : {}),
-          });
-        } catch { /* Diagnostics only. */ }
-      };
       report('lost', failedBackend, reason, error);
       detachLossListener();
       detachWheelListener();
@@ -932,7 +957,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
       try {
         renderer?.setCamera(liveCameraRef.current);
       } catch (error) {
-        void recoverFromLoss(error);
+        handleRendererFailure(error);
       }
       if (zoomChanged && !stateRef.current.reduceMotion) scheduler.animateUntil(performance.now() + 220);
       else scheduler.wake();
@@ -977,7 +1002,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
       try {
         renderer?.setCamera(liveCameraRef.current);
       } catch (error) {
-        void recoverFromLoss(error);
+        handleRendererFailure(error);
       }
       if (zoomChanged && !stateRef.current.reduceMotion) scheduler.animateUntil(performance.now() + 220);
       else scheduler.wake();

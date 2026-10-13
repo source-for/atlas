@@ -380,5 +380,7 @@ export interface AtlasRenderer {
   visibleScene(): VisibleSceneState;
   lodState(): RendererLodState | undefined;
   diagnostics(): RendererDiagnostics;
+  /** Drop what the renderer assumes its engine holds, so the next frame sends the full scene and state. */
+  forgetScene?(): void;
   dispose(): void;
 }

@@ -54,8 +54,8 @@ export type ZoomMotionFrame = {
  */
 export type ZoomMotionRendererEvent = {
   timeMs: number;
-  phase: 'lost' | 'recovered' | 'recovery-failed';
-  /** The backend that failed (`lost`) or the one now active (`recovered`). */
+  phase: 'lost' | 'recovered' | 'recovery-failed' | 'rejected';
+  /** The backend that failed (`lost`), kept a rejected call (`rejected`), or is now active (`recovered`). */
   backend: string;
   /** The thrown error's message, or the new renderer's own fallback message. */
   reason: string;
@@ -88,6 +88,8 @@ export type ZoomMotionTraceCollector = {
   recordFrame(frame: ZoomMotionFrame): void;
   recordRendererEvent(event: ZoomMotionRendererEvent): void;
   isRecording(): boolean;
+  /** Differs for every recording; undefined while not recording. */
+  recordingId(): number | undefined;
   readonly active: boolean;
 };
 
@@ -98,6 +100,8 @@ const MAX_REASON_LENGTH = 2_000;
 const MAX_STACK_LENGTH = 4_000;
 /** Renderer events are rare and are the point of the trace, so a full frame budget must not drop them. */
 const MAX_RENDERER_EVENTS = 32;
+/** A rejected call can repeat; the rest of the budget is kept for a loss and its recovery. */
+const MAX_REJECTED_EVENTS = MAX_RENDERER_EVENTS / 2;
 
 function boundedSampleLimit(value: number | undefined): number {
   if (!Number.isFinite(value)) return DEFAULT_MAX_SAMPLES;
@@ -132,11 +136,13 @@ export function createZoomMotionTrace(options: ZoomMotionTraceOptions = {}): Zoo
   let droppedSamples = 0;
   let nextSequence = 0;
   let rendererEvents = 0;
+  let rejectedEvents = 0;
+  let recordings = 0;
 
   const append = (sample: UnsequencedZoomMotionTraceSample) => {
     if (!header) return;
     const overBudget = sample.kind === 'renderer'
-      ? rendererEvents >= MAX_RENDERER_EVENTS
+      ? rendererEvents >= MAX_RENDERER_EVENTS || (sample.phase === 'rejected' && rejectedEvents >= MAX_REJECTED_EVENTS)
       : samples.length - rendererEvents >= maxSamples;
     if (overBudget) {
       truncated = true;
@@ -144,6 +150,7 @@ export function createZoomMotionTrace(options: ZoomMotionTraceOptions = {}): Zoo
       return;
     }
     if (sample.kind === 'renderer') rendererEvents += 1;
+    if (sample.kind === 'renderer' && sample.phase === 'rejected') rejectedEvents += 1;
     samples.push({ ...sample, sequence: nextSequence++ } as ZoomMotionTraceSample);
   };
 
@@ -154,13 +161,18 @@ export function createZoomMotionTrace(options: ZoomMotionTraceOptions = {}): Zoo
     isRecording() {
       return header !== undefined;
     },
+    recordingId() {
+      return header ? recordings : undefined;
+    },
     start(metadata) {
       header = copyMetadata(metadata);
+      recordings += 1;
       samples = [];
       truncated = false;
       droppedSamples = 0;
       nextSequence = 0;
       rendererEvents = 0;
+      rejectedEvents = 0;
     },
     stop() {
       if (!header) return undefined;

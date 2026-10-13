@@ -280,6 +280,10 @@ export class WasmRendererAdapter implements AtlasRenderer {
     };
   }
 
+  // After a rejected call the engine and the caches above can disagree (CLA-413). With no
+  // scene held, the next setScene sends the full scene and resets every cache.
+  forgetScene() { this.scene = undefined; }
+
   dispose() {
     this.native.dispose();
     this.native.free();
