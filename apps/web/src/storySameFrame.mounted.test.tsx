@@ -10,7 +10,7 @@ import { STORY_ARRIVAL_SETTLE_MS, STORY_MAX_FLIGHT_DURATION_MS } from './storyPl
 
 // A story move onto a frame the camera already holds has nothing to fly. It used to be
 // sent to the engine as a timeline of no length, which the engine refuses (CLA-544).
-const control = vi.hoisted(() => ({ nowMs: 0, frames: [] as FrameRequestCallback[], transitions: [] as number[], recovered: 0, controller: undefined as NavigationHistoryController | undefined }));
+const control = vi.hoisted(() => ({ size: { width: 1440, height: 900 }, playerHeight: 0, observers: [] as Array<{ callback: ResizeObserverCallback; elements: Element[] }>, nowMs: 0, frames: [] as FrameRequestCallback[], transitions: [] as number[], recovered: 0, controller: undefined as NavigationHistoryController | undefined }));
 vi.mock('./navigation/historyController', async importOriginal => {
   const original = await importOriginal<typeof import('./navigation/historyController')>();
   return { ...original, createNavigationHistoryController: (...args: Parameters<typeof original.createNavigationHistoryController>) => (control.controller = original.createNavigationHistoryController(...args)) };
@@ -77,6 +77,14 @@ function expectCamera(actual: { x: number; y: number; zoom: number }, expected: 
   expect(actual.y).toBeCloseTo(expected.y, 2);
   expect(actual.zoom).toBeCloseTo(expected.zoom, 4);
 }
+/** The window changes size: every observed element is measured again. */
+async function resize(width: number, height: number) {
+  control.size = { width, height };
+  await act(async () => {
+    for (const observer of control.observers) observer.callback(observer.elements.map(target => ({ target, contentRect: { width, height } }) as unknown as ResizeObserverEntry), observer as unknown as ResizeObserver);
+  });
+  await settle();
+}
 /** Starts the overview tour and waits for step 1 to arrive, playing. */
 async function startTour() {
   await click('[data-testid="story-launch-overview"]');
@@ -86,7 +94,7 @@ async function startTour() {
 }
 
 beforeEach(async () => {
-  Object.assign(control, { nowMs: Math.ceil(performance.now()), frames: [], transitions: [], recovered: 0 });
+  Object.assign(control, { size: { width: 1440, height: 900 }, playerHeight: 0, observers: [], nowMs: Math.ceil(performance.now()), frames: [], transitions: [], recovered: 0 });
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
   vi.spyOn(performance, 'now').mockImplementation(() => control.nowMs);
   localStorage.clear(); vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -94,10 +102,12 @@ beforeEach(async () => {
   const requestFrame = (callback: FrameRequestCallback) => control.frames.push(callback);
   vi.stubGlobal('requestAnimationFrame', requestFrame); vi.spyOn(window, 'requestAnimationFrame').mockImplementation(requestFrame);
   vi.stubGlobal('cancelAnimationFrame', () => {}); vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
-  vi.stubGlobal('ResizeObserver', class { constructor(private callback: ResizeObserverCallback) {} observe(element: Element) { this.callback([{ target: element, contentRect: { width: 1440, height: 900 } } as ResizeObserverEntry], this as unknown as ResizeObserver); } disconnect() {} unobserve() {} });
+  vi.stubGlobal('ResizeObserver', class { elements: Element[] = []; constructor(public callback: ResizeObserverCallback) { control.observers.push(this); } observe(element: Element) { this.elements.push(element); this.callback([{ target: element, contentRect: { ...control.size } } as ResizeObserverEntry], this as unknown as ResizeObserver); } disconnect() { this.elements = []; } unobserve() {} });
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
     const map = this instanceof HTMLCanvasElement || this.getAttribute('data-testid') === 'atlas-canvas' || this.classList.contains('atlas-renderer-host');
-    return new DOMRect(0, 0, map ? 1440 : 0, map ? 900 : 0);
+    // A story player along the bottom makes the story frame depend on the viewport.
+    if (control.playerHeight && this.classList.contains('story-player')) return new DOMRect(0, control.size.height - control.playerHeight, control.size.width, control.playerHeight);
+    return new DOMRect(0, 0, map ? control.size.width : 0, map ? control.size.height : 0);
   });
   error = vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -155,6 +165,21 @@ async function holdNextStepsFrame() {
   error.mockClear();
   return { first, second };
 }
+
+it('a resize during the arrival settle leaves the settled history entry on the camera shown (CLA-544)', async () => {
+  control.playerHeight = 300;
+  await startTour();
+  const frameCamera = replay().camera;
+  await click('.story-progress button', 0);
+  expect(playback()).toBe('arriving');
+  // A shorter window, and the player takes less of it.
+  control.playerHeight = 120;
+  await resize(1_440, 500);
+  await until('paused');
+  // The step was framed again for the new viewport.
+  expect(Math.abs(replay().camera.y - frameCamera.y)).toBeGreaterThan(50);
+  expectCamera(control.controller!.current().camera, replay().camera);
+});
 
 it('a click on the current step\'s dot still flies back when the camera is somewhere else', async () => {
   // On step 1 with the camera away from its frame (here, on step 2's).

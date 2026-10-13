@@ -26,9 +26,9 @@ function protocolIds(items: unknown): ReadonlySet<string> | undefined {
   return new Set(items.flatMap(item => typeof (item as { id?: unknown })?.id === 'string' ? [(item as { id: string }).id] : []));
 }
 
-/** False for a transition whose length the engine would refuse: under a millisecond, or not a finite number. */
+/** True for a length the engine holds: whole milliseconds, from 1 to the largest u32. */
 function playableTransition(transition: { durationMs: number }) {
-  return Number.isFinite(transition.durationMs) && transition.durationMs >= 1;
+  return Number.isInteger(transition.durationMs) && transition.durationMs >= 1 && transition.durationMs <= 0xffff_ffff;
 }
 
 function validPick(value: unknown): PickResult | undefined {

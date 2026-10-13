@@ -28,13 +28,14 @@ const flight = (durationMs: number, positionMs = 0): RenderState => ({
 function expectEngineAccepts(timeline: SentTimeline) {
   expect(Number.isInteger(timeline.durationMs)).toBe(true);
   expect(timeline.durationMs).toBeGreaterThan(0);
+  expect(timeline.durationMs).toBeLessThanOrEqual(4_294_967_295);
   timeline.keyframes.forEach((keyframe, index) => {
     expect(keyframe.atMs).toBeLessThanOrEqual(timeline.durationMs);
     if (index > 0) expect(keyframe.atMs).toBeGreaterThan(timeline.keyframes[index - 1]!.atMs);
   });
 }
 
-it.each([0, -200, Number.NaN, Number.POSITIVE_INFINITY, 0.4])('sends a transition of length %s as its target state, never as a timeline the engine refuses (CLA-544)', async durationMs => {
+it.each([0, -200, Number.NaN, Number.POSITIVE_INFINITY, 0.4, 600.5, 4_294_967_296])('sends a transition of length %s as its target state, never as a timeline the engine refuses (CLA-544)', async durationMs => {
   const { WasmRendererAdapter } = await import('./WasmRendererAdapter');
   const adapter = await WasmRendererAdapter.create({} as HTMLCanvasElement, 'webgpu');
   adapter.setScene(scene);
@@ -49,6 +50,16 @@ it.each([0, -200, Number.NaN, Number.POSITIVE_INFINITY, 0.4])('sends a transitio
     pathStates: [expect.objectContaining({ pathIds: ['visual-edge:to'] })],
   })]);
   expect(native.seekTimeline).toHaveBeenCalledExactlyOnceWith(0);
+});
+
+it('sends the longest length the engine holds unchanged', async () => {
+  const { WasmRendererAdapter } = await import('./WasmRendererAdapter');
+  const adapter = await WasmRendererAdapter.create({} as HTMLCanvasElement, 'webgpu');
+  adapter.setScene(scene);
+  adapter.setRenderState(flight(4_294_967_295));
+  const timeline = native.setTimeline.mock.calls[0]![0] as SentTimeline;
+  expect(timeline.durationMs).toBe(4_294_967_295);
+  expect(timeline.keyframes.at(-1)).toMatchObject({ id: 'flight-target', atMs: 4_294_967_295 });
 });
 
 it('still sends a transition with a length from its source state to its target state', async () => {

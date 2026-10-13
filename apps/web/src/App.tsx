@@ -5836,7 +5836,9 @@ export function App() {
       }
       const play = arrivalPlayAfterRef.current;
       const active = storyFlightRef.current;
-      const arrivedCamera = active?.flight.target ?? camera;
+      // With no flight to hold the target, the frame can still move during the settle
+      // (a resize, the inspector); the entry takes the camera shown now (CLA-544).
+      const arrivedCamera = active?.flight.target ?? renderedCameraRef.current;
       const holdElapsedMs = storyElapsedRef.current;
       pausedStoryPhaseRef.current = 'hold';
       pausedStoryPhaseElapsedRef.current = holdElapsedMs;
