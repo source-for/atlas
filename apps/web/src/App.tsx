@@ -137,6 +137,8 @@ import {
   type SemanticLensSession,
   type SemanticLensState,
 } from './semantic/semanticLens';
+import { isPhoneSizedTouchViewport, readPhoneViewportInput } from './mobileGate';
+import { scaleScanExpansionLensTarget, scanExpansionZoomBands, scanExpansionZoomFactor } from './semantic/scanExpansionZoom';
 import { createScanContainerMorph, createScanDetailMorph, createScanReverseMorph, retainScanDetailMorphSource, sampleScanContainerMorph, scanContainerMorphCamera, scanContainerMorphOwnsSession, shouldStartScanContainerReverseMorph, type ScanDetailMorph } from './semantic/scanContainerMorph';
 import { explorerEntitiesForView } from './entityExplorer';
 import { defaultSearchSuggestions } from './searchSuggestions';
@@ -1856,6 +1858,7 @@ export function App() {
       baseDetail,
       initialNavigation.lensPath ?? [],
       initialNavigation.camera.zoom,
+      currentScanExpansionFactor(),
     ).entries;
     return { baseDetail, settled, active: idleSemanticLens() };
   });
@@ -2760,6 +2763,7 @@ export function App() {
             restoredBaseDetail,
             next.lensPath ?? [],
             next.camera.zoom,
+            currentScanExpansionFactor(),
           );
           const restoredSettled = validatedLensPath.entries;
           installSemanticSession({ baseDetail: restoredBaseDetail, settled: restoredSettled, active: idleSemanticLens() });
@@ -3301,7 +3305,7 @@ export function App() {
       ensure: () => fixture.ensureNeighborhood(sourceFocusId, request.signal),
       compile: () => composeScanSceneAsync(sourceFocusId, undefined, request.signal, undefined, [focusId]),
       publish: source => {
-        const bridge = createScanReverseMorph(source, target, focusId, detail, endpointZoom);
+        const bridge = createScanReverseMorph(source, target, focusId, detail, endpointZoom, currentScanExpansionFactor());
         if (!bridge) return;
         const liveCamera = renderedCameraRef.current;
         const frame = sampleScanContainerMorph(bridge, liveCamera.zoom);
@@ -3427,7 +3431,7 @@ export function App() {
       : undefined;
     const sourceDetailIndex = dormantBridge ? semanticDetails.indexOf(dormantBridge.sourceDetail) : -1;
     const hasLeftSourceBand = dormantBridge && sourceDetailIndex > 0
-      && getLevel(sample.camera.zoom, sourceDetailIndex) < sourceDetailIndex;
+      && scanLevel(sample.camera.zoom, sourceDetailIndex) < sourceDetailIndex;
     // Preserve the dormant bridge throughout L2, including multiple wheel
     // events after the zero crossing. It is safe to release only after the
     // camera has actually crossed to L1; another L2 card that opens retargets now.
@@ -3555,7 +3559,8 @@ export function App() {
       ? new Set(semanticLensBranchEntityIds(liveScene, deepest.targetId, semanticLensSessionDetail(current))
             .filter(id => id !== deepest.targetId && !settledTargetIds.has(id)))
       : undefined;
-    const candidateTarget = findSemanticLensTarget(
+    const expansionFactor = currentScanExpansionFactor();
+    const candidateTarget = scaleScanExpansionLensTarget(findSemanticLensTarget(
       liveScene,
       currentDetail,
       targetingCamera,
@@ -3565,9 +3570,9 @@ export function App() {
       [selected.id, navigationIdentityRef.current.rootEntityId],
       eligibleIds,
       settledTargetIds,
-    );
+    ), expansionFactor);
     const activeTarget = activeState?.targetId && activeState.currentDetail
-      ? measureSemanticLensTarget(liveScene, activeState.targetId, activeState.currentDetail, targetingCamera, viewport, safeArea, sample.pointer)
+      ? scaleScanExpansionLensTarget(measureSemanticLensTarget(liveScene, activeState.targetId, activeState.currentDetail, targetingCamera, viewport, safeArea, sample.pointer), expansionFactor)
       : undefined;
     recordSemanticLensDiagnostics('semantic-policy', sample, { candidate: candidateTarget, active: activeTarget, safeArea });
     const nowMs = performance.now();
@@ -4200,6 +4205,17 @@ export function App() {
     return Math.max(1, (rect && rect.width > 0 ? rect.width : viewport.width) - safe.left - safe.right);
   }
 
+  /** 1 everywhere except a scan atlas on a phone-sized touch viewport with a narrow map (CLA-404).
+   * Read live: rotation, a panel or devtools emulation changes it while the atlas is mounted. */
+  function currentScanExpansionFactor() {
+    return scanFixture ? scanExpansionZoomFactor(currentScanCodeSafeWidth(), isPhoneSizedTouchViewport(readPhoneViewportInput())) : 1;
+  }
+
+  /** The level a scan atlas is at for this zoom, with the phone's earlier component band. */
+  function scanLevel(zoom: number, previous?: number) {
+    return semanticLevelAtZoom(zoom, previous, scanExpansionZoomBands(currentScanExpansionFactor()));
+  }
+
   function scanSceneRequest(focusEntityId: string, cameraOverride?: Camera, keepEntityIds?: readonly string[], frozenSafeWidth?: number) {
     const scanCodeSafeWidth = frozenSafeWidth ?? currentScanCodeSafeWidth();
     const generation = scanFixture!.getSceneGeneration();
@@ -4367,7 +4383,7 @@ export function App() {
     }
     const containerMorph = !reduceMotion && handoff.detail === 'component'
       && liveScene.rootEntityId === scanFixture?.navigation.rootEntityId
-      ? createScanContainerMorph(liveScene, nextScene, handoff.compileFocus, liveCamera.zoom, currentScanCodeSafeWidth())
+      ? createScanContainerMorph(liveScene, nextScene, handoff.compileFocus, liveCamera.zoom, currentScanCodeSafeWidth(), currentScanExpansionFactor())
       : !reduceMotion && handoff.detail === 'code'
         ? createScanDetailMorph(liveScene, nextScene, handoff.compileFocus, 'component', 'code', liveCamera.zoom, currentSession, codeWindow)
         : undefined;
@@ -4465,7 +4481,7 @@ export function App() {
     const previousLevel = semanticDetails.indexOf(currentDetail);
     const active = semanticLensSessionRef.current.active;
     const enteringContainer = active.phase !== 'idle' && active.currentDetail === 'container' && active.nextDetail === 'component';
-    const zoomDetail = enteringContainer ? 'component' : semanticDetails[getLevel(camera.zoom, previousLevel)] ?? 'context';
+    const zoomDetail = enteringContainer ? 'component' : semanticDetails[scanLevel(camera.zoom, previousLevel)] ?? 'context';
     const viewRootId = scanFixture.navigation.rootEntityId;
     const currentCompileFocus = sceneRef.current.rootEntityId ?? viewRootId;
     const preferredId = scanZoomHandoffPreferredId(
@@ -4539,7 +4555,7 @@ export function App() {
         && liveActive.nextDetail === 'component' && liveActive.targetId === requestedPreferredId
         ? 'component' : handoff.detail === 'code' && codeWindow
           ? liveCamera.zoom >= codeWindow.startZoom ? 'code' : 'component'
-          : semanticDetails[getLevel(liveCamera.zoom, liveLevel)] ?? 'context';
+          : semanticDetails[scanLevel(liveCamera.zoom, liveLevel)] ?? 'context';
       const livePreferredId = scanZoomHandoffPreferredId(
         sourceScene, activeSnapshot, viewRootId, liveDetail, sourceScene.rootEntityId ?? viewRootId,
         liveCamera, viewport, scanZoomPointerRef.current, semanticLensSessionDetail(sourceSession),
@@ -4913,6 +4929,7 @@ export function App() {
       restoredBaseDetail,
       plan.state.lensPath ?? [],
       plan.state.camera.zoom,
+      currentScanExpansionFactor(),
     );
     const restoredSession: SemanticLensSession = {
       baseDetail: restoredBaseDetail,

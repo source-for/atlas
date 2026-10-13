@@ -1,4 +1,5 @@
 import { scanCodeRevealWindow, type ScanCodeRevealWindow } from './scanCodeRevealWindow';
+import { SCAN_CONTAINER_LEAVE_ZOOM, SCAN_EXPANSION_FLOOR_ZOOM, scanExpansionEnterZoom } from './scanExpansionZoom';
 import { C4_CAMERA_LIMITS, C4_ZOOM_BANDS, type SceneSnapshot } from '@okie/scene-compiler';
 import type { AtlasScene, Camera } from '../renderer/types';
 import { semanticBounds } from '../renderer/goldenC4Scene';
@@ -155,12 +156,15 @@ export const SCAN_CONTAINER_MORPH_MIN_SPAN = 1.2;
  * Two floors win over the cap: the minimum span, and the component band's enter zoom (a
  * completed expansion must not sit below the band it arrived in). When the expansion starts
  * at or past the arm zoom the code reveal is therefore still late, only sooner. On a narrow
- * safe width (a phone) that is the normal case: the files' whole code window lies below
- * the zoom at which the expansion starts.
+ * safe width that is the normal case: the files' whole code window lies below the zoom at
+ * which the expansion starts. On a phone `expansionFactor` (`scanExpansionZoomFactor`) moves
+ * the band floor, and so the whole expansion, earlier by the code window's own ratio.
  */
-export function createScanContainerMorph(source: AtlasScene, target: AtlasScene, focusId: string, startZoom: number, codeSafeWidth?: number) {
+export function createScanContainerMorph(source: AtlasScene, target: AtlasScene, focusId: string, startZoom: number, codeSafeWidth?: number, expansionFactor = 1) {
   const morph = createScanDetailMorph(source, target, focusId, 'container', 'component', startZoom);
   if (!morph) return undefined;
+  const enterZoom = scanExpansionEnterZoom(expansionFactor);
+  if (expansionFactor < 1) morph.fullZoom = Math.min(C4_CAMERA_LIMITS.maxZoom, Math.max(enterZoom, morph.startZoom * 1.65));
   let earliestArm = Infinity;
   for (const entity of target.entities) {
     if (entity.parentId !== focusId) continue;
@@ -168,7 +172,7 @@ export function createScanContainerMorph(source: AtlasScene, target: AtlasScene,
     if (arm !== undefined && arm < earliestArm) earliestArm = arm;
   }
   morph.fullZoom = Math.min(morph.fullZoom,
-    Math.max(earliestArm, morph.startZoom * SCAN_CONTAINER_MORPH_MIN_SPAN, C4_ZOOM_BANDS[detailOrder.indexOf('component')]!.enterZoom));
+    Math.max(earliestArm, morph.startZoom * SCAN_CONTAINER_MORPH_MIN_SPAN, enterZoom));
   return morph;
 }
 
@@ -190,21 +194,33 @@ export function shouldStartScanContainerReverseMorph(input: {
 }
 
 /** Reconstruct both endpoints before a cold deep view starts contracting. */
-export function createScanReverseMorph(source: AtlasScene, target: AtlasScene, focusId: string, detail: 'component' | 'code', arrivalZoom?: number) {
+export function createScanReverseMorph(source: AtlasScene, target: AtlasScene, focusId: string, detail: 'component' | 'code', arrivalZoom?: number, expansionFactor = 1) {
   const band = C4_ZOOM_BANDS[detailOrder.indexOf(detail)]!;
+  const scaled = detail === 'component' && expansionFactor < 1;
+  const componentEnterZoom = scaled ? scanExpansionEnterZoom(expansionFactor) : band.enterZoom;
   // L4 entry begins above its eligibility floor; its expanded endpoint is
   // farther in. Using enterZoom as the full endpoint would collapse the file
   // below the ordinary L3 range before revealing its peers.
-  const startZoom = detail === 'code' ? band.enterZoom + band.hysteresis : band.enterZoom / 1.65;
+  const startZoom = detail === 'code' ? band.enterZoom + band.hysteresis : componentEnterZoom / 1.65;
   const morph = createScanDetailMorph(source, target, focusId,
     detail === 'code' ? 'component' : 'container', detail, startZoom);
   if (!morph) return undefined;
+  // Leave room for the floored start below, so the contraction is over before containers leave.
+  if (scaled) morph.fullZoom = Math.max(componentEnterZoom, SCAN_EXPANSION_FLOOR_ZOOM * SCAN_CONTAINER_MORPH_MIN_SPAN);
   // Saved lenses restore a settled endpoint even below the usual full zoom.
   // Anchor that endpoint to the pre-input camera, rather than jumping halfway
   // through a fixed interval on the first outward event.
   if (!(detail === 'code' && target.targetAspect !== undefined) && arrivalZoom !== undefined && Number.isFinite(arrivalZoom) && arrivalZoom > 0 && arrivalZoom < morph.fullZoom) {
     morph.fullZoom = arrivalZoom;
     morph.startZoom = arrivalZoom / 1.65;
+  }
+  if (scaled) {
+    // An earlier interval would otherwise still be contracting after the container level
+    // is left: start no lower than where containers arrive, or where they leave when the
+    // interval is too short for that.
+    const floored = Math.max(morph.startZoom, SCAN_CONTAINER_LEAVE_ZOOM,
+      Math.min(SCAN_EXPANSION_FLOOR_ZOOM, morph.fullZoom / SCAN_CONTAINER_MORPH_MIN_SPAN));
+    if (floored < morph.fullZoom) morph.startZoom = floored;
   }
   morph.progress = 1;
   morph.baselineProgress = 1;

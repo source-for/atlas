@@ -2,6 +2,7 @@ import { C4_ZOOM_BANDS } from '@okie/scene-compiler';
 import type { AtlasScene, Camera, ProjectionOverride, SceneEntity, SemanticDetail } from '../renderer/types';
 import { ATLAS_CAMERA_BOUNDS } from '../renderer/cameraBounds';
 import type { SafeArea, ViewportSize } from '../storyFraming';
+import { scanExpansionThresholds } from './scanExpansionZoom';
 
 export const SEMANTIC_LENS_POLICY = {
   armCoverage: { major: 0.42, minor: 0.18 },
@@ -576,6 +577,7 @@ export function validateRestoredSemanticLensPath(
   baseDetail: SemanticDetail,
   targetIds: readonly string[],
   zoom: number,
+  scanExpansionFactor = 1,
 ): { entries: SemanticLensPathEntry[]; truncated: boolean } {
   const structural = validateSemanticLensPath(scene, baseDetail, targetIds);
   if (!Number.isFinite(zoom)) return structural;
@@ -598,8 +600,12 @@ export function validateRestoredSemanticLensPath(
     const band = C4_ZOOM_BANDS.find(candidate => candidate.detail === entry.nextDetail);
     // Match target measurement: authored transitions first, then the protocol
     // representation LOD, then the shared C4 band policy for sparse imports.
-    const minZoom = authored?.minZoom ?? representation?.lod?.minZoom ?? band?.enterZoom;
-    const hysteresis = authored?.hysteresis ?? representation?.lod?.hysteresis ?? band?.hysteresis ?? 0;
+    let minZoom = authored?.minZoom ?? representation?.lod?.minZoom ?? band?.enterZoom;
+    let hysteresis = authored?.hysteresis ?? representation?.lod?.hysteresis ?? band?.hysteresis ?? 0;
+    // A phone's scan expansion runs earlier (CLA-404), so its saved endpoint is valid earlier.
+    if (scanExpansionFactor < 1 && minZoom !== undefined && entry.currentDetail === 'container' && entry.nextDetail === 'component') {
+      ({ enterZoom: minZoom, hysteresis } = scanExpansionThresholds(minZoom, hysteresis, undefined, scanExpansionFactor));
+    }
     if (!ownsFocusedCode && minZoom !== undefined && zoom + hysteresis + 1e-9 < minZoom) break;
     entries.push(entry);
   }

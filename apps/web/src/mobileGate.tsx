@@ -30,11 +30,19 @@ export type MobileGateInput = {
   dismissed: boolean;
 };
 
-export function shouldShowMobileNotice(input: MobileGateInput): boolean {
-  if (input.framed || input.embedQuery || input.dismissed) return false;
+export type PhoneViewportInput = Pick<MobileGateInput, 'width' | 'height' | 'coarsePointer' | 'noHover'>;
+
+/** The device test alone: a touch-primary, phone-sized viewport. Unlike the notice it stays
+ * true in an embed and after "Continue anyway", so atlas behaviour can key on it. */
+export function isPhoneSizedTouchViewport(input: PhoneViewportInput): boolean {
   // Touch-primary devices only: a narrow desktop window (mouse, hover) always keeps the atlas.
   if (!input.coarsePointer && !input.noHover) return false;
   return input.width < MOBILE_NOTICE_MAX_WIDTH || Math.min(input.width, input.height) < MOBILE_NOTICE_COARSE_SHORT_SIDE;
+}
+
+export function shouldShowMobileNotice(input: MobileGateInput): boolean {
+  if (input.framed || input.embedQuery || input.dismissed) return false;
+  return isPhoneSizedTouchViewport(input);
 }
 
 type SessionStore = Pick<Storage, 'getItem' | 'setItem'>;
@@ -82,12 +90,19 @@ function mediaMatches(win: Pick<GateWindow, 'matchMedia'>, query: string): boole
   }
 }
 
-export function readMobileGateInput(win: GateWindow = window as unknown as GateWindow): MobileGateInput {
+/** Read on every use: rotation and devtools emulation change these while the atlas is mounted. */
+export function readPhoneViewportInput(win: Pick<GateWindow, 'innerWidth' | 'innerHeight' | 'matchMedia'> = window as unknown as GateWindow): PhoneViewportInput {
   return {
     width: win.innerWidth,
     height: win.innerHeight,
     coarsePointer: mediaMatches(win, '(pointer: coarse)'),
     noHover: mediaMatches(win, '(hover: none)'),
+  };
+}
+
+export function readMobileGateInput(win: GateWindow = window as unknown as GateWindow): MobileGateInput {
+  return {
+    ...readPhoneViewportInput(win),
     framed: isFramedBrowsingContext(win),
     embedQuery: isEmbedQueryFlag(win.location.search),
     dismissed: mobileNoticeDismissed(win),
