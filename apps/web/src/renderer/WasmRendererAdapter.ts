@@ -46,6 +46,7 @@ export class WasmRendererAdapter implements AtlasRenderer {
   private camera?: Camera;
   private renderStateKey = '';
   private transitionPositionMs = -1;
+  private unplayableTransitionId: string | undefined;
   private timelinePlaying = false;
   private projectionOverrideKey = '';
   private projectionOverrideProgress = -1;
@@ -145,6 +146,10 @@ export class WasmRendererAdapter implements AtlasRenderer {
         // The engine rejects a timeline of no length (CLA-544). A transition with nothing
         // to play is sent as its target state alone.
         const playable = playableTransition(transition);
+        if (!playable && transition.id !== this.unplayableTransitionId) {
+          this.unplayableTransitionId = transition.id;
+          console.warn(`[atlas] transition ${transition.id} has an unplayable length (${transition.durationMs} ms); showing its target state`);
+        }
         const durationMs = playable ? transition.durationMs : 1;
         const focusStartMs = Math.max(0, durationMs - 200);
         const departureEndMs = Math.min(120, focusStartMs);

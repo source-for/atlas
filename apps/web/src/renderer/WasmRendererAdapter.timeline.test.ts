@@ -7,7 +7,7 @@ const native = vi.hoisted(() => ({
   pauseTimeline: vi.fn(), playTimeline: vi.fn(), seekTimeline: vi.fn(), setProjectionProgress: vi.fn(),
 }));
 vi.mock('../../../../crates/atlas-wasm/pkg/atlas_wasm.js', () => ({ default: vi.fn(async () => undefined), createAtlasRenderer: vi.fn(async () => native) }));
-afterEach(() => { vi.clearAllMocks(); });
+afterEach(() => { vi.clearAllMocks(); vi.restoreAllMocks(); });
 
 type SentTimeline = { durationMs: number; keyframes: Array<{ id: string; atMs: number; objectStates: unknown[]; pathStates: unknown[] }> };
 const scene = {
@@ -74,4 +74,24 @@ it('still sends a transition with a length from its source state to its target s
     ['flight-source', 0], ['flight-source-faded', 120], ['flight-focus-start', 400], ['flight-target', 600],
   ]);
   expect(native.seekTimeline).toHaveBeenCalledExactlyOnceWith(250);
+});
+
+it('reports an unplayable transition once per transition id, and never a playable one (CLA-544)', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  const { WasmRendererAdapter } = await import('./WasmRendererAdapter');
+  const adapter = await WasmRendererAdapter.create({} as HTMLCanvasElement, 'webgpu');
+  adapter.setScene(scene);
+  adapter.setRenderState(flight(600));
+  expect(warn).not.toHaveBeenCalled();
+  // Repeated frames of one transition, including one that re-sends its timeline.
+  adapter.setRenderState(flight(0));
+  adapter.setRenderState(flight(0, 5));
+  adapter.setRenderState({ ...flight(0), visibilityMode: 'isolate' });
+  expect(native.setTimeline).toHaveBeenCalledTimes(3);
+  expect(warn).toHaveBeenCalledTimes(1);
+  expect(warn.mock.calls[0]![0]).toMatch(/^\[atlas\] .*\bflight\b.*\b0 ms/);
+  const other = flight(Number.NaN);
+  adapter.setRenderState({ ...other, cinematicTransition: { ...other.cinematicTransition!, id: 'flight-2' } });
+  expect(warn).toHaveBeenCalledTimes(2);
+  expect(warn.mock.calls[1]![0]).toMatch(/^\[atlas\] .*\bflight-2\b.*NaN ms/);
 });
