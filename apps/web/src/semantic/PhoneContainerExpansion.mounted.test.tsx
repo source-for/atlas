@@ -35,9 +35,13 @@ let preparationFrames = 0;
 let preparing: { frames: number; resolve: () => void }[] = [];
 /** Reads of the map's own rect: every safe-width measurement starts with one. */
 let safeWidthReads = 0;
-const mapWidth = 390;
-const mapHeight = 844;
-const pointer = { x: mapWidth / 2, y: mapHeight / 2 };
+let mapWidth = 390;
+let mapHeight = 844;
+/** The window's width when it is wider than the map (a desktop grid with the panel beside it). */
+let windowWidth: number | undefined;
+/** The open details panel's rect: at 900px and under, a fixed sheet 94vw wide from the right edge (app.css). */
+const detailsSheet = () => new DOMRect((windowWidth ?? mapWidth) * 0.06, 0, (windowWidth ?? mapWidth) * 0.94, mapHeight);
+const pointer = { get x() { return mapWidth / 2; }, get y() { return mapHeight / 2; } };
 const focusId = 'container:web-app';
 let touchPrimary = true;
 const clock = { now: 5000 };
@@ -117,6 +121,7 @@ async function pinchThrough(toZoom: number, ratio = 1.02): Promise<Sample[]> {
 // The first mount also imports the App module, which alone can pass 5s on a loaded machine.
 vi.setConfig({ testTimeout: 60_000 });
 beforeEach(() => {
+  mapWidth = 390; mapHeight = 844; windowWidth = undefined;
   inputTime = 0; touchPrimary = true; clock.now = 5000; insets = { left: 0, right: 0 }; preparationFrames = 0; preparing = [];
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
   localStorage.clear(); sessionStorage.clear(); localStorage.setItem('okie.devMode', '1'); vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -131,11 +136,12 @@ beforeEach(() => {
     const map = this instanceof HTMLCanvasElement || this.getAttribute('data-testid') === 'atlas-canvas' || this.classList.contains('atlas-renderer-host');
     if (this.getAttribute('data-testid') === 'atlas-canvas') safeWidthReads++;
     if (insets.left && this.classList.contains('level-rail')) return new DOMRect(0, 200, insets.left, 300);
+    if (this.classList.contains('details-panel') && this.classList.contains('open')) return windowWidth && windowWidth > 900 ? new DOMRect(mapWidth, 0, windowWidth - mapWidth, mapHeight) : detailsSheet();
     if (insets.right && this.classList.contains('details-toggle')) return new DOMRect(mapWidth - insets.right, 100, insets.right, 40);
     return new DOMRect(0, 0, map ? mapWidth : 0, map ? mapHeight : 0);
   });
-  vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(mapWidth);
-  vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(mapHeight + 68);
+  vi.spyOn(window, 'innerWidth', 'get').mockImplementation(() => windowWidth ?? mapWidth);
+  vi.spyOn(window, 'innerHeight', 'get').mockImplementation(() => mapHeight + 68);
   // Read live by the app: a test flips `touchPrimary` to change the device under it.
   vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
     matches: touchPrimary && (query === '(pointer: coarse)' || query === '(hover: none)'), media: query, onchange: null,
@@ -426,6 +432,119 @@ describe('a real 390x844 phone: safe width 287 between the level rail and the de
     expect(policy.enterZoom).toBeCloseTo(1.24, 9);
     expect(policy.leaveZoom).toBeCloseTo(1.24 - 0.23 * 0.42 * 287 / 330, 9);
   });
+});
+
+/** Let a pending camera settle run: its timers, then the frames it schedules. */
+async function rest(turns = 30) {
+  for (let turn = 0; turn < turns; turn++) { clock.now += 40; await act(async () => { await vi.advanceTimersByTimeAsync(40); }); await frame(); }
+}
+async function pan(deltaX: number) {
+  await act(async () => canvas.dispatchEvent(wheel({ deltaMode: 0, deltaX, deltaY: 0, clientX: pointer.x, clientY: pointer.y })));
+  await settle();
+}
+async function toggleDetails() {
+  await act(async () => host.querySelector<HTMLButtonElement>('.details-toggle')!.click());
+  await settle();
+}
+const panelOpen = () => host.querySelector('.details-panel')!.classList.contains('open');
+
+describe('the details panel over the map on a phone (safe width 287)', () => {
+  beforeEach(() => { insets = realPhoneInsets; sessionStorage.setItem(MOBILE_NOTICE_SESSION_KEY, '1'); });
+
+  it.each([
+    ['then a pan', true],
+    ['straight after the last pinch sample', false],
+  ])('opening it inside a container (%s) does not open a file\'s code', async (_label, settleFirst) => {
+    const code = earliestCodeWindow();
+    await mountRootOver(containerCentre());
+    await pinchThrough(1.65, 1.01);
+    if (settleFirst) await rest();
+    const settled = { detail: 'component', root: focusId, bridge: { sourceDetail: 'container', targetDetail: 'component', progress: 1 } };
+    expect(diagnostic()).toMatchObject({ currentDetail: 'component', sceneRoot: focusId, bridge: settled.bridge });
+    // Below the files' code window (it starts at 1.77): the state a phone can now rest in.
+    expect(captured.camera.zoom).toBeLessThan(code.armZoom * 1.07);
+    await toggleDetails();
+    expect(panelOpen()).toBe(true);
+    if (settleFirst) await pan(4);
+    await rest();
+    // The sheet covers the map; it is not a narrower map, and the code window has not moved under it.
+    expect(detail()).toBe('component');
+    expect(rootId()).toBe(focusId);
+    expect(diagnostic().bridge).toMatchObject(settled.bridge);
+    await pan(-4);
+    await rest();
+    expect(detail()).toBe('component');
+    expect(rootId()).toBe(focusId);
+    await toggleDetails();
+    expect(panelOpen()).toBe(false);
+    await rest();
+    const outward = await pinchThrough(0.7);
+    expect(outward.every(sample => sample.detail !== 'code' && sample.bridge?.targetDetail !== 'code')).toBe(true);
+    expectLevelsInOrder(outward, -1);
+    expect(outward[0]!.detail).toBe('component');
+    expect(outward.some(sample => sample.detail === 'container')).toBe(true);
+    expect(outward.find(sample => sample.detail === 'context')!.zoom).toBeLessThan(1.08);
+    expect(outward.at(-1)).toMatchObject({ detail: 'context', root: 'system:okie', bridge: null });
+  });
+
+  it('with it open, zooming in over a file still opens its code in the normal window', async () => {
+    // A touch pinch is ignored while the panel is open (as on main); this is the wheel path.
+    const code = earliestCodeWindow();
+    expect(code.startZoom).toBeCloseTo(1.772449, 5);
+    expect(code.fullZoom).toBeCloseTo(2.126939, 5);
+    await mountRootOver(containerCentre());
+    await pinchThrough(1.65, 1.01);
+    await rest();
+    await toggleDetails();
+    await rest();
+    const inward = await pinchThrough(code.fullZoom * 1.05, 1.01);
+    expect(inward.filter(sample => sample.zoom < code.startZoom).every(sample => sample.detail === 'component' && sample.bridge?.targetDetail === 'component')).toBe(true);
+    const reveal = inward.filter(sample => sample.bridge?.targetDetail === 'code');
+    expect(reveal[0]!.bridge).toMatchObject({ startZoom: code.startZoom, fullZoom: code.fullZoom });
+    expect(new Set(reveal.map(sample => sample.bridge!.progress).filter(progress => progress > 0 && progress < 1)).size).toBeGreaterThanOrEqual(3);
+    expect(inward.at(-1)).toMatchObject({ detail: 'code' });
+    // The phone's bands hold too: back out, the files stay until the phone's own interval.
+    const outward = await pinchThrough(1.62, 1.01);
+    expect(outward.at(-1)).toMatchObject({ detail: 'component', root: focusId });
+  });
+});
+
+it('a desktop at 1024x768 with the inspector open measures what main measures (safe width 549)', async () => {
+  touchPrimary = false;
+  // The inspector is a 360px grid column there, beside a 664px map; rail and toggle leave 549.
+  mapWidth = 664; mapHeight = 700; windowWidth = 1024; insets = { left: 56, right: 59 };
+  fixture = compileScanFixture({ snapshot: structuredClone(snapshot), view: structuredClone(view), story: structuredClone(story) }, { targetAspect: mapWidth / mapHeight });
+  await mountRootOver(containerCentre());
+  expect(panelOpen()).toBe(true);
+  const inward = await pinchThrough(4.6, 1.01);
+  const expansion = inward.find(sample => sample.bridge?.targetDetail === 'component')!;
+  expect(expansion.bridge!.startZoom).toBeGreaterThanOrEqual(3.35);
+  expect(expansion.bridge!.fullZoom).toBeCloseTo(expansion.bridge!.startZoom * 1.2, 6);
+  // Main's code window at safe width 549: arm 2.983643, so start 3.390504 and full 4.068605.
+  const reveal = inward.find(sample => sample.bridge?.targetDetail === 'code')!;
+  expect(reveal.bridge!.startZoom).toBeCloseTo(3.390504, 5);
+  expect(reveal.bridge!.fullZoom).toBeCloseTo(4.068605, 5);
+});
+
+it('a narrow desktop window (860 wide, mouse) is still measured under the panel, exactly as on main', async () => {
+  // Not a phone, so nothing here may change. On main the open panel's sheet narrows the
+  // measured map to its floor and the code window collapses with it (0.494 -> 0.593): a
+  // settled container view then opens a file's code. That is main's behaviour, pinned so
+  // the phone-only rule cannot leak onto it; it is not a behaviour to keep for its own sake.
+  touchPrimary = false;
+  mapWidth = 860; mapHeight = 700; insets = { left: 56, right: 47 };
+  fixture = compileScanFixture({ snapshot: structuredClone(snapshot), view: structuredClone(view), story: structuredClone(story) }, { targetAspect: mapWidth / mapHeight });
+  await mountRootOver(containerCentre());
+  expect(panelOpen()).toBe(false);
+  await pinchThrough(4.2, 1.01);
+  await rest();
+  expect(diagnostic()).toMatchObject({ currentDetail: 'component', sceneRoot: focusId, bridge: { targetDetail: 'component', progress: 1 } });
+  await toggleDetails();
+  await pan(4);
+  await rest();
+  expect(diagnostic().bridge).toMatchObject({ targetDetail: 'code' });
+  expect(diagnostic().bridge.startZoom).toBeCloseTo(0.494062, 5);
+  expect(diagnostic().bridge.fullZoom).toBeCloseTo(0.592875, 5);
 });
 
 it('a device that is not a phone does not measure the map for the expansion factor', async () => {

@@ -4211,7 +4211,13 @@ export function App() {
     // Boot restoration may run before the renderer publishes the map dimensions.
     const rect = document.querySelector<HTMLElement>('[data-testid="atlas-canvas"]')?.getBoundingClientRect();
     const safe = rect && rect.width > 0 ? measureCurrentMapSafeArea(false) : measuredSafeArea;
-    return Math.max(1, (rect && rect.width > 0 ? rect.width : viewport.width) - safe.left - safe.right);
+    const measured = Math.max(1, (rect && rect.width > 0 ? rect.width : viewport.width) - safe.left - safe.right);
+    // On a phone the open details panel is a sheet over the map, not a narrower map: it must
+    // not move the code window or the expansion of a view that is already settled under it.
+    if (!detailsOpen || !scanFixture || !rect || rect.width <= 0 || !isPhoneSizedTouchViewport(readPhoneViewportInput())) return measured;
+    const uncovered = measureCurrentMapSafeArea(false, false);
+    const width = Math.max(1, rect.width - uncovered.left - uncovered.right);
+    return scanExpansionZoomFactor(width, true) < 1 ? width : measured;
   }
 
   /** 1 everywhere except a scan atlas on a phone-sized touch viewport with a narrow map (CLA-404).
@@ -5412,7 +5418,7 @@ export function App() {
     return safe;
   }
 
-  function measureCurrentMapSafeArea(publish = true) {
+  function measureCurrentMapSafeArea(publish = true, includeDetailsPanel = true) {
     const canvas = document.querySelector<HTMLElement>('[data-testid="atlas-canvas"]');
     if (!canvas) return { top: 0, right: 0, bottom: 0, left: 0 };
     const rect = (selector: string) => document.querySelector<HTMLElement>(selector)?.getBoundingClientRect();
@@ -5420,7 +5426,7 @@ export function App() {
     const overlays = [
       { rect: rect('.topbar'), edge: 'top' as const },
       { rect: rect('.map-heading'), edge: 'top' as const },
-      { rect: detailsOpen ? rect('.details-panel.open') : undefined, edge: 'right' as const },
+      { rect: detailsOpen && includeDetailsPanel ? rect('.details-panel.open') : undefined, edge: 'right' as const },
       { rect: rect('.details-toggle'), edge: 'right' as const },
       { rect: rect('.zoom-controls'), edge: 'bottom' as const },
       { rect: rect('.story-launcher'), edge: 'bottom' as const },
