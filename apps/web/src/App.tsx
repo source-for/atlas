@@ -3198,7 +3198,17 @@ export function App() {
       measureCurrentMapSafeArea(),
       160,
     );
-    const nextSession = plan.session;
+    // A scan atlas compiles one scene per file at L4 (CLA-405). The sibling file under the
+    // centre cannot take the lens inside this file's scene: hold everything on the current
+    // file and let the file handoff publish the other file's scene, root and lens together.
+    const transfer = plan.session.focusTransfer;
+    const panFileId = transfer && scanFixture && !importedAtlasRef.current
+      && semanticLensSessionDetail(current) === 'code'
+      && sceneRef.current.rootEntityId === transfer.sourceEntries.at(-1)?.targetId
+      ? transfer.targetId : undefined;
+    const nextSession = panFileId
+      ? { ...plan.session, settled: transfer!.sourceEntries, focusTransfer: undefined }
+      : plan.session;
     semanticLensSessionRef.current = nextSession;    setSemanticLensSession(nextSession);
     const lensPath = semanticLensCanonicalPathIds(nextSession);
     const next = canonicalNavigationState({
@@ -3209,8 +3219,71 @@ export function App() {
     }, navigationDefaults);
     navigationRef.current = next;
     historyControllerRef.current?.replace(next);
+    if (panFileId) startScanPanFileHandoff(panFileId);
     if (!nextSession.focusTransfer) return;
     animateSemanticFocusTransfer(nextSession.focusTransfer.targetId);
+  }
+
+  /**
+   * Re-root an L4 scan map on the sibling file a pan settled on (CLA-405). Nothing is
+   * published until that file's scene is ready; then scene, root, lens path and a new
+   * history entry land together, so Back returns to the file the reader left. A later
+   * pan, zoom or navigation replaces the session or the scene and this request is dropped.
+   */
+  function startScanPanFileHandoff(fileId: string) {
+    const fixture = scanFixture;
+    if (!fixture) return;
+    viewportSceneRequestRef.current.cancel();
+    viewportRequestedTileRef.current = undefined;
+    const request = gestureSceneRequestRef.current.begin();
+    const token = ++zoomHandoffGenerationRef.current;
+    const sourceScene = sceneRef.current;
+    const sourceSession = semanticLensSessionRef.current;
+    const selection = inspectorSelectionRef.current;
+    const owns = () => request.owns() && token === zoomHandoffGenerationRef.current && ownsScenePublication(
+      { fixture, scene: sourceScene, session: sourceSession, selection },
+      { fixture: scanFixture, scene: sceneRef.current, session: semanticLensSessionRef.current, selection: inspectorSelectionRef.current },
+    );
+    zoomHandoffInflightRef.current = { detail: 'code', compileFocus: fileId };
+    const safeWidth = currentScanCodeSafeWidth();
+    void fixture.ensureNeighborhood(fileId, request.signal).then(async () => {
+      if (!owns()) return;
+      const prepared = await composeScanSceneAsync(fileId, sourceScene, request.signal, undefined, undefined, undefined, safeWidth);
+      if (!owns() || !scanDeeperBandHasPeerCards(prepared, fileId, 'code')) return;
+      const nextSession = semanticLevelSession(prepared, 'code', [fileId, ...sourceSession.settled.map(entry => entry.targetId).reverse()]);
+      if (nextSession.settled.at(-1)?.targetId !== fileId) return;
+      // The file was a faded L3 card in the old scene; keep its centre where the reader put it.
+      const liveCamera = renderedCameraRef.current;
+      const from = semanticBounds(sourceScene, fileId, 'component');
+      const to = semanticBounds(prepared, fileId, 'code');
+      const nextCamera = from && to ? {
+        x: liveCamera.x + to.x + to.width / 2 - from.x - from.width / 2,
+        y: liveCamera.y + to.y + to.height / 2 - from.y - from.height / 2,
+        zoom: liveCamera.zoom,
+      } : liveCamera;
+      stopLateScanReveal();
+      scanLateRevealRef.current = undefined;
+      installSemanticSession(nextSession);
+      activeLevelRef.current = semanticDetails.indexOf('code');
+      scanZoomAdoptRawRef.current = nextCamera;
+      sceneRef.current = prepared;
+      setScene(prepared);
+      setNavigationIdentity(identity => ({ ...identity, rootEntityId: fileId }));
+      renderedCameraRef.current = nextCamera;
+      updateCamera(nextCamera);
+      commitNavigation({
+        ...navigationRef.current,
+        rootEntityId: fileId,
+        camera: nextCamera,
+        detail: nextSession.baseDetail,
+        lensPath: semanticLensCanonicalPathIds(nextSession),
+      }, 'push');
+      publishSemanticRenderPacket(nextCamera, prepared, nextSession);
+    }).catch(error => {
+      if (owns() && !(error instanceof DOMException && error.name === 'AbortError')) setLiveMessage(scenePreparationFailureMessage(error, 'This file could not be prepared. Try again.'));
+    }).finally(() => {
+      if (token === zoomHandoffGenerationRef.current) zoomHandoffInflightRef.current = undefined;
+    });
   }
 
   function beginSemanticZoomBurst(reachedCamera: Camera): Camera {
