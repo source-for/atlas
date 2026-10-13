@@ -1164,7 +1164,7 @@ describe('dormant container bridge retarget', () => {
   const l2Scene = fixture.createScene(viewRootId);
   const opens = (id: string) => scanZoomCompileHandoff(l2Scene, fixture.snapshot, id, viewRootId, 'component')?.compileFocus;
   const retargets = (underPointer: string | undefined) =>
-    scanDormantBridgeRetargets(l2Scene, fixture.snapshot, viewRootId, 'container:web-app', underPointer);
+    scanDormantBridgeRetargets(l2Scene, fixture.snapshot, viewRootId, 'container:web-app', underPointer, 'component');
 
   it('keeps the bridge when the pointer is over the system shell between cards', () => {
     // The handoff falls back to its preferred container here; releasing the bridge
@@ -1186,7 +1186,7 @@ describe('dormant container bridge retarget', () => {
     const focuses = ids.filter((id): id is string => Boolean(id && opens(id) === id));
     expect(focuses.length).toBeGreaterThan(1);
     for (const focusId of focuses) for (const underPointer of ids) {
-      if (!scanDormantBridgeRetargets(l2Scene, fixture.snapshot, viewRootId, focusId, underPointer)) continue;
+      if (!scanDormantBridgeRetargets(l2Scene, fixture.snapshot, viewRootId, focusId, underPointer, 'component')) continue;
       // A released bridge is followed by the handoff for the card under the pointer.
       expect(opens(underPointer!), `${focusId} → ${underPointer}`).toBeDefined();
       expect(opens(underPointer!), `${focusId} → ${underPointer}`).not.toBe(focusId);
@@ -1234,6 +1234,14 @@ describe('dormant container bridge retarget', () => {
       const other = cards.find(id => id !== fileId && opensFile(id) === id);
       expect(other).toBeDefined();
       expect(retargetsFile(fileId, other)).toBe(true);
+    });
+
+    it('releases a bridge for another file when the pointer is over the container shell', () => {
+      // Current behaviour, shared with main: the shell resolves to its default file, so it
+      // counts as a card that opens a different file. Excluding the shell would be a product decision.
+      const other = cards.find(id => id !== fileId && opensFile(id) === id)!;
+      expect(other).toBeDefined();
+      expect(retargetsFile(other, 'container:web-app')).toBe(true);
     });
 
     it('never releases a bridge for a card whose handoff would choose that bridge again', () => {
