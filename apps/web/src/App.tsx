@@ -5555,9 +5555,12 @@ export function App() {
       playAfterArrival: play,
     };
     const initialSample = sampleStoryFlight(flight, now);
+    // The camera already holds the target frame: there is no flight to show, and the
+    // engine rejects a timeline of no length (CLA-544). The step arrives at once.
+    const arriveAtOnce = reduceMotion || flight.canonicalDurationMs <= 0;
     arrivalPlayAfterRef.current = play;
     setArrivalElapsedMs(0);
-    if (reduceMotion) {
+    if (arriveAtOnce) {
       storyFlightRef.current = undefined;
       setStoryFlightSample(undefined);
       installSemanticSession(targetSession);
@@ -5575,18 +5578,18 @@ export function App() {
       setStoryFlightEpoch(epoch => epoch + 1);
     }
     if (historyMode === 'push' && !navigationRef.current.story) storyOriginAvailableRef.current = true;
-    const canonicalSession = reduceMotion ? targetSession : sourceSession;
+    const canonicalSession = arriveAtOnce ? targetSession : sourceSession;
     commitNavigation(canonicalNavigationState({
       ...navigationRef.current,
       rootEntityId: compileFocus,
       ...(stepSelectedId ? { selectedId: stepSelectedId } : {}),
-      camera: reduceMotion ? nextCamera : liveCamera,
+      camera: arriveAtOnce ? nextCamera : liveCamera,
       detail: canonicalSession.baseDetail,
       lensPath: semanticLensCanonicalPathIds(canonicalSession),
       story: {
         id: plan.id,
         step: bounded,
-        positionMs: encodeStoryPosition(plan, bounded, reduceMotion ? 'arrival' : 'flight', 0, flight.canonicalDurationMs),
+        positionMs: encodeStoryPosition(plan, bounded, arriveAtOnce ? 'arrival' : 'flight', 0, flight.canonicalDurationMs),
       },
     }, navigationDefaults), historyMode);
     const upcoming = plan.steps[(bounded + 1) % plan.steps.length];
@@ -5849,7 +5852,9 @@ export function App() {
       }
       const play = arrivalPlayAfterRef.current;
       const active = storyFlightRef.current;
-      const arrivedCamera = active?.flight.target ?? camera;
+      // With no flight to hold the target, the frame can still move during the settle
+      // (a resize, the inspector); the entry takes the camera shown now (CLA-544).
+      const arrivedCamera = active?.flight.target ?? renderedCameraRef.current;
       const holdElapsedMs = storyElapsedRef.current;
       pausedStoryPhaseRef.current = 'hold';
       pausedStoryPhaseElapsedRef.current = holdElapsedMs;

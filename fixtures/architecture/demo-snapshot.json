@@ -669,8 +669,8 @@
           "path": "apps/web/src/App.tsx",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "CanvasViewport",
-          "startLine": 6855,
-          "endLine": 6860
+          "startLine": 6860,
+          "endLine": 6865
         }
       ],
       "sourceExcerpts": [
@@ -678,9 +678,9 @@
           "path": "apps/web/src/App.tsx",
           "symbol": "CanvasViewport",
           "language": "tsx",
-          "startLine": 6855,
-          "endLine": 6860,
-          "highlightLine": 6855,
+          "startLine": 6860,
+          "endLine": 6865,
+          "highlightLine": 6860,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "          <CanvasViewport",
@@ -875,8 +875,8 @@
           "path": "apps/web/src/renderer/WasmRendererAdapter.ts",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "WasmRendererAdapter",
-          "startLine": 38,
-          "endLine": 43
+          "startLine": 43,
+          "endLine": 48
         }
       ],
       "sourceExcerpts": [
@@ -884,9 +884,9 @@
           "path": "apps/web/src/renderer/WasmRendererAdapter.ts",
           "symbol": "WasmRendererAdapter",
           "language": "typescript",
-          "startLine": 38,
-          "endLine": 43,
-          "highlightLine": 38,
+          "startLine": 43,
+          "endLine": 48,
+          "highlightLine": 43,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "export class WasmRendererAdapter implements AtlasRenderer {",
