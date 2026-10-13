@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import snapshot from '../../../../fixtures/architecture/demo-snapshot.json';
 import view from '../../../../fixtures/architecture/demo-view.json';
 import story from '../../../../fixtures/architecture/demo-story.json';
@@ -26,7 +26,15 @@ let canvas: HTMLCanvasElement;
 let inputTime = 0;
 let rafFrames = new Map<number, FrameRequestCallback>();
 let rafId = 100000;
-// A 390x844 phone. The harness measures no overlays, so the safe width is the full 390.
+// A 390x844 phone. With no insets the harness measures no overlays and the safe width is the
+// full 390; `realPhoneInsets` gives the level rail and the details toggle their real widths.
+let insets = { left: 0, right: 0 };
+const realPhoneInsets = { left: 56, right: 47 };
+/** Frames a scene preparation takes; 0 is the harness default (ready on the next microtask). */
+let preparationFrames = 0;
+let preparing: { frames: number; resolve: () => void }[] = [];
+/** Reads of the map's own rect: every safe-width measurement starts with one. */
+let safeWidthReads = 0;
 const mapWidth = 390;
 const mapHeight = 844;
 const pointer = { x: mapWidth / 2, y: mapHeight / 2 };
@@ -49,6 +57,18 @@ async function frame() {
   clock.now += 16;
   const pending = [...rafFrames.values()]; rafFrames.clear();
   await act(async () => { for (const callback of pending) callback(clock.now); }); await settle();
+  const ready = preparing.filter(entry => --entry.frames <= 0);
+  preparing = preparing.filter(entry => entry.frames > 0);
+  if (ready.length) { await act(async () => { for (const entry of ready) entry.resolve(); }); await settle(); }
+}
+/** Make every neighborhood request from here on take `frames` frames, as a worker compile does. */
+function slowPreparation(frames: number) {
+  preparationFrames = frames;
+  const ensure = fixture.ensureNeighborhood.bind(fixture);
+  return vi.spyOn(fixture, 'ensureNeighborhood').mockImplementation(async (...args: Parameters<ScanFixture['ensureNeighborhood']>) => {
+    if (preparationFrames > 0) await new Promise<void>(resolve => { preparing.push({ frames: preparationFrames, resolve }); });
+    return ensure(...args);
+  });
 }
 /** One pinch sample to `zoom`, then the frame a browser paints before the next one. */
 async function pinchTo(zoom: number) {
@@ -80,7 +100,7 @@ function containerCentre() {
 function earliestCodeWindow() {
   const scene = fixture.createScene(focusId);
   return scene.entities.filter(entity => entity.parentId === focusId)
-    .map(entity => scanCodeRevealWindow(semanticBounds(scene, entity.id, 'component'), mapWidth)!)
+    .map(entity => scanCodeRevealWindow(semanticBounds(scene, entity.id, 'component'), mapWidth - insets.left - insets.right)!)
     .reduce((first, window) => window.armZoom < first.armZoom ? window : first);
 }
 type Sample = { zoom: number; detail: string | null; root: string | null; bridge: { sourceDetail: string; targetDetail: string; startZoom: number; fullZoom: number; progress: number } | null };
@@ -97,7 +117,7 @@ async function pinchThrough(toZoom: number, ratio = 1.02): Promise<Sample[]> {
 // The first mount also imports the App module, which alone can pass 5s on a loaded machine.
 vi.setConfig({ testTimeout: 60_000 });
 beforeEach(() => {
-  inputTime = 0; touchPrimary = true; clock.now = 5000;
+  inputTime = 0; touchPrimary = true; clock.now = 5000; insets = { left: 0, right: 0 }; preparationFrames = 0; preparing = [];
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
   localStorage.clear(); sessionStorage.clear(); localStorage.setItem('okie.devMode', '1'); vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ mode: 'public', ask: false, connected: false }), { headers: { 'content-type': 'application/json' } })));
@@ -109,6 +129,9 @@ beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class { constructor(private callback: ResizeObserverCallback) {} observe(element: Element) { this.callback([{ target: element, contentRect: { width: mapWidth, height: mapHeight } } as ResizeObserverEntry], this as unknown as ResizeObserver); } disconnect() {} unobserve() {} });
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
     const map = this instanceof HTMLCanvasElement || this.getAttribute('data-testid') === 'atlas-canvas' || this.classList.contains('atlas-renderer-host');
+    if (this.getAttribute('data-testid') === 'atlas-canvas') safeWidthReads++;
+    if (insets.left && this.classList.contains('level-rail')) return new DOMRect(0, 200, insets.left, 300);
+    if (insets.right && this.classList.contains('details-toggle')) return new DOMRect(mapWidth - insets.right, 100, insets.right, 40);
     return new DOMRect(0, 0, map ? mapWidth : 0, map ? mapHeight : 0);
   });
   vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(mapWidth);
@@ -264,8 +287,9 @@ it('contracts a restored phone view of a container above the container level on 
   const outward = await pinchThrough(0.7);
   expectLevelsInOrder(outward, -1);
   const contraction = outward.filter(sample => sample.bridge?.targetDetail === 'component');
-  // The cold interval is the scaled band (enter 1.663), with its start floored at 1.24.
-  expect(contraction[0]!.bridge!.fullZoom).toBeCloseTo(1.662818, 5);
+  // The cold interval tops out where an expansion ends (the code arm, 2.12); arriving below
+  // that it is anchored to the arrival zoom, with its start floored at 1.24.
+  expect(contraction[0]!.bridge!.fullZoom).toBeCloseTo(1.8, 3);
   expect(contraction[0]!.bridge!.startZoom).toBeCloseTo(1.24, 9);
   expect(new Set(contraction.map(sample => sample.bridge!.progress).filter(progress => progress > 0 && progress < 1)).size).toBeGreaterThanOrEqual(3);
   // The contraction is over while containers are still the level shown.
@@ -273,20 +297,121 @@ it('contracts a restored phone view of a container above the container level on 
   expect(outward.at(-1)).toMatchObject({ detail: 'context', root: 'system:okie', bridge: null });
 });
 
-it('holds a closed file\'s code bridge through the phone\'s own component band, then lets it go below it', async () => {
+it('lets a closed file\'s code bridge go at once on a phone, so the container can contract inside its own band', async () => {
   const code = earliestCodeWindow();
   await mountRootOver(containerCentre());
   await pinchThrough(code.fullZoom * 1.05);
   expect(detail()).toBe('code');
-  // Back out past the code window but still inside the scaled component band (leave 3.12 x 0.4964 = 1.549).
-  // Desktop's band would call this zoom "left" (below 3.12) and drop the bridge on the first sample.
-  const held = await pinchThrough(1.75);
-  expect(held.at(-1)).toMatchObject({ detail: 'component', root: focusId, bridge: { sourceDetail: 'component', targetDetail: 'code', progress: 0 } });
-  expect(held.filter(sample => sample.zoom < code.leaveStartZoom).every(sample => sample.bridge?.targetDetail === 'code' && sample.bridge.progress === 0)).toBe(true);
-  // Below the scaled leave zoom the file's bridge is released and the container contracts.
-  const left = await pinchThrough(1.45);
-  expect(left.at(-1)!.bridge).toMatchObject({ sourceDetail: 'container', targetDetail: 'component' });
-  expect(left.find(sample => sample.bridge?.targetDetail === 'component')!.zoom).toBeLessThan(1.549);
+  // Out past the code window, still well inside the scaled component band (leave 3.12 x 0.4964 = 1.549).
+  // Holding the bridge to that leave zoom, as desktop does at 3.12, left the contraction 7% of zoom.
+  const out = await pinchThrough(1.75);
+  const closed = out.findIndex(sample => sample.bridge?.targetDetail === 'code' && sample.bridge.progress === 0);
+  expect(closed).toBeGreaterThan(-1);
+  const after = out.slice(closed + 1);
+  expect(after.length).toBeGreaterThan(2);
+  expect(after.slice(1).every(sample => sample.bridge?.sourceDetail === 'container' && sample.bridge.targetDetail === 'component')).toBe(true);
+  // It runs from where the forward expansion ends (the code arm) down to the floor.
+  expect(out.at(-1)!.bridge!.startZoom).toBeCloseTo(1.24, 9);
+  expect(out.at(-1)!.bridge!.fullZoom).toBeCloseTo(code.armZoom, 5);
+  expect(out.at(-1)!.bridge!.progress).toBeGreaterThan(0.5);
+  expect(out.at(-1)!.bridge!.progress).toBeLessThan(1);
+  expect(out.at(-1)).toMatchObject({ detail: 'component', root: focusId });
+});
+
+describe('a real 390x844 phone: safe width 287 between the level rail and the details toggle', () => {
+  beforeEach(() => { insets = realPhoneInsets; sessionStorage.setItem(MOBILE_NOTICE_SESSION_KEY, '1'); });
+
+  it.each([[1.03], [1.06]])('a quick pinch-out (x%s per frame) from open code still shows the container contracting', async ratio => {
+    const code = earliestCodeWindow();
+    expect(code.armZoom).toBeCloseTo(1.559755, 5);
+    await mountRootOver(containerCentre());
+    const inward = await pinchThrough(code.fullZoom * 1.05, 1.01);
+    expect(diagnostic().safeArea).toMatchObject({ left: 56, right: 47 });
+    expect(detail()).toBe('code');
+    const opened = inward.find(sample => sample.bridge?.targetDetail === 'component')!.bridge!;
+    // A scene is not ready in the frame it is asked for: two frames, as a worker compile takes.
+    slowPreparation(2);
+    const outward = await pinchThrough(0.7, ratio);
+    expectLevelsInOrder(outward, -1);
+    const contraction = outward.filter(sample => sample.bridge?.sourceDetail === 'container' && sample.bridge.targetDetail === 'component');
+    const partial = contraction.filter(sample => sample.root === focusId && sample.bridge!.progress > 0 && sample.bridge!.progress < 1);
+    expect(new Set(partial.map(sample => sample.bridge!.progress)).size).toBeGreaterThanOrEqual(2);
+    expect(partial[0]!.zoom).toBeGreaterThan(1.24);
+    // The files close over the zooms they opened over (in: about 1.32 -> 1.58).
+    expect(contraction[0]!.bridge!.startZoom).toBeCloseTo(1.24, 9);
+    expect(contraction[0]!.bridge!.fullZoom).toBeCloseTo(code.armZoom, 5);
+    expect(Math.abs(contraction[0]!.bridge!.fullZoom - opened.fullZoom)).toBeLessThan(0.03);
+    expect(Math.abs(contraction[0]!.bridge!.startZoom - opened.startZoom)).toBeLessThan(0.1);
+    // Then the closed container, then L1 below the container level's leave zoom.
+    const closed = outward.find(sample => sample.bridge?.targetDetail === 'component' && sample.bridge.progress === 0)!;
+    expect(closed).toMatchObject({ detail: 'container', root: 'system:okie' });
+    expect(closed.zoom).toBeGreaterThan(1.08);
+    expect(outward.find(sample => sample.detail === 'context')!.zoom).toBeLessThan(1.08);
+    expect(outward.at(-1)).toMatchObject({ detail: 'context', root: 'system:okie', bridge: null });
+  });
+
+  it('after the closed code bridge yields, pinching in again reopens the code without a request loop (CLA-417)', async () => {
+    const code = earliestCodeWindow();
+    const requests = vi.spyOn(fixture, 'ensureNeighborhood');
+    await mountRootOver(containerCentre());
+    const inward = await pinchThrough(code.fullZoom * 1.05, 1.01);
+    const fileId = inward.find(sample => sample.bridge?.targetDetail === 'code')!.root!;
+    expect(requestRuns(requests)).toEqual([focusId, fileId]);
+    // Out until the code is closed and its bridge has given way to the container's contraction.
+    const outward = await pinchThrough(1.45, 1.01);
+    expect(outward.at(-1)!.bridge).toMatchObject({ sourceDetail: 'container', targetDetail: 'component' });
+    expect(outward.at(-1)!.bridge!.progress).toBeGreaterThan(0);
+    expect(outward.at(-1)!.bridge!.progress).toBeLessThan(1);
+    expect(requestRuns(requests)).toEqual([focusId, fileId, 'system:okie']);
+    // Back in: the container re-expands on the same bridge, then the file's code opens following the pinch.
+    const again = await pinchThrough(code.fullZoom * 1.05, 1.01);
+    expectLevelsInOrder(again, 1);
+    expect(again.at(-1)).toMatchObject({ detail: 'code', root: fileId, bridge: { targetDetail: 'code', progress: 1 } });
+    const reveal = again.filter(sample => sample.bridge?.targetDetail === 'code');
+    expect(reveal[0]!.bridge).toMatchObject({ startZoom: code.startZoom, fullZoom: code.fullZoom });
+    expect(new Set(reveal.map(sample => sample.bridge!.progress).filter(progress => progress > 0 && progress < 1)).size).toBeGreaterThanOrEqual(3);
+    expect(requestRuns(requests)).toEqual([focusId, fileId, 'system:okie', fileId]);
+    // Rocking across the zoom where the bridge yields costs one preparation per reversal, no more.
+    for (let turn = 0; turn < 3; turn++) {
+      await pinchThrough(1.6, 1.01);
+      await pinchThrough(code.fullZoom * 1.05, 1.01);
+    }
+    expect(detail()).toBe('code');
+    expect(requestRuns(requests)).toHaveLength(4 + 3 * 2);
+    // And nothing is asked for while the fingers are still.
+    for (let idle = 0; idle < 20; idle++) await frame();
+    const settled = requests.mock.calls.length;
+    const state = shell().getAttribute('data-lens-diagnostics');
+    for (let idle = 0; idle < 40; idle++) await frame();
+    expect(requests.mock.calls).toHaveLength(settled);
+    expect(shell().getAttribute('data-lens-diagnostics')).toBe(state);
+    expect(detail()).toBe('code');
+  });
+
+  it('dev diagnostics report the zooms the phone expansion really uses', async () => {
+    await mountRootOver(containerCentre());
+    // Part-way through the expansion, whose bridge started near 1.32.
+    await pinchThrough(1.4, 1.01);
+    expect(diagnostic().bridge).toMatchObject({ sourceDetail: 'container', targetDetail: 'component' });
+    const policy = diagnostic().targets.find((target: { id: string }) => target.id === focusId).policy;
+    expect(policy).toMatchObject({ currentDetail: 'container', nextDetail: 'component' });
+    expect(policy.enterZoom).toBeCloseTo(1.24, 9);
+    expect(policy.leaveZoom).toBeCloseTo(1.24 - 0.23 * 0.42 * 287 / 330, 9);
+  });
+});
+
+it('a device that is not a phone does not measure the map for the expansion factor', async () => {
+  touchPrimary = false;
+  await mountRootOver(containerCentre());
+  // The container level on desktop: no handoff is due anywhere in this stretch.
+  await pinchThrough(1.6);
+  expect(detail()).toBe('container');
+  const before = safeWidthReads;
+  const samples = await pinchThrough(2.6);
+  expect(samples.every(sample => sample.detail === 'container' && sample.bridge === null)).toBe(true);
+  // What is left is main's own one measurement per sample for the code window (the map's
+  // rect is read for its width and again inside the safe-area measurement, per frame too).
+  expect((safeWidthReads - before) / samples.length).toBe(6);
 });
 
 it.each([

@@ -138,8 +138,8 @@ import {
   type SemanticLensState,
 } from './semantic/semanticLens';
 import { isPhoneSizedTouchViewport, readPhoneViewportInput } from './mobileGate';
-import { scaleScanExpansionLensTarget, scanExpansionZoomBands, scanExpansionZoomFactor } from './semantic/scanExpansionZoom';
-import { createScanContainerMorph, createScanDetailMorph, createScanReverseMorph, retainScanDetailMorphSource, sampleScanContainerMorph, scanContainerMorphCamera, scanContainerMorphOwnsSession, shouldStartScanContainerReverseMorph, type ScanDetailMorph } from './semantic/scanContainerMorph';
+import { scaleScanExpansionLensTarget, scanExpansionThresholds, scanExpansionZoomBands, scanExpansionZoomFactor } from './semantic/scanExpansionZoom';
+import { createScanContainerMorph, createScanDetailMorph, createScanReverseMorph, retainScanDetailMorphSource, sampleScanContainerMorph, scanContainerMorphCamera, scanContainerMorphOwnsSession, scanClosedCodeBridgeYieldsEarly, shouldStartScanContainerReverseMorph, type ScanDetailMorph } from './semantic/scanContainerMorph';
 import { explorerEntitiesForView } from './entityExplorer';
 import { defaultSearchSuggestions } from './searchSuggestions';
 import { useWorkerSearch } from './search/useWorkerSearch';
@@ -3305,7 +3305,7 @@ export function App() {
       ensure: () => fixture.ensureNeighborhood(sourceFocusId, request.signal),
       compile: () => composeScanSceneAsync(sourceFocusId, undefined, request.signal, undefined, [focusId]),
       publish: source => {
-        const bridge = createScanReverseMorph(source, target, focusId, detail, endpointZoom, currentScanExpansionFactor());
+        const bridge = createScanReverseMorph(source, target, focusId, detail, endpointZoom, currentScanExpansionFactor(), currentScanCodeSafeWidth());
         if (!bridge) return;
         const liveCamera = renderedCameraRef.current;
         const frame = sampleScanContainerMorph(bridge, liveCamera.zoom);
@@ -3364,6 +3364,7 @@ export function App() {
       const safeArea = targetsInput.safeArea ?? measuredSafeArea;
       const bridge = scanContainerMorphRef.current;
       const nextDetail = semanticDetails[semanticDetails.indexOf(currentDetail) + 1];
+      const expansionFactor = currentScanExpansionFactor();
       // Overwrite one bounded record for local attribution; no listeners, history, or console output.
       const underPointer = scanZoomEntityUnderPointer(liveScene, sample.camera, viewport, sample.pointer, currentDetail);
       const targets = [...new Set([targetsInput.candidate?.id, targetsInput.active?.id, underPointer, selected.id, liveScene.rootEntityId])]
@@ -3380,8 +3381,12 @@ export function App() {
             ...(!descendantCount ? ['no-projected-descendants'] : []),
           ];
           if (stage === 'semantic-policy' && !reasons.length && targetsInput.candidate?.id !== id) reasons.push('not-selected-by-probes');
+          const policy = semanticLensTargetZoomDiagnostics(liveScene, id, currentDetail, viewport, safeArea);
+          // Report the zooms a phone's earlier expansion really uses (CLA-404).
+          const moved = policy && expansionFactor < 1 && policy.currentDetail === 'container' && policy.nextDetail === 'component'
+            ? scanExpansionThresholds(policy.enterZoom, policy.enterZoom - policy.leaveZoom, policy.fullZoom ?? undefined, expansionFactor) : undefined;
           return { id, reasons, descendantCount, currentBounds, nextBounds,
-            policy: semanticLensTargetZoomDiagnostics(liveScene, id, currentDetail, viewport, safeArea) };
+            policy: policy && moved ? { ...policy, enterZoom: moved.enterZoom, leaveZoom: moved.enterZoom - moved.hysteresis, fullZoom: moved.fullZoom ?? null } : policy };
         });
       semanticLensDiagnosticRef.current = JSON.stringify({ stage, timeMs: performance.now(), underPointer: underPointer ?? null, safeAreaSource: targetsInput.safeArea ? 'sample' : 'cached', currentDetail, nextDetail, camera: sample.camera,
         pointer: sample.pointer, viewport, safeArea, sceneRoot: liveScene.rootEntityId,
@@ -3436,6 +3441,7 @@ export function App() {
     // events after the zero crossing. It is safe to release only after the
     // camera has actually crossed to L1; another L2 card that opens retargets now.
     if (dormantBridge?.progress === 0 && ((sample.direction === 'outward' && hasLeftSourceBand)
+      || (sample.direction === 'outward' && scanClosedCodeBridgeYieldsEarly(dormantBridge, currentScanExpansionFactor()))
       || (sample.direction === 'inward' && dormantTarget && dormantTarget !== dormantBridge.focusId
         // A bridge yields only to a card that would itself open something else (see the helper).
         && (!scanFixture || scanDormantBridgeRetargets(dormantBridge.sourceScene, activeSnapshot,
@@ -4208,7 +4214,9 @@ export function App() {
   /** 1 everywhere except a scan atlas on a phone-sized touch viewport with a narrow map (CLA-404).
    * Read live: rotation, a panel or devtools emulation changes it while the atlas is mounted. */
   function currentScanExpansionFactor() {
-    return scanFixture ? scanExpansionZoomFactor(currentScanCodeSafeWidth(), isPhoneSizedTouchViewport(readPhoneViewportInput())) : 1;
+    // The device first: anything that is not a phone must not pay for a measurement here.
+    if (!scanFixture || !isPhoneSizedTouchViewport(readPhoneViewportInput())) return 1;
+    return scanExpansionZoomFactor(currentScanCodeSafeWidth(), true);
   }
 
   /** The level a scan atlas is at for this zoom, with the phone's earlier component band. */

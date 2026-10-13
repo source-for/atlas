@@ -6,7 +6,7 @@ import { ATLAS_SEMANTIC_ZOOM_BANDS, semanticLevelAtZoom } from '../renderer/came
 import { semanticBounds } from '../renderer/goldenC4Scene';
 import { compileScanFixture } from '../renderer/scanFixture';
 import { scanCodeReferenceWidth, scanCodeRevealWindow } from './scanCodeRevealWindow';
-import { SCAN_CONTAINER_MORPH_MIN_SPAN, createScanContainerMorph, createScanReverseMorph, sampleScanContainerMorph } from './scanContainerMorph';
+import { createScanContainerMorph, createScanReverseMorph, sampleScanContainerMorph, scanClosedCodeBridgeYieldsEarly } from './scanContainerMorph';
 import { SCAN_CONTAINER_LEAVE_ZOOM, SCAN_EXPANSION_FLOOR_ZOOM, scaleScanExpansionLensTarget, scanExpansionThresholds, scanExpansionZoomBands, scanExpansionZoomFactor } from './scanExpansionZoom';
 import { measureSemanticLensTarget, validateRestoredSemanticLensPath } from './semanticLens';
 
@@ -36,7 +36,7 @@ function thresholds(safeWidth: number, phone: boolean, shared = scenes()) {
     { width: safeWidth, height: 844 }, { top: 0, right: 0, bottom: 0, left: 0 }), factor)!;
   const expansionEnd = (startZoom: number) => createScanContainerMorph(source, target, focusId, startZoom, safeWidth, factor)!.fullZoom;
   const reverse = (arrivalZoom?: number) => {
-    const morph = createScanReverseMorph(source, target, focusId, 'component', arrivalZoom, factor)!;
+    const morph = createScanReverseMorph(source, target, focusId, 'component', arrivalZoom, factor, safeWidth)!;
     return [morph.startZoom, morph.fullZoom];
   };
   const restored = (scene: typeof source, zoom: number) => validateRestoredSemanticLensPath(scene, 'context', lensPath, zoom, factor).entries.length === lensPath.length;
@@ -202,12 +202,6 @@ describe('a phone expands a container before its files\' code window (CLA-404)',
     expect(measured.bandLeave).toBeGreaterThan(SCAN_CONTAINER_LEAVE_ZOOM);
     expect(measured.bandLeave).toBeLessThan(measured.lens.enterZoom);
     expect(measured.lens.policy!.fullZoom!).toBeLessThanOrEqual(measured.code.armZoom);
-    // An expansion that starts where the lens arms ends at or before the code arm; one
-    // that starts as late as the band commit still ends before code starts.
-    const fromEnter = measured.expansionEnd(measured.lens.enterZoom);
-    expect(fromEnter).toBeLessThanOrEqual(Math.max(measured.code.armZoom, measured.lens.enterZoom * SCAN_CONTAINER_MORPH_MIN_SPAN) + 1e-9);
-    expect(fromEnter).toBeLessThan(measured.code.startZoom);
-    expect(measured.expansionEnd(measured.bandCommit)).toBeLessThan(measured.code.startZoom);
     // A saved L3 view is kept down to the leave zoom and dropped below it.
     expect(measured.restoreLeaveRoot).toBeCloseTo(leave, 3);
   });
@@ -216,6 +210,41 @@ describe('a phone expands a container before its files\' code window (CLA-404)',
     for (const safeWidth of [390, 287]) {
       const measured = thresholds(safeWidth, true, shared);
       expect(measured.expansionEnd(measured.lens.enterZoom)).toBeCloseTo(measured.code.armZoom, 8);
+    }
+  });
+
+  // The requirement: the expansion is over before the code start zoom, so the code reveal
+  // follows the pinch. The arm zoom is the target; the minimum span (x1.2) can carry the end
+  // a little past it. Starts: the floor, and where a real phone pinch began in browser QA.
+  const overArmLimit = 0.09;
+  it.each([
+    // safe width, start zoom, ends at or before the arm
+    [272.08, 1.24, false], [272.08, 1.30, false], [272.08, 1.32, false], [272.08, 1.34, false],
+    [273, 1.24, false], [273, 1.30, false], [273, 1.32, false], [273, 1.34, false],
+    [287, 1.24, true], [287, 1.30, false], [287, 1.32, false], [287, 1.34, false],
+    [309, 1.24, true], [309, 1.30, true], [309, 1.32, true], [309, 1.34, true],
+    [390, 1.24, true], [390, 1.30, true], [390, 1.32, true], [390, 1.34, true],
+  ])('safe width %s from zoom %s ends before code starts', (safeWidth, startZoom, withinArm) => {
+    const measured = thresholds(safeWidth, true, shared);
+    expect(measured.factor).toBeLessThan(1);
+    const end = measured.expansionEnd(startZoom);
+    expect(end).toBeGreaterThan(startZoom);
+    expect(end).toBeLessThan(measured.code.startZoom);
+    if (withinArm) expect(end).toBeLessThanOrEqual(measured.code.armZoom + 1e-9);
+    else {
+      expect(end).toBeGreaterThan(measured.code.armZoom);
+      expect(end / measured.code.armZoom - 1).toBeLessThan(overArmLimit);
+    }
+  });
+
+  it('also ends before code starts from the latest zoom the lens or the level band can start it', () => {
+    for (const safeWidth of [272.08, 273, 287, 309, 390, 549, 785]) {
+      const measured = thresholds(safeWidth, true, shared);
+      for (const startZoom of [measured.lens.enterZoom, measured.bandCommit]) {
+        const end = measured.expansionEnd(startZoom);
+        expect(end, `${safeWidth} ${startZoom}`).toBeLessThan(measured.code.startZoom);
+        expect(end / measured.code.armZoom - 1, `${safeWidth} ${startZoom}`).toBeLessThan(overArmLimit);
+      }
     }
   });
 
@@ -230,7 +259,35 @@ describe('a phone expands a container before its files\' code window (CLA-404)',
       expect(measured.reverse()[0]).toBe(SCAN_EXPANSION_FLOOR_ZOOM);
       expect(measured.reverse(1.6)[0]).toBe(SCAN_EXPANSION_FLOOR_ZOOM);
     }
-    expect(thresholds(390, true, shared).reverse()[1]).toBeCloseTo(1.662818, 6);
+  });
+
+  it('contracts over the zooms the expansion opened over: from its end down to the floor', () => {
+    // safe width, where an expansion from the scaled enter zoom ends
+    for (const [safeWidth, top] of [[390, 2.119528], [287, 1.559755], [273, 1.488]] as const) {
+      const measured = thresholds(safeWidth, true, shared);
+      expect(measured.expansionEnd(measured.lens.enterZoom)).toBeCloseTo(top, 6);
+      // Arriving from above (a file's code just closed) the whole interval is still ahead.
+      for (const arrival of [undefined, 3.2, top * 1.09]) {
+        expect(measured.reverse(arrival)[0], `${safeWidth} ${arrival}`).toBe(SCAN_EXPANSION_FLOOR_ZOOM);
+        expect(measured.reverse(arrival)[1], `${safeWidth} ${arrival}`).toBeCloseTo(top, 6);
+      }
+      // A view restored below the top is anchored where it arrived, as on desktop.
+      expect(measured.reverse(1.4)).toEqual([1.4 / 1.2, 1.4]);
+    }
+  });
+
+  it('gives up a closed code bridge on the way out at once on a phone only', () => {
+    const closedCode = { progress: 0, targetDetail: 'code' };
+    const phone = scanExpansionZoomFactor(287, true);
+    expect(scanClosedCodeBridgeYieldsEarly(closedCode, phone)).toBe(true);
+    // Desktop, and a phone too narrow to scale, hold it until the band is left, as on main.
+    expect(scanClosedCodeBridgeYieldsEarly(closedCode, 1)).toBe(false);
+    expect(scanClosedCodeBridgeYieldsEarly(closedCode, scanExpansionZoomFactor(272, true))).toBe(false);
+    expect(scanClosedCodeBridgeYieldsEarly(closedCode, scanExpansionZoomFactor(390, false))).toBe(false);
+    // The container's own dormant expansion is still held through the container level.
+    expect(scanClosedCodeBridgeYieldsEarly({ progress: 0, targetDetail: 'component' }, phone)).toBe(false);
+    // Code that is still part-way open keeps its bridge.
+    expect(scanClosedCodeBridgeYieldsEarly({ progress: 0.2, targetDetail: 'code' }, phone)).toBe(false);
   });
 
   it('keeps the interval an expansion was built with when the device or width changes under it', () => {

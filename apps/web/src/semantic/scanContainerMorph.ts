@@ -158,22 +158,29 @@ export const SCAN_CONTAINER_MORPH_MIN_SPAN = 1.2;
  * at or past the arm zoom the code reveal is therefore still late, only sooner. On a narrow
  * safe width that is the normal case: the files' whole code window lies below the zoom at
  * which the expansion starts. On a phone `expansionFactor` (`scanExpansionZoomFactor`) moves
- * the band floor, and so the whole expansion, earlier by the code window's own ratio.
+ * the band floor, and so the whole expansion, earlier by the code window's own ratio. There
+ * it ends at the arm zoom, or just past it when the minimum span decides, and before the
+ * code start zoom.
  */
 export function createScanContainerMorph(source: AtlasScene, target: AtlasScene, focusId: string, startZoom: number, codeSafeWidth?: number, expansionFactor = 1) {
   const morph = createScanDetailMorph(source, target, focusId, 'container', 'component', startZoom);
   if (!morph) return undefined;
   const enterZoom = scanExpansionEnterZoom(expansionFactor);
   if (expansionFactor < 1) morph.fullZoom = Math.min(C4_CAMERA_LIMITS.maxZoom, Math.max(enterZoom, morph.startZoom * 1.65));
+  morph.fullZoom = Math.min(morph.fullZoom,
+    Math.max(earliestScanCodeArmZoom(morph.scene, target, focusId, codeSafeWidth), morph.startZoom * SCAN_CONTAINER_MORPH_MIN_SPAN, enterZoom));
+  return morph;
+}
+
+/** The lowest L3→L4 arm zoom among a container's files; Infinity when none has a code window. */
+function earliestScanCodeArmZoom(scene: AtlasScene, target: AtlasScene, focusId: string, codeSafeWidth: number | undefined): number {
   let earliestArm = Infinity;
   for (const entity of target.entities) {
     if (entity.parentId !== focusId) continue;
-    const arm = scanCodeRevealWindow(semanticBounds(morph.scene, entity.id, 'component'), codeSafeWidth)?.armZoom;
+    const arm = scanCodeRevealWindow(semanticBounds(scene, entity.id, 'component'), codeSafeWidth)?.armZoom;
     if (arm !== undefined && arm < earliestArm) earliestArm = arm;
   }
-  morph.fullZoom = Math.min(morph.fullZoom,
-    Math.max(earliestArm, morph.startZoom * SCAN_CONTAINER_MORPH_MIN_SPAN, enterZoom));
-  return morph;
+  return earliestArm;
 }
 
 export type ScanContainerMorph = NonNullable<ReturnType<typeof createScanContainerMorph>>;
@@ -194,7 +201,7 @@ export function shouldStartScanContainerReverseMorph(input: {
 }
 
 /** Reconstruct both endpoints before a cold deep view starts contracting. */
-export function createScanReverseMorph(source: AtlasScene, target: AtlasScene, focusId: string, detail: 'component' | 'code', arrivalZoom?: number, expansionFactor = 1) {
+export function createScanReverseMorph(source: AtlasScene, target: AtlasScene, focusId: string, detail: 'component' | 'code', arrivalZoom?: number, expansionFactor = 1, codeSafeWidth?: number) {
   const band = C4_ZOOM_BANDS[detailOrder.indexOf(detail)]!;
   const scaled = detail === 'component' && expansionFactor < 1;
   const componentEnterZoom = scaled ? scanExpansionEnterZoom(expansionFactor) : band.enterZoom;
@@ -205,8 +212,13 @@ export function createScanReverseMorph(source: AtlasScene, target: AtlasScene, f
   const morph = createScanDetailMorph(source, target, focusId,
     detail === 'code' ? 'component' : 'container', detail, startZoom);
   if (!morph) return undefined;
-  // Leave room for the floored start below, so the contraction is over before containers leave.
-  if (scaled) morph.fullZoom = Math.max(componentEnterZoom, SCAN_EXPANSION_FLOOR_ZOOM * SCAN_CONTAINER_MORPH_MIN_SPAN);
+  // On a phone there is no container range left to contract over, so the files close over
+  // the zooms they opened over: from where an expansion begun at the scaled enter zoom
+  // ends (`createScanContainerMorph`), down to the floored start below.
+  if (scaled) {
+    morph.fullZoom = Math.min(C4_CAMERA_LIMITS.maxZoom, componentEnterZoom * 1.65,
+      Math.max(earliestScanCodeArmZoom(morph.scene, target, focusId, codeSafeWidth), componentEnterZoom * SCAN_CONTAINER_MORPH_MIN_SPAN));
+  }
   // Saved lenses restore a settled endpoint even below the usual full zoom.
   // Anchor that endpoint to the pre-input camera, rather than jumping halfway
   // through a fixed interval on the first outward event.
@@ -233,6 +245,17 @@ export function scanContainerMorphOwnsSession(morph: ScanDetailMorph, session: S
     && session.settled.every((entry, index) => entry.targetId === morph.targetSession.settled[index]?.targetId)
     && (session.active.phase === 'idle'
       || (session.active.targetId === morph.focusId && session.active.nextDetail === morph.targetDetail));
+}
+
+/**
+ * A dormant bridge is held on the way out until the camera has left the band it came from.
+ * On a phone (`expansionFactor` < 1) the component band reaches down to the container level,
+ * so a closed file's code bridge held that long leaves the container's contraction nowhere
+ * to run: there it yields as soon as the code is closed, and the contraction is prepared
+ * from that zoom.
+ */
+export function scanClosedCodeBridgeYieldsEarly(bridge: { progress: number; targetDetail: string }, expansionFactor: number): boolean {
+  return bridge.progress === 0 && bridge.targetDetail === 'code' && expansionFactor < 1;
 }
 
 /** Idle callbacks can receive an already-adopted camera. Never apply its offset twice. */
