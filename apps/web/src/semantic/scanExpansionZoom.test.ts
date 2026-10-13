@@ -276,6 +276,28 @@ describe('a phone expands a container before its files\' code window (CLA-404)',
     }
   });
 
+  it('never hangs a phone contraction below the zoom where containers leave, wherever the view arrived', () => {
+    for (const safeWidth of [273, 287, 309, 390, 549, 785]) {
+      const measured = thresholds(safeWidth, true, shared);
+      for (let arrival = 0.3; arrival < 4.5; arrival += 0.01) {
+        const [start, full] = measured.reverse(arrival);
+        expect(start, `${safeWidth} ${arrival}`).toBeGreaterThanOrEqual(SCAN_CONTAINER_LEAVE_ZOOM);
+        expect(full, `${safeWidth} ${arrival}`).toBeGreaterThan(start!);
+      }
+      // Browser QA's stranded case: code held down to 0.52, contraction anchored at 0.472
+      // (0.286 -> 0.472), under the camera's own minimum zoom. Now it is already closed there.
+      const { source, target } = shared;
+      const factor = scanExpansionZoomFactor(safeWidth, true);
+      const morph = createScanReverseMorph(source, target, focusId, 'component', 0.472, factor, safeWidth)!;
+      expect(morph.startZoom).toBeGreaterThanOrEqual(SCAN_EXPANSION_FLOOR_ZOOM);
+      expect(sampleScanContainerMorph(morph, 0.472).progress).toBe(0);
+      expect(sampleScanContainerMorph(morph, 1.08).progress).toBe(0);
+    }
+    // Main anchors any arrival, and so does everything that is not a phone.
+    expect(thresholds(390, false, shared).reverse(0.472)).toEqual([0.472 / 1.65, 0.472]);
+    expect(thresholds(272, true, shared).reverse(0.472)).toEqual([0.472 / 1.65, 0.472]);
+  });
+
   it('gives up a closed code bridge on the way out at once on a phone only', () => {
     const closedCode = { progress: 0, targetDetail: 'code' };
     const phone = scanExpansionZoomFactor(287, true);

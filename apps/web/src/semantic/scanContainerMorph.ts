@@ -222,7 +222,11 @@ export function createScanReverseMorph(source: AtlasScene, target: AtlasScene, f
   // Saved lenses restore a settled endpoint even below the usual full zoom.
   // Anchor that endpoint to the pre-input camera, rather than jumping halfway
   // through a fixed interval on the first outward event.
-  if (!(detail === 'code' && target.targetAspect !== undefined) && arrivalZoom !== undefined && Number.isFinite(arrivalZoom) && arrivalZoom > 0 && arrivalZoom < morph.fullZoom) {
+  // A phone view that arrives at or below the zoom where containers leave is not anchored:
+  // an interval hung under that zoom could never be crossed, and the files would stay open
+  // over L1. It keeps the interval above, so it is sampled as already closed.
+  const stranded = scaled && arrivalZoom !== undefined && arrivalZoom <= SCAN_CONTAINER_LEAVE_ZOOM;
+  if (!stranded && !(detail === 'code' && target.targetAspect !== undefined) && arrivalZoom !== undefined && Number.isFinite(arrivalZoom) && arrivalZoom > 0 && arrivalZoom < morph.fullZoom) {
     morph.fullZoom = arrivalZoom;
     morph.startZoom = arrivalZoom / 1.65;
   }

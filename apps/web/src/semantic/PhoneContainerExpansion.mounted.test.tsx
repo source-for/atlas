@@ -12,11 +12,11 @@ import type { Camera, RenderState } from '../renderer/types';
 import { MOBILE_NOTICE_SESSION_KEY } from '../mobileGate';
 import { scanCodeRevealWindow } from './scanCodeRevealWindow';
 
-const captured = vi.hoisted(() => ({ camera: { x: 0, y: 0, zoom: 1 } as Camera, state: undefined as RenderState | undefined }));
+const captured = vi.hoisted(() => ({ camera: { x: 0, y: 0, zoom: 1 } as Camera, state: undefined as RenderState | undefined, pick: undefined as { kind: 'entity'; id: string } | undefined }));
 vi.mock('../renderer/createRenderer', () => ({
   createRenderer: async (host: HTMLElement) => {
     const canvas = document.createElement('canvas'); host.replaceChildren(canvas);
-    return { canvas, renderer: { kind: 'canvas2d', setScene() {}, setCamera(camera: Camera) { captured.camera = { ...camera }; }, setRenderState(state: RenderState) { captured.state = state; }, resize() {}, render() {}, pick() {}, visibleScene: () => ({ objectIds: [], relationIds: [] }), lodState() {}, diagnostics: () => ({ requestedBackend: 'canvas2d', activeBackend: 'canvas2d', gpuAccelerated: false, lastFrameMs: 0, message: '', entityCount: 0, relationCount: 0 }), dispose() {} } };
+    return { canvas, renderer: { kind: 'canvas2d', setScene() {}, setCamera(camera: Camera) { captured.camera = { ...camera }; }, setRenderState(state: RenderState) { captured.state = state; }, resize() {}, render() {}, pick() { return captured.pick; }, visibleScene: () => ({ objectIds: [], relationIds: [] }), lodState() {}, diagnostics: () => ({ requestedBackend: 'canvas2d', activeBackend: 'canvas2d', gpuAccelerated: false, lastFrameMs: 0, message: '', entityCount: 0, relationCount: 0 }), dispose() {} } };
   }, recoverRenderer: vi.fn(),
 }));
 let root: Root;
@@ -121,7 +121,7 @@ async function pinchThrough(toZoom: number, ratio = 1.02): Promise<Sample[]> {
 // The first mount also imports the App module, which alone can pass 5s on a loaded machine.
 vi.setConfig({ testTimeout: 60_000 });
 beforeEach(() => {
-  mapWidth = 390; mapHeight = 844; windowWidth = undefined;
+  mapWidth = 390; mapHeight = 844; windowWidth = undefined; captured.pick = undefined;
   inputTime = 0; touchPrimary = true; clock.now = 5000; insets = { left: 0, right: 0 }; preparationFrames = 0; preparing = [];
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
   localStorage.clear(); sessionStorage.clear(); localStorage.setItem('okie.devMode', '1'); vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -485,6 +485,36 @@ describe('the details panel over the map on a phone (safe width 287)', () => {
     expect(outward.some(sample => sample.detail === 'container')).toBe(true);
     expect(outward.find(sample => sample.detail === 'context')!.zoom).toBeLessThan(1.08);
     expect(outward.at(-1)).toMatchObject({ detail: 'context', root: 'system:okie', bridge: null });
+  });
+
+  it('tapping a file card (which opens it) and then dragging the map does not open that file\'s code', async () => {
+    const touch = async (type: string, x: number, y: number) => {
+      const event = new PointerEvent(type, { pointerId: 7, pointerType: 'touch', isPrimary: true, clientX: x, clientY: y, bubbles: true, cancelable: true, button: 0, buttons: type === 'pointerup' ? 0 : 1 });
+      await act(async () => { canvas.dispatchEvent(event); });
+      await settle();
+    };
+    await mountRootOver(containerCentre());
+    await pinchThrough(1.65, 1.01);
+    await rest();
+    expect(panelOpen()).toBe(false);
+    // The tap lands on a file: the renderer picks it and the inspector opens on it.
+    captured.pick = { kind: 'entity', id: fixture.createScene(focusId).entities.find(entity => entity.parentId === focusId)!.id };
+    await touch('pointerdown', pointer.x, pointer.y);
+    await touch('pointerup', pointer.x, pointer.y);
+    captured.pick = undefined;
+    await rest(5);
+    expect(panelOpen()).toBe(true);
+    // A 6px drag on the strip of map left beside the sheet.
+    const before = captured.camera.x;
+    await touch('pointerdown', 10, 400);
+    await touch('pointermove', 13, 400);
+    await touch('pointermove', 16, 400);
+    await touch('pointerup', 16, 400);
+    await rest();
+    expect(captured.camera.x).not.toBe(before);
+    expect(detail()).toBe('component');
+    expect(rootId()).toBe(focusId);
+    expect(diagnostic().bridge).toMatchObject({ sourceDetail: 'container', targetDetail: 'component', progress: 1 });
   });
 
   it('with it open, zooming in over a file still opens its code in the normal window', async () => {
