@@ -1,0 +1,433 @@
+import { env as testEnv, type D1Migration } from 'cloudflare:test';
+import { describe, expect, it } from 'vitest';
+import {
+  ASK_ACTIONS, ASK_ORIGINS, askUsageRequest, DAILY_ASKS, DEFAULT_LOCAL_PORT, GRANT_TTL_MS, grantSql, newGrantToken,
+  OPERATOR_ASK_USAGE_PATH as SCRIPT_PATH, operatorOrigin, parseAsksArgs, readAskUsageResult, sha256Hex, wranglerD1Args,
+} from '../scripts/asksCore.mjs';
+import asksScriptSource from '../scripts/asks.mjs?raw';
+import { signSession } from '../src/auth';
+import { USER_DAILY_ASKS } from '../src/budget';
+import type { EdgeEnv } from '../src/env';
+import { budgetGuard } from '../src/guards';
+import { jsonText } from '../src/http';
+import { OPERATOR_ASK_USAGE_PATH } from '../src/operator';
+import { edgeEnv, edgeFetch } from './helpers';
+
+const KEY = 'asks-test-signing-key-0123456789abcdef-01234';
+const ASK_ENV = { ASK_ENABLED: '1', DEV_AUTH_TEST_LOGIN: '1', SESSION_SIGNING_KEY: KEY } as const;
+const ASK_BODY = JSON.stringify({ question: 'What is this?', atlas: { owner: 'acme', repo: 'app', commitSha: 'abc' } });
+const ORIGIN = 'http://127.0.0.1:4196';
+
+const db = () => edgeEnv.USERS_DB!;
+const budget = () => edgeEnv.ATLAS_BUDGET!.getByName('global');
+const dayOf = (at: Date) => at.toISOString().slice(0, 10);
+
+/** Other test files share the users table and clear their own id ranges, so add the row right before it is needed. */
+async function addUser(id: string): Promise<void> {
+  await db().prepare(`INSERT OR IGNORE INTO users (github_id, github_login, created_at, last_sign_in_at, privacy_version, product_updates_opt_in) VALUES (?1, 'asks-test', 't', 't', 'test', 0)`).bind(Number(id)).run();
+}
+
+type Action = 'ask-show' | 'ask-reset';
+
+/** Writes a grant with the SQL the script builds; returns its token. */
+async function grant(action: Action, accountId: string, at: Date, ttlMs = GRANT_TTL_MS): Promise<string> {
+  const token = newGrantToken();
+  await db().exec(grantSql({ tokenHash: await sha256Hex(token), action, accountId, createdAt: at.toISOString(), expiresAt: new Date(at.getTime() + ttlMs).toISOString() }));
+  return token;
+}
+
+type CallOptions = { method?: string; env?: Partial<EdgeEnv>; headers?: Record<string, string>; authorization?: string; rawBody?: string };
+
+function call(token: string | undefined, body: unknown, at: Date, options: CallOptions = {}): Promise<Response> {
+  const method = options.method ?? 'POST';
+  const authorization = options.authorization ?? (token === undefined ? undefined : `Bearer ${token}`);
+  return edgeFetch(OPERATOR_ASK_USAGE_PATH, {
+    now: () => at,
+    ...(options.env ? { env: options.env } : {}),
+    init: {
+      method,
+      headers: { 'content-type': 'application/json', ...(authorization === undefined ? {} : { authorization }), ...options.headers },
+      ...(method === 'POST' ? { body: options.rawBody ?? JSON.stringify(body) } : {}),
+    },
+  });
+}
+
+/** `response` is, byte for byte and header for header, what an unknown `/api/*` path answers. */
+async function expectMiss(response: Response, label: string): Promise<void> {
+  const miss = await edgeFetch('/api/operator/nothing-here', { init: { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } } });
+  const missText = await miss.text();
+  expect(miss.status).toBe(404);
+  expect(missText).toBe(jsonText({ error: 'not found' }));
+  expect(response.status, label).toBe(404);
+  expect(await response.text(), label).toBe(missText);
+  expect([...response.headers].sort(), label).toEqual([...miss.headers].sort());
+  expect(response.headers.get('cache-control'), label).toBe('no-store');
+  expect(response.headers.get('access-control-allow-origin'), label).toBeNull();
+  expect(response.headers.getSetCookie(), label).toEqual([]);
+}
+
+async function session(id: string, at: Date): Promise<string> {
+  await addUser(id);
+  const seconds = Math.floor(at.getTime() / 1000);
+  return signSession({ sub: id, login: 'asks-test', iat: seconds - 100, exp: seconds + 3600 }, KEY);
+}
+
+function askAs(token: string, at: Date, reply: () => Response): Promise<Response> {
+  return edgeFetch('/api/ask', {
+    backend: { origin: 'http://backend.test', fetch: async () => reply() },
+    env: ASK_ENV,
+    now: () => at,
+    guards: [budgetGuard],
+    init: { method: 'POST', body: ASK_BODY, headers: { 'content-type': 'application/json', origin: ORIGIN, cookie: `sf_session=${token}` } },
+  });
+}
+
+const admitFor = (accountId: string, day: string) => budget().admit({ bucket: 'ask', accountId, day, maxRequests: 1000, dollars: { estimate: 0.01, max: 100 } }) as Promise<{ ok: true; reservationId: string }>;
+
+describe('operator Ask usage route (CLA-539)', () => {
+  it('shows today\'s count, refunds and open admissions for the account, on the Worker\'s own UTC day', async () => {
+    const at = new Date('2037-01-01T23:59:30Z');
+    const day = dayOf(at);
+    const id = '539001';
+    await addUser(id);
+    const ids = [];
+    for (let i = 0; i < 3; i += 1) ids.push((await admitFor(id, day)).reservationId);
+    await budget().settle(ids[0]!, 0.002);
+    await budget().settle(ids[1]!, 0, true);
+    // Another day and another account must not show up.
+    await admitFor(id, '2037-01-02');
+    await admitFor('539002', day);
+
+    const response = await call(await grant('ask-show', id, at), { action: 'ask-show', accountId: id, day: '2037-01-02' }, at);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('access-control-allow-origin')).toBeNull();
+    expect(await response.json()).toEqual({ result: 'ok', action: 'ask-show', accountId: id, day, requests: 2, refunds: 1, openAdmissions: 1 });
+    // Showing changes nothing.
+    expect(await budget().accountUsage(day, id)).toEqual({ day, requests: 2, refunds: 1, openAdmissions: 1 });
+  });
+
+  it('reset gives the five Asks back and leaves refunds, the ask bucket and the dollar ledger as they were', async () => {
+    const at = new Date('2037-01-03T12:00:00Z');
+    const day = dayOf(at);
+    const id = '539010';
+    const other = '539011';
+    const token = await session(id, at);
+    const answered = () => new Response('{"connected":true,"answer":"ok"}', { headers: { 'x-okie-ask-cost-usd': '0.001' } });
+    const unanswered = () => new Response('{"connected":true,"error":"no answer"}', { headers: { 'x-okie-ask-outcome': 'unanswered' } });
+
+    expect((await askAs(token, at, unanswered)).status).toBe(200); // refunded: the count stays at 0
+    for (let i = 0; i < 5; i += 1) expect((await askAs(token, at, answered)).status).toBe(200);
+    expect((await askAs(await session(other, at), at, answered)).status).toBe(200);
+    expect((await askAs(token, at, answered)).status).toBe(429);
+
+    const ledger = await budget().usage(day);
+    expect(ledger.requests.ask).toBe(7);
+    expect(ledger.openReservations).toBe(0);
+    expect(await budget().accountUsage(day, id)).toEqual({ day, requests: 5, refunds: 1, openAdmissions: 0 });
+
+    const response = await call(await grant('ask-reset', id, at), { action: 'ask-reset', accountId: id }, at);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ result: 'ok', action: 'ask-reset', accountId: id, day, requests: 0, refunds: 1, openAdmissions: 0, requestsBefore: 5 });
+    expect(await budget().usage(day)).toEqual(ledger);
+    expect(await budget().accountUsage(day, other)).toEqual({ day, requests: 1, refunds: 0, openAdmissions: 0 });
+
+    for (let i = 0; i < 5; i += 1) expect((await askAs(token, at, answered)).status, `ask ${i + 1} after the reset`).toBe(200);
+    expect((await askAs(token, at, answered)).status).toBe(429);
+    expect((await budget().usage(day)).requests.ask).toBe(12);
+  }, 20_000);
+
+  it('answers every unauthorised caller exactly like an unknown /api path', async () => {
+    const at = new Date('2037-01-05T12:00:00Z');
+    const day = dayOf(at);
+    const a = '539020';
+    const b = '539021';
+    await addUser(a);
+    await addUser(b);
+    for (let i = 0; i < 2; i += 1) await admitFor(a, day);
+    await admitFor(b, day);
+    const show = (accountId: string) => ({ action: 'ask-show', accountId });
+    const reset = (accountId: string) => ({ action: 'ask-reset', accountId });
+    const counts = async () => [(await budget().accountUsage(day, a)).requests, (await budget().accountUsage(day, b)).requests];
+
+    // No token, and tokens that are not exactly `Bearer <64 lowercase hex>`: refused before D1 is touched.
+    const live = await grant('ask-reset', a, at);
+    let touched = 0;
+    const watched = { prepare() { touched += 1; throw new Error('D1 must not be reached'); }, batch() { touched += 1; throw new Error('D1 must not be reached'); } } as unknown as D1Database;
+    const malformed: Array<[string, string | undefined]> = [
+      ['no authorization header', undefined],
+      ['empty bearer', 'Bearer '],
+      ['63 hex', `Bearer ${live.slice(1)}`],
+      ['65 hex', `Bearer ${live}0`],
+      ['uppercase hex', `Bearer ${live.toUpperCase()}`],
+      ['non-hex', `Bearer ${'g'.repeat(64)}`],
+      ['lowercase scheme', `bearer ${live}`],
+      ['basic scheme', `Basic ${live}`],
+      ['bare token', live],
+      ['two tokens', `Bearer ${live} ${live}`],
+    ];
+    for (const [label, authorization] of malformed) {
+      await expectMiss(await edgeFetch(OPERATOR_ASK_USAGE_PATH, {
+        now: () => at,
+        env: { USERS_DB: watched },
+        init: { method: 'POST', body: JSON.stringify(reset(a)), headers: { 'content-type': 'application/json', ...(authorization === undefined ? {} : { authorization }) } },
+      }), label);
+    }
+    expect(touched).toBe(0);
+    // A D1 failure with a well-formed token is the same miss (and the database was asked this time).
+    await expectMiss(await call(live, reset(a), at, { env: { USERS_DB: watched } }), 'D1 error');
+    expect(touched).toBe(1);
+    await expectMiss(await call(live, reset(a), at, { env: { USERS_DB: undefined } }), 'USERS_DB unbound');
+    // Other methods, even with a live grant; the grant is not spent by them.
+    for (const method of ['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS']) {
+      const response = await call(live, reset(a), at, { method });
+      if (method === 'HEAD') expect(response.status).toBe(404);
+      else await expectMiss(response, method);
+    }
+    await expectMiss(await call(newGrantToken(), reset(a), at), 'unknown token');
+    expect(await counts()).toEqual([2, 1]);
+
+    // A valid signed-in session is no credential: with no grant, and next to a token that is not a grant.
+    const cookie = `sf_session=${await session(a, at)}`;
+    for (const env of [ASK_ENV, { ...ASK_ENV, OKIE_PUBLIC_ORIGIN: undefined }, {}]) {
+      await expectMiss(await call(undefined, reset(a), at, { env, headers: { cookie, origin: ORIGIN } }), 'session cookie, no grant');
+      await expectMiss(await call(newGrantToken(), reset(a), at, { env, headers: { cookie, origin: ORIGIN } }), 'session cookie, unknown token');
+    }
+    expect(await counts()).toEqual([2, 1]);
+
+    // Expired: live until the instant before expires_at, gone at it.
+    const short = await grant('ask-show', a, at, 1000);
+    await expectMiss(await call(short, show(a), new Date(at.getTime() + 1000)), 'expired grant');
+    const edge = await grant('ask-show', a, at, 1000);
+    expect((await call(edge, show(a), new Date(at.getTime() + 999))).status).toBe(200);
+
+    // A show grant used for a reset, then again as itself: spent by the mismatch.
+    const showOnly = await grant('ask-show', a, at);
+    await expectMiss(await call(showOnly, reset(a), at), 'show grant used for reset');
+    await expectMiss(await call(showOnly, show(a), at), 'show grant after the mismatch');
+    // A grant for account A used for account B, then again for A.
+    const forA = await grant('ask-reset', a, at);
+    await expectMiss(await call(forA, reset(b), at), 'grant for A used for B');
+    await expectMiss(await call(forA, reset(a), at), 'grant for A after the mismatch');
+    // A body that is not the JSON the route wants spends the grant too.
+    for (const rawBody of ['', 'not json', '[]', 'null', JSON.stringify({ action: 'ask-reset', accountId: Number(a) }), JSON.stringify({ action: 'ask-reset', accountId: a, pad: 'x'.repeat(2000) })]) {
+      const garbled = await grant('ask-reset', a, at);
+      await expectMiss(await call(garbled, undefined, at, { rawBody }), `body ${rawBody.slice(0, 20)}`);
+      await expectMiss(await call(garbled, reset(a), at), `grant after body ${rawBody.slice(0, 20)}`);
+    }
+    // A stored grant whose action is not one of the two is refused (and spent).
+    const odd = newGrantToken();
+    await db().prepare(`INSERT INTO operator_grants (token_hash, action, account_id, expires_at, created_at) VALUES (?1, 'ask-wipe', ?2, ?3, ?4)`).bind(await sha256Hex(odd), a, new Date(at.getTime() + 1000).toISOString(), at.toISOString()).run();
+    await expectMiss(await call(odd, { action: 'ask-wipe', accountId: a }, at), 'unknown action');
+    expect(await counts()).toEqual([2, 1]);
+
+    // The live grant from the top was never spent by any of the refusals: it works once, then never again.
+    const first = await call(live, reset(a), at);
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ result: 'ok', requestsBefore: 2, requests: 0 });
+    await expectMiss(await call(live, reset(a), at), 'grant used twice');
+    expect(await counts()).toEqual([0, 1]);
+    // Expired and spent rows are gone; nothing of this test's is left behind.
+    await call(newGrantToken(), reset(a), new Date(at.getTime() + GRANT_TTL_MS));
+    expect((await db().prepare('SELECT COUNT(*) AS count FROM operator_grants WHERE created_at = ?1').bind(at.toISOString()).first<{ count: number }>())?.count).toBe(0);
+  }, 20_000);
+
+  it('says so when the account does not exist, changes nothing, and still spends the grant', async () => {
+    const at = new Date('2037-01-07T12:00:00Z');
+    const day = dayOf(at);
+    const id = '539030';
+    await db().prepare('DELETE FROM users WHERE github_id = ?1').bind(Number(id)).run();
+    await admitFor(id, day);
+    for (const action of ['ask-show', 'ask-reset'] as const) {
+      const token = await grant(action, id, at);
+      const response = await call(token, { action, accountId: id }, at);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ result: 'unknown-account', action, accountId: id });
+      await expectMiss(await call(token, { action, accountId: id }, at), `${action} grant after unknown account`);
+    }
+    expect((await budget().accountUsage(day, id)).requests).toBe(1);
+  });
+
+  it('answers a grant holder 503 when the budget is unbound or failing', async () => {
+    const at = new Date('2037-01-08T12:00:00Z');
+    const id = '539040';
+    await addUser(id);
+    const failing = { getByName: () => ({ accountUsage: async () => { throw new Error('offline'); } }) } as unknown as EdgeEnv['ATLAS_BUDGET'];
+    for (const ATLAS_BUDGET of [undefined, failing]) {
+      const response = await call(await grant('ask-show', id, at), { action: 'ask-show', accountId: id }, at, { env: { ATLAS_BUDGET } });
+      expect(response.status).toBe(503);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+    }
+  });
+
+  it('an Ask in flight during a reset settles afterwards, answered or unanswered, without corrupting the counts', async () => {
+    const at = new Date('2037-01-09T12:00:00Z');
+    const day = dayOf(at);
+    const id = '539050';
+    await addUser(id);
+    const ids = [];
+    for (let i = 0; i < 4; i += 1) ids.push((await admitFor(id, day)).reservationId);
+    await budget().settle(ids[3]!, 0.002);
+    expect(await budget().usage(day)).toMatchObject({ requests: { ask: 4 }, openReservations: 3 });
+
+    const response = await call(await grant('ask-reset', id, at), { action: 'ask-reset', accountId: id }, at);
+    expect(await response.json()).toEqual({ result: 'ok', action: 'ask-reset', accountId: id, day, requests: 0, refunds: 0, openAdmissions: 3, requestsBefore: 4 });
+    // The reset touched neither the bucket nor the dollars.
+    const afterReset = await budget().usage(day);
+    expect(afterReset).toMatchObject({ requests: { ask: 4 }, openReservations: 3 });
+    expect(afterReset.reservedDollars).toBeCloseTo(0.03, 9);
+    expect(afterReset.spentDollars).toBeCloseTo(0.002, 9);
+
+    // Answered: nothing to give back.
+    await budget().settle(ids[0]!, 0.004);
+    expect(await budget().accountUsage(day, id)).toEqual({ day, requests: 0, refunds: 0, openAdmissions: 2 });
+    // Unanswered with no count left: the count stays at 0 (never below), the refund is still recorded.
+    await budget().settle(ids[1]!, undefined, true);
+    expect(await budget().accountUsage(day, id)).toEqual({ day, requests: 0, refunds: 1, openAdmissions: 1 });
+    // Unanswered after a new Ask was counted: that one Ask comes back, as for any unanswered reply.
+    const fresh = (await admitFor(id, day)).reservationId;
+    expect((await budget().accountUsage(day, id)).requests).toBe(1);
+    await budget().settle(ids[2]!, 0, true);
+    expect(await budget().accountUsage(day, id)).toEqual({ day, requests: 0, refunds: 2, openAdmissions: 1 });
+    await budget().settle(fresh, 0.001);
+
+    const settled = await budget().usage(day);
+    expect(settled.requests.ask).toBe(5);
+    expect(settled.openReservations).toBe(0);
+    expect(settled.reservedDollars).toBe(0);
+    // 0.002 + 0.004 + the kept 0.01 estimate + 0 + 0.001.
+    expect(settled.spentDollars).toBeCloseTo(0.017, 9);
+    expect(await budget().accountUsage(day, id)).toEqual({ day, requests: 0, refunds: 2, openAdmissions: 0 });
+  });
+
+  it('has its table from the migration applied to the test database', async () => {
+    const migrations = (testEnv as unknown as { TEST_MIGRATIONS: D1Migration[] }).TEST_MIGRATIONS;
+    expect(migrations.map(migration => migration.name)).toContain('0003_operator_grants.sql');
+    const columns = (await db().prepare('PRAGMA table_info(operator_grants)').all<{ name: string; type: string; notnull: number; pk: number }>()).results;
+    expect(columns.map(column => [column.name, column.type, column.notnull, column.pk])).toEqual([
+      ['token_hash', 'TEXT', 0, 1],
+      ['action', 'TEXT', 1, 0],
+      ['account_id', 'TEXT', 1, 0],
+      ['expires_at', 'TEXT', 1, 0],
+      ['created_at', 'TEXT', 1, 0],
+    ]);
+  });
+});
+
+describe('operator asks script (CLA-539)', () => {
+  const TOKEN = 'ab'.repeat(32);
+
+  it('agrees with the Worker on the path and the daily allowance', () => {
+    expect(SCRIPT_PATH).toBe(OPERATOR_ASK_USAGE_PATH);
+    expect(DAILY_ASKS).toBe(USER_DAILY_ASKS);
+    expect(GRANT_TTL_MS).toBe(120_000);
+  });
+
+  it('parses show and reset, refusing anything unexpected', () => {
+    expect(parseAsksArgs(['show', 'production', '--github-id', '123'])).toEqual({ command: 'show', env: 'production', githubId: '123' });
+    expect(parseAsksArgs(['reset', 'staging', '--github-id', '0'])).toEqual({ command: 'reset', env: 'staging', githubId: '0' });
+    expect(parseAsksArgs(['show', 'local', '--github-id', '7'])).toEqual({ command: 'show', env: 'local', githubId: '7', port: DEFAULT_LOCAL_PORT });
+    expect(parseAsksArgs(['reset', 'local', '--port', '4198', '--github-id', '7'])).toEqual({ command: 'reset', env: 'local', githubId: '7', port: 4198 });
+    for (const argv of [
+      [], ['show'], ['show', 'production'], ['wipe', 'production', '--github-id', '1'], ['show', 'prod', '--github-id', '1'],
+      ['show', 'https://evil.example', '--github-id', '1'],
+      ['show', 'production', '--github-id'], ['show', 'production', '--github-id', ''], ['show', 'production', '--github-id', '01'],
+      ['show', 'production', '--github-id', '-1'], ['show', 'production', '--github-id', '1.5'], ['show', 'production', '--github-id', '0x10'],
+      ['show', 'production', '--github-id', "1' OR '1'='1"], ['show', 'production', '--github-id', '99999999999999999999'],
+      ['show', 'production', '--github-id', '1', '--github-id', '2'], ['show', 'production', '--github-id', '1', 'extra'],
+      ['show', 'production', '--github-id', '1', '--origin', 'https://evil.example'], ['show', 'production', '--email', 'a@example.com'],
+      ['reset', 'production', '--github-id', '1', '--port', '4198'], ['reset', 'staging', '--github-id', '1', '--port', '4198'],
+      ['reset', 'local', '--github-id', '1', '--port', '0'], ['reset', 'local', '--github-id', '1', '--port', '65536'],
+      ['reset', 'local', '--github-id', '1', '--port', '41x'], ['reset', 'local', '--github-id', '1', '--port'],
+    ]) {
+      expect(parseAsksArgs(argv), argv.join(' ')).toHaveProperty('error');
+    }
+  });
+
+  it('sends the token only to the fixed origin for the target', () => {
+    expect(ASK_ORIGINS).toEqual({ staging: 'https://staging.sourcefor.dev', production: 'https://sourcefor.dev' });
+    expect(operatorOrigin('production')).toBe('https://sourcefor.dev');
+    expect(operatorOrigin('staging')).toBe('https://staging.sourcefor.dev');
+    expect(operatorOrigin('local')).toBe('http://127.0.0.1:4196');
+    expect(operatorOrigin('local', 4198)).toBe('http://127.0.0.1:4198');
+    expect(() => operatorOrigin('toString')).toThrow();
+    expect(() => operatorOrigin('local', 0)).toThrow();
+    expect(askUsageRequest({ token: TOKEN, action: 'ask-reset', accountId: '123' })).toEqual({
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      body: '{"action":"ask-reset","accountId":"123"}',
+    });
+    expect(() => askUsageRequest({ token: 'short', action: 'ask-reset', accountId: '123' })).toThrow();
+    // The CLI sends through smokeRequester (redirect: 'manual') and has no other fetch.
+    expect(asksScriptSource).toContain('const origin = operatorOrigin(args.env, args.port);');
+    expect(asksScriptSource).toContain('smokeRequester({ origin, headers: access.headers })');
+    expect(asksScriptSource).not.toMatch(/\bfetch\(/);
+  });
+
+  it('builds the grant SQL from the token\'s hash and the wrangler call for each target', async () => {
+    const token = newGrantToken();
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(newGrantToken()).not.toBe(token);
+    expect(await sha256Hex('abc')).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+    const tokenHash = await sha256Hex(token);
+    const grantRow = { tokenHash, action: ASK_ACTIONS.reset, accountId: '123', createdAt: '2037-02-01T00:00:00.000Z', expiresAt: '2037-02-01T00:02:00.000Z' };
+    const sql = grantSql(grantRow);
+    expect(sql).toBe(`INSERT INTO operator_grants (token_hash, action, account_id, expires_at, created_at) VALUES ('${tokenHash}', 'ask-reset', '123', '2037-02-01T00:02:00.000Z', '2037-02-01T00:00:00.000Z');`);
+    expect(sql).not.toContain(token);
+    for (const bad of [
+      { tokenHash: 'x' }, { tokenHash: tokenHash.toUpperCase() }, { action: 'ask-wipe' }, { action: "ask-show'; DROP TABLE users; --" },
+      { accountId: "1' OR '1'='1" }, { accountId: '01' }, { accountId: 123 as unknown as string }, { expiresAt: "2037'" }, { createdAt: 'now' },
+    ]) {
+      expect(() => grantSql({ ...grantRow, ...bad }), JSON.stringify(bad)).toThrow();
+    }
+    // The statement runs against the real schema.
+    await edgeEnv.USERS_DB!.exec(sql);
+    expect(await edgeEnv.USERS_DB!.prepare('DELETE FROM operator_grants WHERE token_hash = ?1 RETURNING action, account_id, expires_at').bind(tokenHash).first()).toEqual({ action: 'ask-reset', account_id: '123', expires_at: '2037-02-01T00:02:00.000Z' });
+
+    expect(wranglerD1Args('production', sql)).toEqual(['exec', 'wrangler', 'd1', 'execute', 'USERS_DB', '--env', 'production', '--remote', '--json', '--command', sql]);
+    expect(wranglerD1Args('staging', sql)).toEqual(['exec', 'wrangler', 'd1', 'execute', 'USERS_DB', '--env', 'staging', '--remote', '--json', '--command', sql]);
+    expect(wranglerD1Args('local', sql)).toEqual(['exec', 'wrangler', 'd1', 'execute', 'USERS_DB', '--env=', '--local', '--json', '--command', sql]);
+    expect(() => wranglerD1Args('prod', sql)).toThrow();
+  });
+
+  it('formats the Worker\'s answer and never prints the token or the raw body', () => {
+    const show = { command: 'show', env: 'production', githubId: '123' } as const;
+    const reset = { command: 'reset', env: 'staging', githubId: '123' } as const;
+    const body = (extra: Record<string, unknown>) => JSON.stringify({ result: 'ok', accountId: '123', day: '2037-02-01', requests: 3, refunds: 1, openAdmissions: 2, echo: TOKEN, ...extra });
+
+    expect(readAskUsageResult(show, 200, body({ action: 'ask-show' }))).toEqual({ ok: true, lines: [
+      'account 123 on production, UTC day 2037-02-01',
+      '  Asks counted today: 3 of 5',
+      '  Asks given back for unanswered replies: 1',
+      '  Asks in flight (admitted, not settled): 2',
+    ] });
+    expect(readAskUsageResult(reset, 200, body({ action: 'ask-reset', requests: 0, requestsBefore: 5 }))).toEqual({ ok: true, lines: [
+      'account 123 on staging, UTC day 2037-02-01',
+      '  reset: Asks counted 5 -> 0',
+      '  Asks counted today: 0 of 5',
+      '  Asks given back for unanswered replies: 1',
+      '  Asks in flight (admitted, not settled): 2',
+    ] });
+    expect(readAskUsageResult(show, 200, JSON.stringify({ result: 'unknown-account', action: 'ask-show', accountId: '123' }))).toEqual({ ok: false, message: 'no account with GitHub id 123 on production; nothing was changed' });
+    expect(readAskUsageResult(show, 404, jsonText({ error: 'not found' }))).toMatchObject({ ok: false, message: expect.stringContaining('the grant was not accepted') });
+    expect(readAskUsageResult(show, 503, '{}')).toMatchObject({ ok: false, message: expect.stringContaining('budget is unavailable') });
+    const refused = [
+      readAskUsageResult(show, 200, `<html>${TOKEN}</html>`),
+      readAskUsageResult(show, 302, TOKEN),
+      readAskUsageResult(show, 500, body({ action: 'ask-show' })),
+      readAskUsageResult(show, 200, body({ action: 'ask-reset', requestsBefore: 5 })), // the other action's answer
+      readAskUsageResult(show, 200, body({ action: 'ask-show', accountId: '124' })),
+      readAskUsageResult(show, 200, body({ action: 'ask-show', requests: -1 })),
+      readAskUsageResult(show, 200, body({ action: 'ask-show', day: TOKEN })),
+      readAskUsageResult(reset, 200, body({ action: 'ask-reset' })), // no requestsBefore
+      readAskUsageResult(show, 200, 'null'),
+    ];
+    for (const outcome of refused) expect(outcome).toMatchObject({ ok: false });
+    for (const outcome of [...refused, readAskUsageResult(show, 200, body({ action: 'ask-show' })), readAskUsageResult(show, 404, TOKEN), readAskUsageResult(show, 503, TOKEN)]) {
+      expect(JSON.stringify(outcome)).not.toContain(TOKEN);
+    }
+    // The CLI prints only what readAskUsageResult returns, redacted, and wrangler never sees the token.
+    expect(asksScriptSource).not.toMatch(/console\.(?:log|error)\([^)]*\btoken\b(?!,)/);
+    expect(asksScriptSource).toContain('const secrets = { ...access.headers, token };');
+    expect(asksScriptSource).toContain('tokenHash: await sha256Hex(token),');
+  });
+});

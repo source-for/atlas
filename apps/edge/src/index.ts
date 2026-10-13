@@ -43,6 +43,8 @@ export { ContainerProxy } from '@cloudflare/containers';
  *                             secrets + USERS_DB, then auth/me is the public shape and the rest 404); Ask
  *                             status answered here; with ASK_ENABLED=1, Ask + block-plan → container behind
  *                             guards (api.ts), else 404
+ *                             POST /api/operator/ask-usage: an account's daily Ask count, shown or reset
+ *                             for a caller holding a one-time operator grant (operator.ts, CLA-539); 404 otherwise
  *   /__store/*                DEV_STORE_ROUTE=1 only (local mirror for a locally run apps/server)
  *   /, /index.html            GET/HEAD with no query, or only `q`/`sort`/`utm_*`/`ref`/`fbclid`/`gclid`
  *                             (isHomeRequest): the server-rendered home page, hero + directory of published

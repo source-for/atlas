@@ -15,7 +15,9 @@
     "users:export": "node scripts/users.mjs export",
     "users:delete": "node scripts/users.mjs delete",
     "requests:export": "node scripts/users.mjs requests",
-    "requests:status": "node scripts/users.mjs request-status"
+    "requests:status": "node scripts/users.mjs request-status",
+    "asks:show": "node scripts/asks.mjs show",
+    "asks:reset": "node scripts/asks.mjs reset"
   },
   "devDependencies": {
     "@cloudflare/containers": "0.3.7",

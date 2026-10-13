@@ -4,13 +4,15 @@ import { accountsEnabled, currentUser, handleAuthRoute, resolveAuthSetup } from 
 import { askEnabled, type EdgeEnv } from './env';
 import { askUnanswered, budgetStub, reportedAskCost, runGuards, type Guard, type GuardContext } from './guards';
 import { jsonResponse, notFoundJson } from './http';
+import { handleOperatorAskUsage, OPERATOR_ASK_USAGE_PATH } from './operator';
 
 /**
  * `/api/*` at the edge (CLA-266). `/api/auth/*` and `/api/account/*` are GitHub sign-in (auth.ts, CLA-316):
  * without its secrets and D1 binding `/api/auth/me` answers the public shape and the rest 404. Ask status and the (always empty) Ask thread are answered here too.
  * Signed-in `POST /api/ask` reaches the container behind durable quotas with `ASK_ENABLED=1`.
- * The optional planner additionally requires `BLOCK_PLAN_ENABLED=1`; disabled routes 404. Every other `/api/*`
- * (operator, scans) is a 404.
+ * The optional planner additionally requires `BLOCK_PLAN_ENABLED=1`; disabled routes 404.
+ * `/api/operator/ask-usage` answers only a caller holding a one-time operator grant (operator.ts, CLA-539) and is
+ * a 404 to everyone else. Every other `/api/*` (operator, scans) is a 404.
  */
 
 type ApiRoute = 'ask-status' | 'ask-thread' | { bucket: BudgetBucket };
@@ -99,6 +101,7 @@ export async function handleApiRoute(request: Request, env: EdgeEnv, context: Ap
   const url = new URL(request.url);
   const auth = await handleAuthRoute(request, env, { now: context.now(), ...(context.fetch ? { fetch: context.fetch } : {}) });
   if (auth) return auth;
+  if (url.pathname === OPERATOR_ASK_USAGE_PATH) return handleOperatorAskUsage(request, env, context.now());
   // With accounts on, the signed-in SPA's account menu asks whether this user is an operator
   // (OperatorMenuLink). The hosted deployment has no operators; without accounts it stays a 404 as before.
   if (request.method.toUpperCase() === 'GET' && url.pathname === '/api/operator/session' && accountsEnabled(env, url)) {
