@@ -4,7 +4,7 @@ import type { AtlasScene, RenderState } from './types';
 const native = vi.hoisted(() => ({
   setScene: vi.fn(), applyPatch: vi.fn(), setVisibility: vi.fn(), setReducedMotion: vi.fn(), setProjectionOverride: vi.fn(),
   setTimeline: vi.fn(), clearTimeline: vi.fn(), setTimelinePlaying: vi.fn(), setTimelinePosition: vi.fn(), pick: vi.fn(),
-  visibleScene: vi.fn(), lodState: vi.fn(), setCamera: vi.fn(), pauseTimeline: vi.fn(), playTimeline: vi.fn(),
+  visibleScene: vi.fn(), lodState: vi.fn(), setCamera: vi.fn(), pauseTimeline: vi.fn(), playTimeline: vi.fn(), seekTimeline: vi.fn(), setProjectionProgress: vi.fn(),
 }));
 vi.mock('../../../../crates/atlas-wasm/pkg/atlas_wasm.js', () => ({ default: vi.fn(async () => undefined), createAtlasRenderer: vi.fn(async () => native) }));
 afterEach(() => { vi.clearAllMocks(); });
@@ -90,4 +90,42 @@ it('applies a patch only when it starts from the scene the engine holds', async 
   adapter.setScene(scene(['a', 'b', 'f', 'g', 'h'], ['p'], 7, { sceneId: 'other', baseRevision: 6, revision: 7, upsertObjects: [{ id: 'h' }], removeObjectIds: [] }));
   expect(native.applyPatch).toHaveBeenCalledTimes(2);
   expect(native.setScene).toHaveBeenCalledTimes(5);
+});
+
+const projectionOverride = { id: 'projection:focus', progress: 0.4 } as NonNullable<RenderState['projectionOverride']>;
+const flight = { id: 'flight', positionMs: 250, durationMs: 600, visualProgress: 0.4, departureProgress: 1, sourceFocusedIds: [], targetFocusedIds: ['file:a'], sourceRelationIds: [], targetRelationIds: ['rel:kept'] };
+
+it.each([
+  ['a story flight', state({ focusedIds: new Set(['file:a']), projectionOverride, cinematicTransition: flight }), () => expect(native.seekTimeline).toHaveBeenCalledExactlyOnceWith(250)],
+  ['a playing flow', state({ focusedIds: new Set(['file:a']), projectionOverride, flowRelationIds: new Set(['rel:kept']), reduceMotion: false, animate: true }), () => expect(native.playTimeline).toHaveBeenCalledTimes(1)],
+])('sends the full scene, camera and render state again after a rejected patch: %s (CLA-413)', async (_name, renderState, expectTimelineState) => {
+  const { WasmRendererAdapter } = await import('./WasmRendererAdapter');
+  const adapter = await WasmRendererAdapter.create({} as HTMLCanvasElement, 'webgpu');
+  const camera = { x: 1, y: 2, zoom: 3 };
+  const expectStateSent = () => {
+    expect(native.setCamera).toHaveBeenCalledExactlyOnceWith(1, 2, 3);
+    expect(native.setProjectionOverride).toHaveBeenCalledExactlyOnceWith(projectionOverride);
+    expect(native.setVisibility).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ object_ids: ['visual-node:file:a'] }));
+    expect(native.setTimeline).toHaveBeenCalledTimes(1);
+    expectTimelineState();
+  };
+  adapter.setScene(scene(['visual-node:file:a'], ['visual-edge:kept'], 1));
+  // Every cache holds this camera and state before the rejection: sending them twice reaches the engine once.
+  for (let pass = 0; pass < 2; pass += 1) {
+    adapter.setCamera(camera);
+    adapter.setRenderState(renderState);
+  }
+  expectStateSent();
+  const patched = scene(['visual-node:file:a', 'b'], ['visual-edge:kept'], 2, { baseRevision: 1, revision: 2, upsertObjects: [{ id: 'b' }], removeObjectIds: [] });
+  native.applyPatch.mockImplementationOnce(() => { throw new Error('scene patch failed: duplicate id b'); });
+  expect(() => adapter.setScene(patched)).toThrow('scene patch failed');
+  vi.clearAllMocks();
+  adapter.forgetScene();
+  adapter.setScene(patched);
+  expect(native.applyPatch).not.toHaveBeenCalled();
+  expect(native.setScene).toHaveBeenCalledTimes(1);
+  // The same camera and render state are sent again with the full scene.
+  adapter.setCamera(camera);
+  adapter.setRenderState(renderState);
+  expectStateSent();
 });

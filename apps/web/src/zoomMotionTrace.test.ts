@@ -129,10 +129,44 @@ describe('zoom motion trace', () => {
     expect(result).toMatchObject({ truncated: true, droppedSamples: 2 + 8 + 1 });
   });
 
+  it('keeps room for a loss and its recovery after many rejected calls (CLA-413)', () => {
+    const trace = createZoomMotionTrace();
+    trace.start(metadata);
+    for (let index = 0; index < 40; index += 1) trace.recordRendererEvent({ timeMs: 600 + index, phase: 'rejected', backend: 'webgpu', reason: index % 2 ? 'b' : 'a' });
+    trace.recordRendererEvent({ timeMs: 700, phase: 'lost', backend: 'webgpu', reason: 'unreachable' });
+    trace.recordRendererEvent({ timeMs: 710, phase: 'recovered', backend: 'webgl2', reason: '' });
+    const result = trace.stop()!;
+    const phases = result.samples.map(sample => sample.kind === 'renderer' && sample.phase);
+    expect(phases.filter(phase => phase === 'rejected')).toHaveLength(16);
+    expect(phases.slice(-2)).toEqual(['lost', 'recovered']);
+    expect(result).toMatchObject({ truncated: true, droppedSamples: 24 });
+    // The cap is per recording.
+    trace.start(metadata);
+    trace.recordRendererEvent({ timeMs: 800, phase: 'rejected', backend: 'webgpu', reason: 'a' });
+    expect(trace.stop()!.samples).toHaveLength(1);
+  });
+
   it('coerces a non-string reason and stack instead of throwing', () => {
     const trace = createZoomMotionTrace();
     trace.start(metadata);
     trace.recordRendererEvent({ timeMs: 1, phase: 'lost', backend: 'webgpu', reason: { code: 7 } as unknown as string, stack: 42 as unknown as string });
     expect(trace.stop()!.samples[0]).toMatchObject({ reason: '[object Object]', stack: '42' });
+  });
+
+  it('names each recording apart, and none while stopped', () => {
+    const trace = createZoomMotionTrace();
+    expect(trace.recordingId()).toBeUndefined();
+    trace.start(metadata);
+    const first = trace.recordingId();
+    expect(first).toBeDefined();
+    expect(trace.recordingId()).toBe(first);
+    trace.stop();
+    expect(trace.recordingId()).toBeUndefined();
+    trace.start(metadata);
+    expect(trace.recordingId()).not.toBe(first);
+    // Starting again without a stop is a new recording too.
+    const second = trace.recordingId();
+    trace.start(metadata);
+    expect(trace.recordingId()).not.toBe(second);
   });
 });
