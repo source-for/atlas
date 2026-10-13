@@ -277,25 +277,41 @@ describe('a phone expands a container before its files\' code window (CLA-404)',
   });
 
   it('never hangs a phone contraction below the zoom where containers leave, wherever the view arrived', () => {
-    for (const safeWidth of [273, 287, 309, 390, 549, 785]) {
-      const measured = thresholds(safeWidth, true, shared);
-      for (let arrival = 0.3; arrival < 4.5; arrival += 0.01) {
-        const [start, full] = measured.reverse(arrival);
-        expect(start, `${safeWidth} ${arrival}`).toBeGreaterThanOrEqual(SCAN_CONTAINER_LEAVE_ZOOM);
-        expect(full, `${safeWidth} ${arrival}`).toBeGreaterThan(start!);
-      }
-      // Browser QA's stranded case: code held down to 0.52, contraction anchored at 0.472
-      // (0.286 -> 0.472), under the camera's own minimum zoom. Now it is already closed there.
-      const { source, target } = shared;
+    const { source, target } = shared;
+    // Around both limits (1.08, 1.24), browser QA's stranded arrival (0.472), and the far ends.
+    const arrivals = [0.3, 0.472, 0.9, 1.07, SCAN_CONTAINER_LEAVE_ZOOM, 1.0801, 1.15, 1.2399, 1.24, 1.3, 1.6, 3.2, 4.4];
+    for (const safeWidth of [273, 287, 390, 785]) {
       const factor = scanExpansionZoomFactor(safeWidth, true);
-      const morph = createScanReverseMorph(source, target, focusId, 'component', 0.472, factor, safeWidth)!;
-      expect(morph.startZoom).toBeGreaterThanOrEqual(SCAN_EXPANSION_FLOOR_ZOOM);
-      expect(sampleScanContainerMorph(morph, 0.472).progress).toBe(0);
-      expect(sampleScanContainerMorph(morph, 1.08).progress).toBe(0);
+      expect(factor).toBeLessThan(1);
+      for (const arrival of arrivals) {
+        const morph = createScanReverseMorph(source, target, focusId, 'component', arrival, factor, safeWidth)!;
+        expect(morph.startZoom, `${safeWidth} ${arrival}`).toBeGreaterThanOrEqual(SCAN_CONTAINER_LEAVE_ZOOM);
+        expect(morph.fullZoom, `${safeWidth} ${arrival}`).toBeGreaterThan(morph.startZoom);
+        // At or below the leave zoom it is already closed where it arrived.
+        if (arrival <= SCAN_CONTAINER_LEAVE_ZOOM) expect(sampleScanContainerMorph(morph, arrival).progress, `${safeWidth} ${arrival}`).toBe(0);
+      }
     }
+    // QA's case was 0.286 -> 0.472, under the camera's own minimum zoom.
+    const stranded = createScanReverseMorph(source, target, focusId, 'component', 0.472, scanExpansionZoomFactor(287, true), 287)!;
+    expect([stranded.startZoom, stranded.fullZoom]).toEqual([SCAN_EXPANSION_FLOOR_ZOOM, expect.closeTo(1.559755, 6)]);
     // Main anchors any arrival, and so does everything that is not a phone.
-    expect(thresholds(390, false, shared).reverse(0.472)).toEqual([0.472 / 1.65, 0.472]);
-    expect(thresholds(272, true, shared).reverse(0.472)).toEqual([0.472 / 1.65, 0.472]);
+    expect(createScanReverseMorph(source, target, focusId, 'component', 0.472, 1, 390)).toMatchObject({ startZoom: 0.472 / 1.65, fullZoom: 0.472 });
+    expect(createScanReverseMorph(source, target, focusId, 'component', 0.472, scanExpansionZoomFactor(272, true), 272)).toMatchObject({ startZoom: 0.472 / 1.65, fullZoom: 0.472 });
+  });
+
+  it('keeps the arrival anchor for a phone view that arrives just above the container leave zoom', () => {
+    const { source, target } = shared;
+    const factor = scanExpansionZoomFactor(287, true);
+    const interval = (arrival: number) => {
+      const morph = createScanReverseMorph(source, target, focusId, 'component', arrival, factor, 287)!;
+      return [morph.startZoom, morph.fullZoom];
+    };
+    // Above 1.08 the view contracts from where it is, down to the leave zoom ...
+    expect(interval(1.15)).toEqual([SCAN_CONTAINER_LEAVE_ZOOM, 1.15]);
+    expect(interval(1.0801)).toEqual([SCAN_CONTAINER_LEAVE_ZOOM, 1.0801]);
+    // ... and only at or below it is the anchor given up for the interval above.
+    expect(interval(SCAN_CONTAINER_LEAVE_ZOOM)).toEqual([SCAN_EXPANSION_FLOOR_ZOOM, expect.closeTo(1.559755, 6)]);
+    expect(interval(1.07)).toEqual([SCAN_EXPANSION_FLOOR_ZOOM, expect.closeTo(1.559755, 6)]);
   });
 
   it('gives up a closed code bridge on the way out at once on a phone only', () => {

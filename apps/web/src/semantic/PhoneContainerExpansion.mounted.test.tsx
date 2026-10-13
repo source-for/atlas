@@ -643,3 +643,24 @@ it.each([
   expect(captured.camera.zoom).toBeCloseTo(1.4, 3);
   expect(detail()).toBe(restoredDetail);
 });
+
+it('a phone too narrow to scale (safe width 272) is still measured under the open panel, exactly as on main', async () => {
+  // Under the 272.07 limit a phone falls back to main on every path, the panel included:
+  // main measures the map beside the sheet, and the code window collapses with it.
+  insets = { left: 56, right: 62 };
+  sessionStorage.setItem(MOBILE_NOTICE_SESSION_KEY, '1');
+  await mountRootOver(containerCentre());
+  await pinchThrough(2.0);
+  await rest();
+  await toggleDetails();
+  expect(panelOpen()).toBe(true);
+  await rest();
+  const inward = await pinchThrough(4.4);
+  // Main's thresholds: nothing opens before 3.35 ...
+  const expansion = inward.find(sample => sample.bridge?.targetDetail === 'component')!;
+  expect(expansion.bridge!.startZoom).toBeGreaterThanOrEqual(3.35);
+  // ... and the code window is the one main derives from the panel-reduced width, not from 272.
+  const reveal = inward.find(sample => sample.bridge?.targetDetail === 'code')!;
+  expect(reveal.bridge!.startZoom).toBeCloseTo(0.494062, 5);
+  expect(reveal.bridge!.fullZoom).toBeCloseTo(0.592875, 5);
+});
