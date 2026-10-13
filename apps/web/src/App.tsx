@@ -3305,7 +3305,10 @@ export function App() {
       ensure: () => fixture.ensureNeighborhood(sourceFocusId, request.signal),
       compile: () => composeScanSceneAsync(sourceFocusId, undefined, request.signal, undefined, [focusId]),
       publish: source => {
-        const bridge = createScanReverseMorph(source, target, focusId, detail, endpointZoom, currentScanExpansionFactor(), currentScanCodeSafeWidth());
+        // Only a phone's container contraction is measured against the code windows.
+        const expansionFactor = currentScanExpansionFactor();
+        const bridge = createScanReverseMorph(source, target, focusId, detail, endpointZoom, expansionFactor,
+          detail === 'component' && expansionFactor < 1 ? currentScanCodeSafeWidth() : undefined);
         if (!bridge) return;
         const liveCamera = renderedCameraRef.current;
         const frame = sampleScanContainerMorph(bridge, liveCamera.zoom);

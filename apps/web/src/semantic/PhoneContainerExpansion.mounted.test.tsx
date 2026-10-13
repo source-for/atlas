@@ -414,6 +414,28 @@ it('a device that is not a phone does not measure the map for the expansion fact
   expect((safeWidthReads - before) / samples.length).toBe(6);
 });
 
+it('a device that is not a phone does not measure the map when a cold container view starts contracting', async () => {
+  touchPrimary = false;
+  const bounds = semanticBounds(fixture.createScene(focusId), focusId, 'component')!;
+  await mount(`/?fixture=scan&backend=canvas2d&root=${encodeURIComponent(focusId)}&sel=${encodeURIComponent(focusId)}&detail=context&lens=system%3Aokie&lens=${encodeURIComponent(focusId)}&cx=${bounds.x + bounds.width / 2}&cy=${bounds.y + bounds.height / 2}&z=3.8`);
+  await frame();
+  expect(captured.camera.zoom).toBeCloseTo(3.8, 3);
+  expect(detail()).toBe('component');
+  const reads: number[] = [];
+  const samples: Sample[] = [];
+  while (captured.camera.zoom > 3.2) {
+    const before = safeWidthReads;
+    samples.push(...await pinchThrough(captured.camera.zoom / 1.02));
+    reads.push(safeWidthReads - before);
+  }
+  // The contraction was prepared and published on the first outward sample ...
+  expect(samples.every(sample => sample.bridge?.sourceDetail === 'container' && sample.bridge.targetDetail === 'component')).toBe(true);
+  expect(samples.at(-1)!.bridge!.progress).toBeLessThan(1);
+  // ... whose only reads of the map are the scene request's own; publishing the bridge adds none.
+  expect(reads[0]).toBe(3);
+  expect(reads.slice(1).every(count => count === 0)).toBe(true);
+});
+
 it.each([
   ['a phone keeps the saved view inside the container', true, 'component'],
   ['a desktop window drops it to the container level, as on main', false, 'container'],
