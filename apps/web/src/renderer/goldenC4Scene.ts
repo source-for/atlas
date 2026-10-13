@@ -831,6 +831,14 @@ export function scanZoomEntityUnderPointer(
  * (or the entering lens target); releasing the bridge there re-requests that
  * container on every sample and the expansion never starts. The bridge's own
  * container therefore also wins over a different selected one in that case.
+ *
+ * A dormant L3→L4 bridge (`targetDetail` 'code', CLA-417) follows the same rule: only a
+ * card inside the opened container that opens a different file releases it. A card
+ * outside that container never does; the handoff there falls back to the selection.
+ * The container shell is the scene root, so it counts as inside, and its handoff
+ * resolves to the container's default file. The shell therefore keeps the bridge only
+ * when the bridge is for that default file. A bridge for any other file is released
+ * over the shell and the default file opens instead.
  */
 export function scanDormantBridgeRetargets(
   sourceScene: AtlasScene,
@@ -838,9 +846,11 @@ export function scanDormantBridgeRetargets(
   viewRootId: string,
   focusId: string,
   underPointer: string | undefined,
+  targetDetail: SemanticDetail,
 ): boolean {
   if (!underPointer || underPointer === focusId) return false;
-  const handoff = scanZoomCompileHandoff(sourceScene, snapshot, underPointer, viewRootId, 'component');
+  if (targetDetail === 'code' && !scanEntityIsInSubtree(snapshot, underPointer, sourceScene.rootEntityId ?? viewRootId)) return false;
+  const handoff = scanZoomCompileHandoff(sourceScene, snapshot, underPointer, viewRootId, targetDetail);
   return Boolean(handoff && handoff.compileFocus !== focusId);
 }
 
