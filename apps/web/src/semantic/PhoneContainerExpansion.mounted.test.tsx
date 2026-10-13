@@ -276,6 +276,34 @@ it('expands the selected container early on a phone when the pinch is between ca
   expect(requests.mock.calls.filter(call => call[0] === focusId)).toHaveLength(1);
 });
 
+it.each([
+  // device, the level band's commit zoom for containers -> files
+  ['a phone opens it at the scaled band commit (3.58 x 0.4964)', true, 1.777],
+  ['a desktop window opens it at main\'s 3.58', false, 3.58],
+])('a container the lens cannot measure is opened by the level band: %s', async (_label, touch, commitZoom) => {
+  touchPrimary = touch;
+  // A large repo's root scene carries no file-level bounds for its containers, so the lens
+  // never arms and only the zoom level band can ask for the container.
+  const create = fixture.createScene.bind(fixture);
+  vi.spyOn(fixture, 'createScene').mockImplementation((...args: Parameters<ScanFixture['createScene']>) => {
+    const scene = create(...args);
+    if ((scene.rootEntityId ?? 'system:okie') !== 'system:okie' || !scene.projection) return scene;
+    const bounds = Object.fromEntries(Object.entries(scene.projection.boundsByEntityIdAndDetail).map(([id, byDetail]) => {
+      if (!id.startsWith('container:')) return [id, byDetail];
+      const { component: _component, ...rest } = byDetail;
+      return [id, rest];
+    }));
+    return { ...scene, projection: { ...scene.projection, boundsByEntityIdAndDetail: bounds } };
+  });
+  await mountRootOver(containerCentre());
+  const inward = await pinchThrough(commitZoom * 1.06);
+  const opened = inward.find(sample => sample.bridge?.targetDetail === 'component')!;
+  expect(opened).toMatchObject({ root: focusId });
+  expect(opened.bridge!.startZoom).toBeGreaterThanOrEqual(commitZoom - 0.001);
+  expect(opened.bridge!.startZoom).toBeLessThan(commitZoom * 1.02);
+  expect(inward.filter(sample => sample.zoom < commitZoom - 0.001).every(sample => sample.bridge === null && sample.root === 'system:okie')).toBe(true);
+});
+
 it('contracts a restored phone view of a container above the container level on the way out', async () => {
   const scene = fixture.createScene(focusId);
   const bounds = semanticBounds(scene, focusId, 'component')!;

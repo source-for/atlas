@@ -3439,7 +3439,7 @@ export function App() {
       : undefined;
     const sourceDetailIndex = dormantBridge ? semanticDetails.indexOf(dormantBridge.sourceDetail) : -1;
     const hasLeftSourceBand = dormantBridge && sourceDetailIndex > 0
-      && scanLevel(sample.camera.zoom, sourceDetailIndex) < sourceDetailIndex;
+      && getLevel(sample.camera.zoom, sourceDetailIndex) < sourceDetailIndex;
     // Preserve the dormant bridge throughout L2, including multiple wheel
     // events after the zero crossing. It is safe to release only after the
     // camera has actually crossed to L1; another L2 card that opens retargets now.
@@ -3581,7 +3581,7 @@ export function App() {
       settledTargetIds,
     ), expansionFactor);
     const activeTarget = activeState?.targetId && activeState.currentDetail
-      ? scaleScanExpansionLensTarget(measureSemanticLensTarget(liveScene, activeState.targetId, activeState.currentDetail, targetingCamera, viewport, safeArea, sample.pointer), expansionFactor)
+      ? measureSemanticLensTarget(liveScene, activeState.targetId, activeState.currentDetail, targetingCamera, viewport, safeArea, sample.pointer)
       : undefined;
     recordSemanticLensDiagnostics('semantic-policy', sample, { candidate: candidateTarget, active: activeTarget, safeArea });
     const nowMs = performance.now();
