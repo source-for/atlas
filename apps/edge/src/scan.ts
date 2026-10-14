@@ -29,7 +29,9 @@ import { handleSourceRoute } from './source';
  *   /scan/<slug>/source.json                 → source.ts (GitHub raw via the Cache API, allowlisted by packs/source-paths.json)
  *
  * Packs are `identity` or `gzip` (each entry its own gzip member): a gzip slice is sent as is with
- * `Content-Encoding: gzip` when the client accepts gzip, else inflated at the edge.
+ * `Content-Encoding: gzip` when the client accepts gzip, else inflated at the edge. Slices carry a weak ETag
+ * (`packSliceEtag`) and answer a matching `If-None-Match` with 304, so a return visit after the 60 s window
+ * revalidates instead of re-downloading.
  *
  * `<v>` is `?version=` (validated) or the slug's `latest.json`. Nothing under `private/` is reachable:
  * file names come only from the PUBLIC_SCAN_FILES allowlist and keys are built by the layout module.
@@ -159,6 +161,41 @@ async function serveObject(request: Request, bucket: R2Bucket, key: string, head
   return new Response(object.body, { status: 200, headers: { ...headers, etag: object.httpEtag } });
 }
 
+/**
+ * How the Worker turns a pack entry into a response body (range read; gzip member sent as is or inflated). Bump it
+ * whenever that transformation changes, so a browser holding bytes from an older Worker never gets a 304 for them.
+ */
+export const PACK_SLICE_SERVING_FORMAT = 's1';
+
+/**
+ * CLA-584: the validator of a pack slice. A version's pack is written once and never rewritten (publishBuiltVersion
+ * refuses a different manifest under an existing version id), so the served bytes are fixed by the version, the pack,
+ * the entry (key and its byte range), the response encoding and how the Worker transforms the slice. Weak: a CDN
+ * may re-encode the body, and a weak validator is all `If-None-Match` needs.
+ */
+export async function packSliceEtag(input: {
+  slug: string;
+  versionId: string;
+  pack: PublishedPackName;
+  key: string;
+  entry: [number, number];
+  encoding: 'gzip' | 'identity';
+}): Promise<string> {
+  const material = [PACK_SLICE_SERVING_FORMAT, input.slug, input.versionId, input.pack, input.key, input.entry[0], input.entry[1], input.encoding].join('\n');
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material)));
+  const hex = Array.from(digest.slice(0, 12), byte => byte.toString(16).padStart(2, '0')).join('');
+  return `W/"${PACK_SLICE_SERVING_FORMAT}-${input.encoding === 'gzip' ? 'gz' : 'id'}-${hex}"`;
+}
+
+/** Weak comparison (RFC 9110 §13.1.2): true when `If-None-Match` lists `etag` (or `*`). */
+export function ifNoneMatchHits(request: Request, etag: string): boolean {
+  const header = request.headers.get('if-none-match');
+  if (!header) return false;
+  const opaque = (tag: string) => tag.trim().replace(/^W\//, '');
+  const wanted = opaque(etag);
+  return header.split(',').some(tag => tag.trim() === '*' || opaque(tag) === wanted);
+}
+
 async function servePackSlice(
   request: Request,
   bucket: R2Bucket,
@@ -173,8 +210,11 @@ async function servePackSlice(
   if (!index || !validEntry(entry)) return undefined;
   const gzipped = index.encoding === 'gzip';
   const sendCompressed = gzipped && acceptsGzip(request);
-  const headers: Record<string, string> = { ...versionHeaders(version) };
+  const etag = await packSliceEtag({ slug, versionId: version.versionId, pack, key, entry, encoding: sendCompressed ? 'gzip' : 'identity' });
+  const headers: Record<string, string> = { ...versionHeaders(version), etag };
   if (gzipped) headers.vary = 'Accept-Encoding';
+  // Before the range read: the client already holds exactly these bytes.
+  if (ifNoneMatchHits(request, etag)) return new Response(null, { status: 304, headers });
   if (sendCompressed) headers['content-encoding'] = 'gzip';
   // An inflated body's length is unknown up front; identity and pass-through gzip know it exactly.
   if (!gzipped || sendCompressed) headers['content-length'] = String(entry[1]);
