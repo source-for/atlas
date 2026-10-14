@@ -1,6 +1,7 @@
 import { C4_ZOOM_BANDS } from '@okie/scene-compiler';
 import type { AtlasScene, Camera, ProjectionOverride, SceneEntity, SemanticDetail } from '../renderer/types';
 import { ATLAS_CAMERA_BOUNDS } from '../renderer/cameraBounds';
+import { descendantsInDetail, sceneEntityIndex } from './sceneEntityIndex';
 import type { SafeArea, ViewportSize } from '../storyFraming';
 
 export const SEMANTIC_LENS_POLICY = {
@@ -408,8 +409,8 @@ const SILHOUETTE_OPACITY = .14;
 const SILHOUETTE_PER_GHOST_CAP = 8;
 const SILHOUETTE_TOTAL_CAP = 48;
 
-function ghostEntitiesForEntries(scene: AtlasScene, entries: readonly SemanticLensPathEntry[]): SemanticGhostEntity[] {
-  const byId = new Map(scene.entities.map(entity => [entity.id, entity]));
+export function ghostEntitiesForEntries(scene: AtlasScene, entries: readonly SemanticLensPathEntry[]): SemanticGhostEntity[] {
+  const { byId, childrenByParent } = sceneEntityIndex(scene);
   const primary = entries.at(-1)
     ? new Set(semanticLensBranchEntityIds(scene, entries.at(-1)!.targetId, entries.at(-1)!.nextDetail))
     : new Set<string>();
@@ -421,7 +422,7 @@ function ghostEntitiesForEntries(scene: AtlasScene, entries: readonly SemanticLe
     const target = byId.get(entry.targetId);
     if (!target) continue;
     const opacity = GHOST_SIBLING_OPACITY[entries.length - 1 - depth] ?? GHOST_SIBLING_OPACITY.at(-1)!;
-    const siblings = scene.entities
+    const siblings = (childrenByParent.get(target.parentId) ?? [])
       .filter(entity => entity.id !== target.id
         && entity.detail === entry.currentDetail
         && entity.parentId === target.parentId
@@ -440,12 +441,13 @@ export function semanticLensSessionGhostEntities(scene: AtlasScene, session: Sem
   return ghostEntitiesForEntries(scene, canonicalVisibleEntries(session));
 }
 
-function silhouetteEntitiesForEntries(
+export function silhouetteEntitiesForEntries(
   scene: AtlasScene,
   entries: readonly SemanticLensPathEntry[],
   ghosts = ghostEntitiesForEntries(scene, entries),
 ): SemanticSilhouetteEntity[] {
   const silhouettes: SemanticSilhouetteEntity[] = [];
+  const { childrenByParent } = sceneEntityIndex(scene);
   const excluded = new Set([
     ...entries.map(entry => entry.targetId),
     ...ghosts.map(ghost => ghost.id),
@@ -453,9 +455,8 @@ function silhouetteEntitiesForEntries(
   for (const ghost of ghosts.filter(candidate => candidate.opacity === .24).sort((left, right) => left.id.localeCompare(right.id))) {
     const detail = entries[ghost.depth]?.nextDetail;
     if (!detail) continue;
-    const children = scene.entities
-      .filter(entity => entity.parentId === ghost.id
-        && entity.detail === detail
+    const children = (childrenByParent.get(ghost.id) ?? [])
+      .filter(entity => entity.detail === detail
         && !excluded.has(entity.id)
         && Boolean(scene.projection?.boundsByEntityIdAndDetail[entity.id]?.[detail]))
       .sort((left, right) => left.id.localeCompare(right.id))
@@ -870,22 +871,6 @@ function detailIndex(detail: SemanticDetail) {
   return (['context', 'container', 'component', 'code'] as const).indexOf(detail);
 }
 
-function descendantsInDetail(scene: AtlasScene, targetId: string, detail: SemanticDetail) {
-  const visible = new Set(scene.projection?.entityIdsByDetail[detail] ?? []);
-  const byId = new Map(scene.entities.map(entity => [entity.id, entity]));
-  return scene.entities.filter(entity => {
-    if (!visible.has(entity.id)) return false;
-    let current: SceneEntity | undefined = entity;
-    const visited = new Set<string>();
-    while (current && !visited.has(current.id)) {
-      if (current.id === targetId) return true;
-      visited.add(current.id);
-      current = current.parentId ? byId.get(current.parentId) : undefined;
-    }
-    return false;
-  });
-}
-
 function screenRect(bounds: { x: number; y: number; width: number; height: number }, camera: Camera, viewport: ViewportSize) {
   return {
     x: viewport.width / 2 + (bounds.x - camera.x) * camera.zoom,
@@ -1275,7 +1260,7 @@ export function measureSemanticLensTarget(
 
 export function semanticLensScopeIds(scene: AtlasScene, targetId: string, nextDetail: SemanticDetail): string[] {
   const scope = new Set(descendantsInDetail(scene, targetId, nextDetail).map(entity => entity.id));
-  const byId = new Map(scene.entities.map(entity => [entity.id, entity]));
+  const { byId } = sceneEntityIndex(scene);
   let ancestor = byId.get(targetId)?.parentId;
   for (let count = 0; ancestor && count < 2; count += 1) {
     scope.add(ancestor);

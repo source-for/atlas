@@ -144,9 +144,12 @@ export function SourceViewer({
   localWorkspace,
   sourceContext,
   portableAtlas = getActivePortableAtlas(),
+  pending,
   onFeedback,
 }: {
   excerpt?: SceneSourceExcerpt;
+  /** Why there is no excerpt yet: still being fetched, or the fetch failed. Absent means none exists. */
+  pending?: 'loading' | 'failed';
   localWorkspace?: LocalWorkspaceContext;
   sourceContext?: SourceContext;
   portableAtlas?: PortableAtlas;
@@ -237,6 +240,10 @@ export function SourceViewer({
     }
   };
 
+  if (!excerpt && pending === 'loading') return <SourceViewerSkeleton/>;
+  if (!excerpt && pending === 'failed') {
+    return <div className="source-unavailable" role="status"><strong>Source excerpt could not be loaded</strong><p>Select Details and then Source to try again. Details and relative evidence remain available.</p></div>;
+  }
   if (!excerpt) {
     return <div className="source-unavailable" role="status"><strong>Source excerpt unavailable</strong><p>This entity has no portable frozen source excerpt. Details and relative evidence remain available.</p></div>;
   }
@@ -284,5 +291,18 @@ export function SourceViewer({
       </details>}
     </div>
     <footer className="source-revision"><span>Frozen @ {excerpt.frozenRevision.slice(0, 12)}</span>{localWorkspace?.checkedRevision && localWorkspace.checkedRevision !== excerpt.frozenRevision && <span className="source-revision-warning">Working tree revision differs</span>}{feedback && <span aria-live="polite">{feedback}</span>}</footer>
+  </section>;
+}
+
+const skeletonLineWidths = [62, 48, 71, 39, 66, 54, 30, 58, 74, 45, 61, 36];
+
+/** The viewer's own boxes with placeholder lines, so the excerpt replaces it in place. */
+export function SourceViewerSkeleton() {
+  return <section aria-busy="true" aria-label="Loading source excerpt" className="source-viewer source-viewer-loading" data-testid="source-loading">
+    <header className="source-meta"><div><span className="inspector-skeleton-line" style={{ width: 180 }}/><span className="inspector-skeleton-line" style={{ width: 120 }}/></div></header>
+    <div className="source-code"><div className="source-lines">
+      {skeletonLineWidths.map((width, index) => <div aria-hidden="true" className="source-line" key={index}><span className="source-line-number"/><span className="inspector-skeleton-line" style={{ width: `${width}%` }}/></div>)}
+    </div></div>
+    <p className="source-loading-status" role="status">Loading source excerpt…</p>
   </section>;
 }
