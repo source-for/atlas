@@ -45,7 +45,8 @@ import {
   type GithubSourceRef,
 } from "./github.js";
 import { slug, typedId } from "./ids.js";
-import type { PortableAtlas } from '@okie/architecture';
+import { serializePortableAtlas, type PortableAtlas } from '@okie/architecture';
+import { portableAtlasFromScan } from './portable.js';
 import type { LanguageAnalysis } from './language-analysis.js';
 import { analyzeTypeScript } from './analyze-typescript.js';
 import { analyzeRust } from './analyze-rust.js';
@@ -452,11 +453,11 @@ function skippedJsLimitations(summary: DiscoverySummary): string[] {
 /** Runs the local scan pipeline against an already-acquired committed tree. */
 function analyzeLanguages(root: string, discovery: Discovery, mode: ScanOptions['analysisMode'], installationRoot?: string, rustIndexCacheDir?: string, checkoutRoot?: string): LanguageAnalysis | undefined {
   if (mode !== 'full') return undefined;
-  const analyses = [analyzeTypeScript(root, discovery.sourceFiles, installationRoot, checkoutRoot), analyzeRust(root, discovery.sourceFiles, rustIndexCacheDir ? { indexCacheDir: rustIndexCacheDir } : {})];
+  const analyses = [analyzeTypeScript(root, discovery.sourceFiles, installationRoot, checkoutRoot), analyzeRust(root, discovery.sourceFiles, { ...(rustIndexCacheDir ? { indexCacheDir: rustIndexCacheDir } : {}), ...(checkoutRoot ? { checkoutRoot } : {}) })];
   return { schemaVersion: 1, definitions: analyses.flatMap(item => item.definitions), references: analyses.flatMap(item => item.references), modules: analyses.flatMap(item => item.modules), externalReferences: analyses.flatMap(item => item.externalReferences ?? []), coverage: analyses.flatMap(item => item.coverage) };
 }
 
-export function scanAcquiredRepository(acquired: Pick<AcquiredCommittedTree, "root" | "pin" | "sourceName" | "installationRoot"> & { checkoutRoot?: string; skipped?: SkippedTreeEntries }, options: ScanOptions = {}): ScanArtifacts {
+export function scanAcquiredRepository(acquired: Pick<AcquiredCommittedTree, "root" | "checkoutRoot" | "pin" | "sourceName" | "installationRoot"> & { skipped?: SkippedTreeEntries }, options: ScanOptions = {}): ScanArtifacts {
   const sourceRoot = acquired.root;
   const packageName = rootPackageName(sourceRoot);
   const fallbackName = acquired.sourceName;
@@ -602,6 +603,24 @@ function loadLcovSidecar(
     return files.size ? { path: "--lcov", files } : undefined;
   }
   return readLcov(readFile);
+}
+
+/** Every file a scan writes, by output name: the CLI writes exactly this map (and tests compare it). */
+export function scanOutputFiles(artifacts: ScanArtifacts, repositoryUrl?: string): Record<string, string> {
+  return {
+    "atlas.okie.json": serializePortableAtlas(portableAtlasFromScan(artifacts, repositoryUrl)),
+    "extraction.json": stableJson(artifacts.extraction),
+    "snapshot.json": stableJson(artifacts.snapshot),
+    "view.json": stableJson(artifacts.view),
+    "story.json": stableJson(artifacts.story),
+    "stories.json": stableJson(artifacts.catalog),
+    "scene.json": stableJson(artifacts.scene),
+    "timeline.json": stableJson(artifacts.timeline),
+    "dependencies.json": stableJson(artifacts.dependencies),
+    "membership-report.json": stableJson(artifacts.membership),
+    ...(artifacts.enrichmentReport ? { "enrichment-report.json": stableJson(artifacts.enrichmentReport) } : {}),
+    ...(artifacts.componentMapReport ? { "component-map-report.json": stableJson(artifacts.componentMapReport) } : {}),
+  };
 }
 
 /** Canonical, byte-stable JSON serialization (trailing newline, 2-space indent). */

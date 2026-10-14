@@ -3,7 +3,7 @@ import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { analyzeTypeScript, relativizeCompilerMessage } from "./analyze-typescript.js";
+import { analyzeTypeScript, compilerMessageRelativizer, relativizeCompilerMessage } from "./analyze-typescript.js";
 import { collectExtractedArchitecture } from "./extract.js";
 import { discoverExtractedTree } from "./discover.js";
 
@@ -127,22 +127,30 @@ test("concrete arrow functions and overloaded implementations retain definite ca
 });
 
 test("CLA-586: compiler messages name scanned files root-relative and other locations by label", () => {
-  const root = "/work/okie-committed-Ab12/repo";
-  const labelled = [["installation", "/home/me/repo"], ["home", "/home/me"]] as const;
+  const root = "/work/okie-scan-work/okie-committed-Ab12/repo";
+  const paths = { checkoutRoot: "/work/okie-scan-work/okie-committed-Ab12", workRoot: "/work/okie-scan-work", installationRoot: "/home/me/repo", home: "/home/me" };
+  const relativize = compilerMessageRelativizer(root, paths);
   assert.equal(
-    relativizeCompilerMessage(`File '${root}/lib/b.ts' is not under 'rootDir' '${root}/src'. Root '${root}'.`, root, labelled),
-    "File 'lib/b.ts' is not under 'rootDir' 'src'. Root '.'.",
+    relativize(`File '${root}/lib/b.ts' is not under 'rootDir' '${root}/src'. Root '${root}'. At ${root}.`),
+    "File 'lib/b.ts' is not under 'rootDir' 'src'. Root '.'. At ..",
   );
-  // Longest prefix wins; a prefix only matches at a path boundary.
+  // Longest prefix wins; a prefix only matches as a whole path, at both ends.
   assert.equal(
-    relativizeCompilerMessage("/home/me/repo/node_modules/x/index.d.ts, /home/me/other and /home/me/repo-old/a.ts", root, labelled),
-    "<installation>/node_modules/x/index.d.ts, <home>/other and <home>/repo-old/a.ts",
+    relativize("/home/me/repo/node_modules/x/index.d.ts, /home/me/other, /home/me/repo-old/a.ts, /home/me/repo.bak"),
+    "<installation>/node_modules/x/index.d.ts, <home>/other, <home>/repo-old/a.ts, <home>/repo.bak",
   );
-  assert.equal(relativizeCompilerMessage(`${root}-sibling/a.ts`, root), `${root}-sibling/a.ts`);
-  // Anything else under the scan's temporary checkout is root-relative too, at any depth.
+  assert.equal(relativize("'/Volumes/X/home/me/a.ts'"), "'/Volumes/X/home/me/a.ts'");
+  assert.equal(relativize(`file://${root}/a.ts`), `file://${root}/a.ts`);
+  assert.equal(relativize(`${root}-sibling/a.ts`), "../repo-sibling/a.ts");
+  // Anything else under the scan's checkout or work dir is root-relative too, at any depth.
   assert.equal(
-    relativizeCompilerMessage(`Cannot read file '/work/okie-committed-Ab12/missing/tsconfig.json'; '/work/okie-committed-Ab12'; ${root}/src`, root, labelled, "/work/okie-committed-Ab12"),
-    "Cannot read file '../missing/tsconfig.json'; '..'; src",
+    relativize("Cannot read file '/work/okie-scan-work/okie-committed-Ab12/missing/tsconfig.json'; '/work/okie-scan-work/okie-base.json'; '/work/okie-scan-work'"),
+    "Cannot read file '../missing/tsconfig.json'; '../../okie-base.json'; '../..'",
   );
-  assert.equal(relativizeCompilerMessage("/gh/okie-scan-gh-x/repo.tar.gz /gh/okie-scan-gh-xy", "/gh/okie-scan-gh-x/tree/top", [], "/gh/okie-scan-gh-x"), "../../repo.tar.gz /gh/okie-scan-gh-xy");
+  assert.equal(
+    relativizeCompilerMessage("/gh/okie-scan-gh-x/repo.tar.gz /gh/okie-scan-gh-xy", "/gh/okie-scan-gh-x/tree/top", { checkoutRoot: "/gh/okie-scan-gh-x" }),
+    "../../repo.tar.gz /gh/okie-scan-gh-xy",
+  );
+  // A work dir that does not contain the root (a test's own temp root) is a label, never `../../../…`.
+  assert.equal(relativizeCompilerMessage("/srv/work/x.json", "/tmp/repo", { workRoot: "/srv/work" }), "<work-root>/x.json");
 });

@@ -10,6 +10,7 @@ import { decodeScipIndex } from "./scip.js";
 import { cachedScipIndex, rustAnalyzerVersion, rustcIdentity, rustInputDigest } from "./scip-cache.js";
 import { createScanScratch, operatorCargoHome, rustToolchainPin, scanSpawnSync, scanWorkDir, type ScanScratch } from "./scan-env.js";
 import { inspectRustAncestors, nodeAncestorFs, rustProjectJsonIn, type AncestorFs } from "./rust-ancestors.js";
+import { labelledPrefix, pathPrefixRewriter } from "./path-prefixes.js";
 
 type Point = { row: number; column: number };
 type OccurrenceRange = { start: Point; end: Point };
@@ -252,10 +253,16 @@ export function rustDependencyLimitation(mode: "isolated" | "operator", reason: 
 /** First `error:` line of cargo's stderr, with machine paths replaced (tree, scratch, CARGO_HOME, home). */
 export function scrubCargoError(stderr: string, paths: ReadonlyArray<readonly [label: string, path: string | undefined]>): string {
   const lines = stderr.split("\n").map(line => line.trim()).filter(Boolean);
-  let line = lines.find(item => /^error\b/i.test(item)) ?? lines[0] ?? "cargo metadata failed";
-  const replacements = paths.filter((entry): entry is readonly [string, string] => Boolean(entry[1])).sort((a, b) => b[1].length - a[1].length);
-  for (const [label, path] of replacements) line = line.split(path).join(`<${label}>`);
-  return line.replace(/^error:\s*/i, "").slice(0, 300);
+  const line = lines.find(item => /^error\b/i.test(item)) ?? lines[0] ?? "cargo metadata failed";
+  return pathPrefixRewriter(paths.map(([label, path]) => labelledPrefix(label, path)))(line).replace(/^error:\s*/i, "").slice(0, 300);
+}
+
+/**
+ * Why a rust-analyzer run failed, as one stable line: its first `Error:` line with machine paths replaced, never the
+ * whole stderr (wall-clock log timestamps, progress lines, the temporary checkout, a backtrace).
+ */
+export function scrubScipError(stderr: string, paths: ReadonlyArray<readonly [label: string, path: string | undefined]>): string {
+  return stderr.split("\n").some(line => /^\s*error\b/i.test(line)) ? scrubCargoError(stderr, paths) : "rust-analyzer exited unsuccessfully.";
 }
 
 /**
@@ -323,14 +330,13 @@ export function unsafeRustProjectJson(root: string): string | undefined {
  * `cargo metadata --offline` of the root manifest with the scanner env (the same exposure rust-analyzer already has:
  * pinned cargo/rustc, no wrappers, no build scripts). Stdout is discarded; only success and the first error matter.
  */
-function dependencyResolution(root: string, scratch: ScanScratch, cargoBinary: string | undefined, cargoHome: string | undefined): { checked: boolean; failed: boolean; reason?: string } {
+function dependencyResolution(root: string, scratch: ScanScratch, cargoBinary: string | undefined, paths: ReadonlyArray<readonly [label: string, path: string | undefined]>): { checked: boolean; failed: boolean; reason?: string } {
   const manifest = join(root, "Cargo.toml");
   if (!existsSync(manifest)) return { checked: false, failed: false };
   // cwd = the tree (already ancestor-checked): cargo discovers `.cargo/config.toml` from its cwd, so this sees exactly
   // the configuration rust-analyzer's own `cargo metadata` sees (e.g. a vendored `[source]` replacement).
   const run = scanSpawnSync("rust", cargoBinary ?? "cargo", ["metadata", "--offline", "--format-version", "1", "--manifest-path", manifest], { cwd: root, scratch, encoding: "utf8", timeout: 60_000, stdio: ["ignore", "ignore", "pipe"] });
   if (!run.error && run.status === 0) return { checked: true, failed: false };
-  const paths = [["tree", root], ["scratch", scratch.dir], ["CARGO_HOME", cargoHome], ["work-root", scanWorkDir()], ["home", homedir()]] as const;
   const reason = scrubCargoError(run.error ? `error: ${run.error.message}` : run.stderr ?? "", paths);
   return { checked: true, failed: true, reason };
 }
@@ -346,6 +352,8 @@ export interface RustAnalysisOptions {
   onIndex?: (variant: "host" | "wasm32", cache: "hit" | "miss" | "off") => void;
   /** Test seam for the ancestor inspection (rust-ancestors.ts). */
   ancestorFs?: AncestorFs;
+  /** The scan's temporary directory holding the tree (AcquiredCommittedTree.checkoutRoot), named `<checkout>` in errors. */
+  checkoutRoot?: string;
 }
 
 export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly string[], options: RustAnalysisOptions = {}): LanguageAnalysis {
@@ -373,6 +381,8 @@ export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly strin
   // A private (0700) scratch dir: HOME, CARGO_HOME, config files and index output, removed afterwards.
   const scratch = createScanScratch("okie-rust-scip-");
   const temporary = scratch.dir;
+  /** Machine paths an error line may name, replaced by label. */
+  const machinePaths = [["tree", root], ["checkout", options.checkoutRoot], ["scratch", temporary], ["CARGO_HOME", cargo.path], ["work-root", scanWorkDir()], ["home", homedir()]] as const;
   /** One rust-analyzer SCIP run through the optional cache; the variant names the invocation minus machine paths. */
   const scip = (variant: "host" | "wasm32") => {
     const output = join(temporary, `${variant}.scip`); const configPath = join(temporary, `${variant}.json`);
@@ -388,7 +398,7 @@ export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly strin
     const result = cachedScipIndex({ ...(options.indexCacheDir ? { cacheDir: options.indexCacheDir } : {}), root, ...(digest ? { digest } : {}), ...(toolchain ? { toolchain } : {}), variant: JSON.stringify({ variant, args: keyArgs, config: keyConfig, cargoHome, ancestors: ancestorKey }), run: () => {
       // cwd is the scratch dir, never the tree: nothing about the toolchain is resolved from the repository.
       const spawned = scanSpawnSync("rust", "rust-analyzer", ["scip", root, "--output", output, ...args], { cwd: temporary, scratch, encoding: "utf8", timeout: 120_000 });
-      if (spawned.error || spawned.status !== 0 || !existsSync(output)) return { stderr: spawned.stderr ?? "", error: spawned.error?.message ?? (spawned.stderr?.trim() ?? "") };
+      if (spawned.error || spawned.status !== 0 || !existsSync(output)) return { stderr: spawned.stderr ?? "", error: scrubScipError(spawned.error ? `error: ${spawned.error.message}` : spawned.stderr ?? "", machinePaths) };
       return { bytes: readFileSync(output), stderr: spawned.stderr ?? "" };
     } });
     options.onIndex?.(variant, result.cache);
@@ -409,7 +419,7 @@ export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly strin
     limitations.add(RUST_LOCKDOWN_LIMITATION);
     if (cargo.error) limitations.add(cargo.error);
     // Recomputed on every run (cache hit or not): did cargo actually resolve the dependency graph offline?
-    const resolution = dependencyResolution(root, scratch, pin.cargo, cargo.path);
+    const resolution = dependencyResolution(root, scratch, pin.cargo, machinePaths);
     if (resolution.failed || (!cargo.path && !resolution.checked)) limitations.add(rustDependencyLimitation(cargo.path ? "operator" : "isolated", resolution.reason));
     const indexes = [decodeScipIndex(run.bytes)];
     // The browser facade is deliberately compiled only for the target used by the
@@ -521,7 +531,7 @@ export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly strin
     result.coverage.push({ language: "rust", tool: tool?.name || "rust-analyzer", version: tool?.version || "unknown", coverage: indexedFiles.length ? "semantic" : "unavailable", indexedFiles, limitations: canonical(limitations) });
     return result;
   } catch (error) {
-    limitations.add(error instanceof Error ? error.message : String(error));
+    limitations.add(scrubCargoError(`error: ${error instanceof Error ? error.message : String(error)}`, machinePaths));
     result.coverage.push({ language: "rust", tool: "rust-analyzer", version: "unknown", coverage: "unavailable", indexedFiles: [], limitations: canonical(limitations) });
     return result;
   } finally {

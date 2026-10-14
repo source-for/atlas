@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -9,9 +9,9 @@ import { discoverRepository } from "./discover.js";
 import { extractArchitecture } from "./extract.js";
 import { boundStableId, MAX_STABLE_ID_CHARACTERS } from "./ids.js";
 import { acquireCommittedTree, pinRepository } from "./pin.js";
-import { portableAtlasFromScan } from "./portable.js";
-import { buildScanArtifacts, scanAcquiredRepository, stableJson, type ScanArtifacts } from "./scan.js";
-import { ASPECT_PRESET_TARGET, serializePortableAtlas } from "@okie/architecture";
+import { rustAnalyzerVersion } from "./scip-cache.js";
+import { buildScanArtifacts, scanAcquiredRepository, scanOutputFiles, stableJson } from "./scan.js";
+import { ASPECT_PRESET_TARGET } from "@okie/architecture";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const readFile = (path: string): string => readFileSync(`${repoRoot}${path}`, "utf8");
@@ -104,72 +104,95 @@ test("CLA-299: every id in Okie's own scan is within the 192-character limit (bo
   assert.equal(artifacts.discoverySummary.excludedTestDataFiles, undefined);
 });
 
-/** Every file the CLI writes for a scan, keyed by its output name. */
-function writtenArtifacts(artifacts: ScanArtifacts): Record<string, string> {
-  return {
-    "atlas.okie.json": serializePortableAtlas(portableAtlasFromScan(artifacts)),
-    "extraction.json": stableJson(artifacts.extraction),
-    "snapshot.json": stableJson(artifacts.snapshot),
-    "view.json": stableJson(artifacts.view),
-    "story.json": stableJson(artifacts.story),
-    "stories.json": stableJson(artifacts.catalog),
-    "scene.json": stableJson(artifacts.scene),
-    "timeline.json": stableJson(artifacts.timeline),
-    "dependencies.json": stableJson(artifacts.dependencies),
-    "membership-report.json": stableJson(artifacts.membership),
-  };
-}
-
-test("CLA-586: two full scans of one commit, checked out under different temp roots, are byte-identical", () => {
+/**
+ * Commits `files` to a fresh repository, then full-scans that commit twice, each run under its own
+ * OKIE_SCAN_WORK_DIR (so the work dir, the temporary checkout and their path lengths all differ), and
+ * returns both runs' output files exactly as the CLI writes them.
+ */
+function fullScanTwice(files: Record<string, string>): { work: string; workRoots: string[]; runs: Record<string, string>[] } {
   const work = mkdtempSync(join(tmpdir(), "okie-cla586-"));
   const source = join(work, "source");
-  const git = (args: string[]): void => {
-    execFileSync("git", args, { cwd: source, env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH ?? ""}` } });
-  };
+  const git = (args: string[]): void => { execFileSync("git", args, { cwd: source, stdio: "ignore" }); };
+  const configured = process.env.OKIE_SCAN_WORK_DIR;
   try {
-    // Compiler messages that name absolute files: a config matching no inputs (TS18003),
-    // an import from outside rootDir (TS6059, which also names package.json), and a
-    // project reference to a sibling of the checkout (a config read error and TS6053).
-    const files: Record<string, string> = {
-      "package.json": '{"name":"stable-full-scan","type":"module"}\n',
-      "tsconfig.json": '{"compilerOptions":{"rootDir":"src","outDir":"dist","strict":true,"module":"NodeNext","moduleResolution":"NodeNext"},"include":["src","lib"],"references":[{"path":"../missing"}]}\n',
-      "empty/tsconfig.json": '{"include":["nothing/**/*.ts"]}\n',
-      "src/a.ts": 'import { b } from "../lib/b.js";\nexport const a: number = b + 1;\n',
-      "lib/b.ts": "export const b = 1;\n",
-    };
     for (const [path, text] of Object.entries(files)) {
       mkdirSync(dirname(join(source, path)), { recursive: true });
       writeFileSync(join(source, path), text);
     }
-    git(["init", "-q", "-b", "main"]);
+    git(["init", "-q"]);
     git(["add", "."]);
-    git(["-c", "user.name=Okie", "-c", "user.email=okie@example.test", "commit", "-qm", "fixture"]);
-
-    // Different temp roots (and different lengths) so the checkout path really differs per run.
-    const runs = ["first", "second-run"].map(name => {
-      const tempRoot = join(work, name);
-      mkdirSync(tempRoot);
-      const acquired = acquireCommittedTree(source, "HEAD", { tempRoot });
+    git(["-c", "user.name=Okie", "-c", "user.email=okie@example.test", "commit", "-q", "--no-gpg-sign", "-m", "fixture"]);
+    const workRoots = ["first", "second-run"].map(name => join(work, name));
+    const runs = workRoots.map(workRoot => {
+      process.env.OKIE_SCAN_WORK_DIR = workRoot;
+      const acquired = acquireCommittedTree(source);
       try {
-        return { tempRoot, root: acquired.root, written: writtenArtifacts(scanAcquiredRepository(acquired, { analysisMode: "full" })) };
+        assert.ok(acquired.root.startsWith(realpathSync(workRoot)), "the checkout is under this run's work dir");
+        return scanOutputFiles(scanAcquiredRepository(acquired, { analysisMode: "full" }));
       } finally {
         acquired.cleanup();
       }
     });
-    const [first, second] = runs as [typeof runs[number], typeof runs[number]];
-    assert.notEqual(first.root, second.root);
-    for (const name of Object.keys(first.written)) {
-      assert.equal(second.written[name], first.written[name], `${name} differs between two full scans of the same commit`);
-      for (const run of runs) assert.ok(!second.written[name]!.includes(run.tempRoot), `${name} names the temp checkout ${run.tempRoot}`);
-      assert.ok(!first.written[name]!.includes(work), `${name} names the fixture location ${work}`);
-    }
+    return { work, workRoots, runs };
+  } catch (error) {
+    rmSync(work, { recursive: true, force: true });
+    throw error;
+  } finally {
+    if (configured === undefined) delete process.env.OKIE_SCAN_WORK_DIR;
+    else process.env.OKIE_SCAN_WORK_DIR = configured;
+  }
+}
+
+/** Both runs wrote the same files, byte for byte, and no file names the fixture location. */
+function assertByteIdentical({ work, workRoots, runs: [first, second] }: ReturnType<typeof fullScanTwice>): void {
+  assert.deepEqual(Object.keys(second!), Object.keys(first!));
+  for (const name of Object.keys(first!)) {
+    assert.equal(second![name], first![name], `${name} differs between two full scans of the same commit`);
+    for (const path of [work, realpathSync(work), ...workRoots]) assert.ok(!first![name]!.includes(path), `${name} names ${path}`);
+  }
+}
+
+test("CLA-586: two full scans of one commit, under different work dirs and temp checkouts, are byte-identical", () => {
+  // Compiler messages that name absolute files: a config matching no inputs (TS18003), an import from
+  // outside rootDir (TS6059, which also names package.json), a project reference to a sibling of the
+  // checkout (a config read error and TS6053), and a reference up into the work dir itself.
+  const scanned = fullScanTwice({
+    "package.json": '{"name":"stable-full-scan","type":"module"}\n',
+    "tsconfig.json": '{"compilerOptions":{"rootDir":"src","outDir":"dist","strict":true,"module":"NodeNext","moduleResolution":"NodeNext"},"include":["src","lib"],"references":[{"path":"../missing"}]}\n',
+    "empty/tsconfig.json": '{"include":["nothing/**/*.ts"]}\n',
+    "up/tsconfig.json": '{"extends":"../../../okie-base.json","include":["*.ts"]}\n',
+    "up/c.ts": "export const c = 1;\n",
+    "src/a.ts": 'import { b } from "../lib/b.js";\nexport const a: number = b + 1;\n',
+    "lib/b.ts": "export const b = 1;\n",
+  });
+  try {
+    assertByteIdentical(scanned);
     // The diagnostics are still reported, with root-relative paths.
-    const atlas = first.written["atlas.okie.json"]!;
+    const atlas = scanned.runs[0]!["atlas.okie.json"]!;
     assert.match(atlas, /No inputs were found in config file 'empty\/tsconfig\.json'/);
     assert.match(atlas, /TS6059: File 'lib\/b\.ts' is not under 'rootDir' 'src'/);
     assert.match(atlas, /Cannot read file '\.\.\/missing\/tsconfig\.json'/);
     assert.match(atlas, /TS6053: File '\.\.\/missing' not found/);
+    assert.match(atlas, /Cannot read file '\.\.\/\.\.\/okie-base\.json'/);
   } finally {
-    rmSync(work, { recursive: true, force: true });
+    rmSync(scanned.work, { recursive: true, force: true });
+  }
+});
+
+test("CLA-586: two full scans of a Rust tree rust-analyzer cannot load are byte-identical", t => {
+  if (!rustAnalyzerVersion()) { t.skip("rust-analyzer is not installed"); return; }
+  // A malformed manifest: rust-analyzer fails, and its stderr carries a wall-clock log timestamp,
+  // the temporary checkout, the toolchain under $HOME and a backtrace.
+  const scanned = fullScanTwice({
+    "Cargo.toml": '[package]\nname = "broken-manifest"\nversion = "0.1.0"\nedition = "2021"\n\n[workspace\n',
+    "src/lib.rs": "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+  });
+  try {
+    assertByteIdentical(scanned);
+    const atlas = scanned.runs[0]!["atlas.okie.json"]!;
+    assert.match(atlas, /Failed to load the project at <tree>\/Cargo\.toml/);
+    assert.doesNotMatch(atlas, /Stack backtrace|ERROR Config Error|okie-committed-/);
+  } finally {
+    rmSync(scanned.work, { recursive: true, force: true });
   }
 });

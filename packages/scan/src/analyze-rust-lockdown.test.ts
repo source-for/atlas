@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { analyzeRust, RUST_LOCKDOWN_LIMITATION, rustDependencyLimitation, scrubCargoError, unsafeRustProjectJson } from "./analyze-rust.js";
+import { analyzeRust, RUST_LOCKDOWN_LIMITATION, rustDependencyLimitation, scrubCargoError, scrubScipError, unsafeRustProjectJson } from "./analyze-rust.js";
 import { observeScanSpawns } from "./scan-env.js";
 import { rustAnalyzerVersion } from "./scip-cache.js";
 
@@ -158,4 +158,23 @@ test("rust dependency limitation: cargo errors are reduced to one line without m
   assert.equal(scrubCargoError(stderr, [["tree", "/work/scan-1/tree"], ["CARGO_HOME", "/srv/cargo"], ["home", "/home/u"]]), "failed to load source for dependency `x` at <tree>/Cargo.toml (CARGO_HOME <CARGO_HOME>, home <home>)");
   assert.match(rustDependencyLimitation("operator", "boom"), /^Dependency resolution failed offline \(boom\): external references omitted/);
   assert.match(rustDependencyLimitation("isolated", undefined), /^crates\.io dependencies are not resolved \(offline, isolated CARGO_HOME\):/);
+});
+
+test("CLA-586: a failed rust-analyzer run is one stable line, never its timestamps, temp paths or backtrace", () => {
+  const tree = "/w/okie-scan-work/okie-committed-bHtUY7/fxr";
+  const stderr = [
+    "Generating SCIP start...",
+    "2026-10-15T03:42:55.292267+10:00 ERROR Config Error(s) error_sink=ConfigErrors([])",
+    "rust-analyzer: Loading Querying project metadata",
+    `Error: Failed to load the project at ${tree}/Cargo.toml`,
+    "",
+    "Caused by:",
+    `    1: Failed to run \`cd "${tree}" && RUSTUP_TOOLCHAIN="/Users/me/.rustup/toolchains/1.87.0" cargo metadata\``,
+    "Stack backtrace:",
+    "   0: std::backtrace::Backtrace::create",
+  ].join("\n");
+  const paths = [["tree", tree], ["checkout", "/w/okie-scan-work/okie-committed-bHtUY7"], ["work-root", "/w/okie-scan-work"], ["home", "/Users/me"]] as const;
+  assert.equal(scrubScipError(stderr, paths), "Failed to load the project at <tree>/Cargo.toml");
+  assert.equal(scrubScipError("error: spawnSync rust-analyzer ETIMEDOUT", paths), "spawnSync rust-analyzer ETIMEDOUT");
+  assert.equal(scrubScipError("Generating SCIP start...\n2026-10-15T03:42:55Z INFO done", paths), "rust-analyzer exited unsuccessfully.");
 });

@@ -1,9 +1,11 @@
 import ts from "typescript";
-import { readFileSync, readdirSync, realpathSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { AnalysisDefinition, AnalysisExternalReference, AnalysisLocation, LanguageAnalysis } from "./language-analysis.js";
 import { dependencyContext } from './dependency-context.js';
+import { labelledPrefix, pathPrefixRewriter, type PathPrefix } from './path-prefixes.js';
+import { scanWorkDir } from './scan-env.js';
 
 /** The package owning a declaration file: the segment after the LAST `node_modules/` (pnpm `.pnpm/…` layout safe). */
 export function nodeModulesPackageOf(fileName: string): string | undefined {
@@ -23,34 +25,44 @@ export function typedPackageOf(name: string): string | undefined {
   return scoped ? `@${scoped[1]}/${scoped[2]}` : match[1];
 }
 
+/** Where a scan's compiler runs: the scanned root, and the machine directories around it. */
+export interface CompilerMessagePaths {
+  /** The scan's own temporary directory holding `root` (see AcquiredCommittedTree.checkoutRoot). */
+  checkoutRoot?: string;
+  /** The scanner work dir holding every checkout (scanWorkDir). */
+  workRoot?: string;
+  installationRoot?: string;
+  home?: string;
+}
+
 /**
  * Compiler messages name absolute paths (`File '/tmp/okie-committed-x/repo/lib/b.ts' is not under 'rootDir' …`).
- * Paths inside `root` become root-relative (`root` itself `.`), and so does anything else under `checkoutRoot`, the
- * scan's own temporary directory (`../missing/tsconfig.json` for a parent project reference); the other prefixes
- * become `<label>`. Longest prefix first, so a limitation never depends on the temporary checkout or where the
- * repository lives.
+ * Paths inside `root` become root-relative (`root` itself `.`). So do paths under the checkout or work dir that
+ * contains `root` (`../missing/tsconfig.json`, `../../okie-base.json`): only the repository's own relative
+ * references reach them. The installation root and home become `<label>`, as does a work dir not containing `root`.
+ * Built once per analysis; a limitation never depends on the temporary checkout or where the repository lives.
  */
-export function relativizeCompilerMessage(text: string, root: string, labelled: ReadonlyArray<readonly [label: string, path: string | undefined]> = [], checkoutRoot?: string): string {
-  const forms = (path: string): string[] => {
-    let physical = path;
-    try { physical = realpathSync(path); } catch { /* keep the lexical path */ }
-    return [...new Set([path, physical].map(form => form.split(sep).join("/").replace(/\/+$/, "")).filter(Boolean))];
+export function compilerMessageRelativizer(root: string, paths: CompilerMessagePaths = {}): (text: string) => string {
+  const inside = (directory: string): boolean => {
+    const up = relative(directory, root);
+    return up !== "" && up !== ".." && !up.startsWith(`..${sep}`) && !isAbsolute(up);
   };
-  // [prefix, bare replacement, replacement before a `/`]
-  const prefixes: (readonly [string, string, string])[] = [
-    ...forms(root).map(path => [path, ".", ""] as const),
-    ...(checkoutRoot ? forms(checkoutRoot).map(path => {
-      const up = relative(root, checkoutRoot).split(sep).join("/");
-      return [path, up, `${up}/`] as const;
-    }) : []),
-    ...labelled.flatMap(([label, path]) => path ? forms(path).map(form => [form, `<${label}>`, `<${label}>/`] as const) : []),
-  ].sort((left, right) => right[0].length - left[0].length);
-  for (const [path, bare, beforeSlash] of prefixes) {
-    // The prefix must end at a path boundary: `/repo` never rewrites `/repo-other`.
-    const pattern = new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:/|(?=['"\\s,:;)\\]]|$))`, "g");
-    text = text.replace(pattern, match => match.endsWith("/") ? beforeSlash : bare);
-  }
-  return text;
+  const upTo = (directory: string): PathPrefix => {
+    const up = relative(root, directory).split(sep).join("/");
+    return { path: directory, bare: up, beforeSlash: `${up}/` };
+  };
+  return pathPrefixRewriter([
+    { path: root, bare: ".", beforeSlash: "" },
+    ...(paths.checkoutRoot && inside(paths.checkoutRoot) ? [upTo(paths.checkoutRoot)] : []),
+    ...(paths.workRoot ? [inside(paths.workRoot) ? upTo(paths.workRoot) : labelledPrefix("work-root", paths.workRoot)] : []),
+    labelledPrefix("installation", paths.installationRoot),
+    labelledPrefix("home", paths.home),
+  ]);
+}
+
+/** One-off form of {@link compilerMessageRelativizer}. */
+export function relativizeCompilerMessage(text: string, root: string, paths: CompilerMessagePaths = {}): string {
+  return compilerMessageRelativizer(root, paths)(text);
 }
 
 /** Real project-aware compiler analysis; unresolved dependencies remain explicit limitations. */
@@ -83,8 +95,8 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
     return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
   };
   const allowed = new Set((discoveredFiles ?? paths.map(relativePath)).filter(path => /\.[cm]?[jt]sx?$/.test(path)).map(path => resolve(root, path)));
-  const message = (diagnostic: ts.Diagnostic | ts.DiagnosticMessageChain): string =>
-    relativizeCompilerMessage(ts.flattenDiagnosticMessageText(diagnostic.messageText, " "), root, [["installation", installationRoot], ["home", homedir()]], checkoutRoot);
+  const relativize = compilerMessageRelativizer(root, { ...(checkoutRoot ? { checkoutRoot } : {}), workRoot: scanWorkDir(), ...(installationRoot ? { installationRoot } : {}), home: homedir() });
+  const message = (diagnostic: ts.Diagnostic | ts.DiagnosticMessageChain): string => relativize(ts.flattenDiagnosticMessageText(diagnostic.messageText, " "));
   const result: LanguageAnalysis = { schemaVersion: 1, definitions: [], references: [], modules: [], coverage: [] };
   const limitations = new Set<string>();
   const indexed = new Set<string>();
