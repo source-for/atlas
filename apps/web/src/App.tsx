@@ -394,6 +394,8 @@ type CanvasViewportProps = {
   scanZoomAdoptRawRef: { current: Camera | undefined };
   /** Lens cancellation outside the canvas (window Escape, breadcrumbs) must end the pending gesture too. */
   semanticAssistCancelRef: { current: (() => void) | undefined };
+  /** Cancels a pending drag/wheel pan lens settle, if any (CLA-405). */
+  panSettleCancelRef: { current: (() => void) | undefined };
   onLodState: (state: RendererLodState | undefined) => void;
   visibilityMode: 'all' | 'dim' | 'isolate';
   flowActive: boolean;
@@ -420,7 +422,7 @@ type CanvasViewportProps = {
   }) => void;
 };
 
-function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, semanticRenderPacketRef, semanticLensSession, scene, camera, setCamera, selectedId, onPick, onOpenInside, focusedIds, relationFocusIds, activeRelationIds, flowRelationIds, requestedBackend, reduceMotion, animationActive, inspectorFlightActive, flowActive, projectionOverride, onSemanticZoom, cinematicTransition, onDiagnostics, onViewportChange, onCameraSettled, onCameraInput, onNavigationFlush, onInteractionStart, onSemanticEditStart, onCameraFlightCancel, onCameraPanStart, onPanSettleCancel, onLensCancel, onLensPan, onSemanticZoomBurstStart, onLodState, scanZoomAdoptRawRef, semanticAssistCancelRef, visibilityMode, authoringTool, authoringEnabled, authoringDetail, authoringEntityIds, selectedRelationId, onCreateRelationship, onGuideRelationship }: CanvasViewportProps) {
+function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, semanticRenderPacketRef, semanticLensSession, scene, camera, setCamera, selectedId, onPick, onOpenInside, focusedIds, relationFocusIds, activeRelationIds, flowRelationIds, requestedBackend, reduceMotion, animationActive, inspectorFlightActive, flowActive, projectionOverride, onSemanticZoom, cinematicTransition, onDiagnostics, onViewportChange, onCameraSettled, onCameraInput, onNavigationFlush, onInteractionStart, onSemanticEditStart, onCameraFlightCancel, onCameraPanStart, onPanSettleCancel, onLensCancel, onLensPan, onSemanticZoomBurstStart, onLodState, scanZoomAdoptRawRef, semanticAssistCancelRef, panSettleCancelRef, visibilityMode, authoringTool, authoringEnabled, authoringDetail, authoringEntityIds, selectedRelationId, onCreateRelationship, onGuideRelationship }: CanvasViewportProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<AtlasRenderer | undefined>(undefined);
   const liveCameraRef = useRef(camera);
@@ -524,6 +526,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
   onPanSettleCancelRef.current = onPanSettleCancel;
   onLensCancelRef.current = onLensCancel;
   semanticAssistCancelRef.current = cancelPendingSemanticGesture;
+  panSettleCancelRef.current = cancelPendingPanSettle;
   onLensPanRef.current = onLensPan;
   onSemanticZoomBurstStartRef.current = onSemanticZoomBurstStart;
   onLodStateRef.current = onLodState;
@@ -1084,6 +1087,14 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
   }
 
   /** An external lens cancel ends the pending gesture: its settle would re-run the zoom handoff. */
+  /** A camera chosen elsewhere (Fit, zoom buttons, minimap) ends a pan whose settle is pending. */
+  function cancelPendingPanSettle() {
+    if (panSettleTimerRef.current === undefined) return;
+    window.clearTimeout(panSettleTimerRef.current);
+    panSettleTimerRef.current = undefined;
+    onPanSettleCancelRef.current();
+  }
+
   function cancelPendingSemanticGesture() {
     cancelAssistAnimation();
     cancelSettleGlide();
@@ -1741,6 +1752,7 @@ export function App() {
   const scanCodePrewarmRef = useRef<{ focus: string; safeWidth: number; controller: AbortController; promise: Promise<void> } | undefined>(undefined);
   const scanZoomAdoptRawRef = useRef<Camera | undefined>(undefined);
   const semanticAssistCancelRef = useRef<(() => void) | undefined>(undefined);
+  const panSettleCancelRef = useRef<(() => void) | undefined>(undefined);
   const [detailsOpen, setDetailsOpen] = useState(() => initialInspectorOpen());
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>(() => scanFixture ? 'overview' : 'details');
   const [inspectorHistory, setInspectorHistory] = useState<InspectorHistorySubject[]>([]);
@@ -4181,8 +4193,11 @@ export function App() {
 
   /** Called only for user camera intent, never for renderer or flight samples. */
   function beginUserCameraIntent() {
-    // Any camera the reader chooses supersedes a pan file handoff still being prepared.
+    // Any camera the reader chooses supersedes a pan file handoff still being prepared, and a
+    // pan whose lens settle has not fired yet. Canvas drag and wheel input clear that settle
+    // themselves before they get here, so their consecutive pans stay one pan.
     fenceScanPanFileHandoff();
+    panSettleCancelRef.current?.();
     if (!beginForegroundCameraIntent(levelCompileAbortRef.current, () => cancelForegroundSceneRequest())) return false;
     foregroundSceneRequestRef.current.cameraIntent();
     levelCompileAbortRef.current?.abort();
@@ -7014,6 +7029,7 @@ export function App() {
             onSemanticZoomBurstStart={beginSemanticZoomBurst}
             scanZoomAdoptRawRef={scanZoomAdoptRawRef}
             semanticAssistCancelRef={semanticAssistCancelRef}
+            panSettleCancelRef={panSettleCancelRef}
             onViewportChange={setViewport}
             projectionOverride={relationFocus.projectionOverride}
             reduceMotion={reduceMotion}
@@ -7066,7 +7082,10 @@ export function App() {
           </div>
 
           <Minimap camera={camera} onPan={(next, phase) => {
-            if (phase === 'start') panStartCameraRef.current ??= { ...renderedCameraRef.current };
+            if (phase === 'start') {
+              panSettleCancelRef.current?.();
+              panStartCameraRef.current = { ...renderedCameraRef.current };
+            }
             if (levelScenePreparationPending(levelCompileAbortRef.current)) { setCamera(() => next); return; }
             if (phase === 'move') {
               beginUserCameraIntent();

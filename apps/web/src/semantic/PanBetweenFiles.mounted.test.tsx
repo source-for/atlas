@@ -466,3 +466,29 @@ it('drops a pending file change when the reader presses a zoom button while it i
   expect(after.urlLens).not.toContain(FILE_B);
   expect([after.urlRoot, after.navigationRoot]).toEqual([after.sceneRoot, after.sceneRoot]);
 });
+
+it('Fit pressed before the pan\'s lens settle fires wins: no file change, and the URL keeps the fitted view', async () => {
+  await openFileA();
+  const entries = window.history.length;
+  await dragToCentre(cardCentre(FILE_B));
+  // The 160 ms lens settle of that pan has not fired yet.
+  await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Fit architecture to view"]')!.click()); await settle();
+  const fitted = { ...captured.camera };
+  await idle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  expect(window.history.length).toBe(entries);
+  expectCamera(captured.camera, fitted);
+  expectCamera(urlCamera(), fitted);
+});
+
+it('Fit pressed before a pan\'s lens settle fires keeps the fitted view in the URL (pan to empty space)', async () => {
+  await openFileA();
+  const container = semanticBounds(captured.scene!, 'container:web-app', 'component')!;
+  await dragToCentre({ x: container.x - container.width * 4, y: container.y - container.height * 4 });
+  await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Fit architecture to view"]')!.click()); await settle();
+  const fitted = { ...captured.camera };
+  await idle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  expectCamera(captured.camera, fitted);
+  expectCamera(urlCamera(), fitted);
+});
