@@ -410,8 +410,7 @@ a.icon-button { text-decoration: none; }
 .semantic-mermaid-source pre { max-height: 360px; overflow: auto; margin: 0; padding: 13px; border: 1px solid var(--atlas-line); border-radius: 8px; background: #080b0c; color: #a9c9c2; font: 11px/1.65 var(--atlas-font-mono); white-space: pre; }
 .semantic-mermaid-diagram.is-compact { padding: 10px; }
 .semantic-mermaid-diagram.is-compact > header { margin-bottom: 8px; gap: 10px; }
-/* The placeholder reserves the rendered box (svg max-height + padding + border): a diagram that loads late never shifts the inspector (CLA-584). */
-.semantic-mermaid-diagram.is-compact .semantic-mermaid-canvas { min-height: calc(220px + 2 * 8px + 2px); }
+.semantic-mermaid-diagram.is-compact .semantic-mermaid-canvas { min-height: 168px; }
 .semantic-mermaid-diagram.is-compact .semantic-mermaid-svg { padding: 8px; }
 .semantic-mermaid-diagram.is-compact .semantic-mermaid-svg > svg { max-height: 220px; }
 .overview-panel .semantic-mermaid-source { margin-top: 10px; padding: 10px; }
@@ -434,7 +433,7 @@ a.icon-button { text-decoration: none; }
 .architecture-brief .brief-prose li { margin: 0 0 8px; color: var(--atlas-muted); font-size: 13px; line-height: 1.55; }
 .architecture-brief .brief-prose li strong { color: var(--atlas-text); font-weight: 630; }
 .architecture-brief .semantic-mermaid-diagram.is-compact { margin-top: 14px; }
-.architecture-brief .semantic-mermaid-diagram.is-compact .semantic-mermaid-canvas { min-height: calc(320px + 2 * 8px + 2px); }
+.architecture-brief .semantic-mermaid-diagram.is-compact .semantic-mermaid-canvas { min-height: 220px; }
 .architecture-brief .semantic-mermaid-diagram.is-compact .semantic-mermaid-svg > svg { max-height: 320px; }
 .semantic-diagram-inspector { align-self: start; position: sticky; top: 0; }
 .semantic-diagram-inspector > header { display: flex; align-items: center; justify-content: space-between; color: var(--atlas-quiet); font-family: var(--atlas-font-mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
