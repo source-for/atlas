@@ -387,7 +387,8 @@ a.icon-button { text-decoration: none; }
 .semantic-mermaid-viewer-svg { display: grid; place-items: center; }
 .semantic-mermaid-viewer-svg > svg { display: block; width: 100% !important; height: 100% !important; max-width: none !important; max-height: none !important; }
 .semantic-mermaid-svg > svg { display: block; width: 100% !important; max-width: 100%; height: auto !important; max-height: min(62vh, 680px); }
-.semantic-mermaid-status { display: flex; align-items: center; gap: 8px; color: var(--atlas-muted); font-family: var(--atlas-font-mono); font-size: 11px; }
+/* Out of flow: the arriving svg is the canvas's only grid item, so nothing re-centres when the status goes (CLA-584). */
+.semantic-mermaid-status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--atlas-muted); font-family: var(--atlas-font-mono); font-size: 11px; }
 .semantic-mermaid-status > span { width: 7px; height: 7px; border-radius: 50%; background: var(--atlas-cyan); box-shadow: 0 0 9px rgba(121,223,212,.48); }
 .semantic-mermaid-error { max-width: 370px; display: grid; justify-items: center; gap: 7px; padding: 24px; text-align: center; }
 .semantic-mermaid-error strong,

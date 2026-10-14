@@ -3,14 +3,24 @@ export type SceneWorkerDiagnosticMetric = 'atlas-worker-root-slice' | 'atlas-wor
 export type LoadMetric = SceneWorkerDiagnosticMetric | RendererLoadMetric | 'atlas-fetch' | 'atlas-body' | 'atlas-parse' | 'atlas-validate' | 'atlas-story' | 'atlas-slice' | 'atlas-compile' | 'atlas-worker-compile' | 'atlas-worker-validate' | 'atlas-worker-slice' | 'atlas-worker-post-message' | 'atlas-worker-bootstrap-fallback' | 'atlas-worker-bootstrap-round-trip' | 'atlas-worker-round-trip' | 'atlas-first-frame';
 type Listener = (metric: LoadMetric, startMs: number, durationMs: number) => void;
 const listeners = new Set<Listener>();
+const firstFrameCallbacks = new Set<() => void>();
 let firstFrameSubmitted = false;
 /** First successful real-scene draw submission, not GPU completion or inspector readiness. Late recording cannot recover it. */
 export function recordAtlasFirstFrame(): void {
   if (firstFrameSubmitted) return;
   firstFrameSubmitted = true;
+  const callbacks = [...firstFrameCallbacks];
+  firstFrameCallbacks.clear();
+  for (const callback of callbacks) callback();
   if (!listeners.size) return;
   const time = performance.now();
   for (const listener of listeners) listener('atlas-first-frame', time, 0);
+}
+/** Runs `callback` once at the first real map frame (at once when it was already drawn), whether or not timing is on. */
+export function onAtlasFirstFrame(callback: () => void): () => void {
+  if (firstFrameSubmitted) { callback(); return () => {}; }
+  firstFrameCallbacks.add(callback);
+  return () => { firstFrameCallbacks.delete(callback); };
 }
 export function subscribeLoadTiming(listener: Listener): () => void {
   listeners.add(listener);
