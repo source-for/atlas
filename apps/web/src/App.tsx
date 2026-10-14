@@ -2708,6 +2708,7 @@ export function App() {
         const request = scanFixture && !importedAtlasRef.current
           ? beginForegroundScanNavigation('Restoring architecture navigation', true, true) : undefined;
         cancelGestureSceneRequests();
+        abandonPendingPan();
         cancelAskMapShow(); // back/forward supersedes an in-flight Ask "Show on map"
         abortInspectorCameraFlight();
         const restoreGeneration = navigationRestoreGenerationRef.current + 1;
@@ -3341,6 +3342,13 @@ export function App() {
     const fence = scanPanFileHandoffFenceRef.current;
     scanPanFileHandoffFenceRef.current = undefined;
     return fence?.();
+  }
+
+  /** A restore or foreground navigation leaves the entry a pending pan belonged to: its 160 ms
+   * lens settle and pan start must not land on the entry the reader moved to (CLA-405). */
+  function abandonPendingPan() {
+    panSettleCancelRef.current?.();
+    panStartCameraRef.current = undefined;
   }
 
   function currentScanPanStart(): ScanPanStart {
@@ -4257,6 +4265,7 @@ export function App() {
   }
 
   function beginForegroundScanNavigation(reason: string, historyRestore = false, storyPreparation = false) {
+    abandonPendingPan();
     stopLateScanReveal();
     scanLateRevealRef.current = undefined;
     cancelGestureSceneRequests();
@@ -7106,11 +7115,11 @@ export function App() {
           </div>
 
           <Minimap camera={camera} onPan={(next, phase) => {
+            if (levelScenePreparationPending(levelCompileAbortRef.current)) { setCamera(() => next); return; }
             if (phase === 'start') {
               panSettleCancelRef.current?.();
               panStartCameraRef.current = currentScanPanStart();
             }
-            if (levelScenePreparationPending(levelCompileAbortRef.current)) { setCamera(() => next); return; }
             if (phase === 'move') {
               beginUserCameraIntent();
               setCamera(() => next);

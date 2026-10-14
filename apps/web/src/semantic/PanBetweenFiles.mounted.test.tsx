@@ -564,3 +564,24 @@ it('a nudge during preparation keeps Back at the first pan\'s start on a file op
   expect(claims()).toMatchObject(onFile(FILE_A));
   expectCamera(captured.camera, before);
 });
+
+it('browser Back inside a pan\'s lens settle wins: the restored entry keeps its camera and no file change follows', async () => {
+  await openFileA();
+  await reopenFromUrl();
+  const current = window.location.pathname + window.location.search;
+  // A preceding entry for the same file and level at another camera.
+  const seeded = new URL(window.location.href);
+  const seededX = Number(seeded.searchParams.get('cx')) + 12;
+  seeded.searchParams.set('cx', String(seededX));
+  window.history.replaceState(null, '', seeded.pathname + seeded.search);
+  window.history.pushState(null, '', current);
+  await dragToCentre(cardCentre(FILE_B));
+  // Back before the pan's 160 ms lens settle fires.
+  await act(async () => window.history.back()); await settle(); await settle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  expect(captured.camera.x).toBeCloseTo(seededX, 1);
+  await idle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  expect(captured.camera.x).toBeCloseTo(seededX, 1);
+  expect(urlCamera().x).toBeCloseTo(seededX, 1);
+});
