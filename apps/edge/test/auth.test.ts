@@ -4,7 +4,7 @@ import { PRIVACY_POLICY_VERSION } from '../../web/src/siteMeta';
 import { SESSION_TTL_SECONDS, signSession, type UserRow } from '../src/auth';
 import type { EdgeEnv } from '../src/env';
 import { jsonText } from '../src/http';
-import { edgeEnv, edgeFetch, type EdgeFetchOptions } from './helpers';
+import { edgeEnv, edgeFetch, tamperSignature, type EdgeFetchOptions } from './helpers';
 
 const KEY = 'test-signing-key-0123456789abcdef-0123456789';
 const OTHER_KEY = 'another-signing-key-0123456789abcdef-xyz';
@@ -230,13 +230,13 @@ describe('GitHub sign-in (CLA-316)', () => {
     const start = await fetchAt('/api/auth/github?return=/', OAUTH);
     const state = new URL(start.headers.get('location')!).searchParams.get('state')!;
     const good = cookieValue(start, '__Host-sf_oauth_state')!;
-    const [v, payload, signature] = good.split('.');
+    const [v, , signature] = good.split('.');
     const tamperedPayload = btoa(JSON.stringify({ nonce: state, returnTo: '/', exp: 9999999999 })).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
     const cases: Array<[string, string | undefined, EdgeFetchOptions?]> = [
       ['no cookie', undefined],
       ['wrong state param', good],
       ['tampered payload', `${v}.${tamperedPayload}.${signature}`],
-      ['tampered signature', `${v}.${payload}.${signature!.slice(0, -2)}AA`],
+      ['tampered signature', tamperSignature(good)],
       ['garbage', 'not-a-token'],
       ['expired', good, { now: () => new Date(NOW.getTime() + 11 * 60 * 1000) }],
     ];
@@ -315,11 +315,11 @@ describe('GitHub sign-in (CLA-316)', () => {
     await insertUser(55, 'alice');
     const good = await sessionCookieFor(55, 'alice');
     expect(await (await fetchAt('/api/auth/me', OAUTH, { cookie: `${SESSION}=${good}` })).json()).toMatchObject({ authenticated: true, login: 'alice' });
-    const [v, payload, signature] = good.split('.');
+    const [v, , signature] = good.split('.');
     const forged = btoa(JSON.stringify({ sub: '1', login: 'admin', iat: 0, exp: 9999999999 })).replace(/=+$/, '');
     const bad = [
       `${v}.${forged}.${signature}`,
-      `${v}.${payload}.${signature!.slice(0, -2)}AA`,
+      tamperSignature(good),
       await sessionCookieFor(55, 'alice', { key: OTHER_KEY }),
       await sessionCookieFor(55, 'alice', { iat: 1_000_000, exp: Math.floor(NOW.getTime() / 1000) - 1 }),
       'v1.garbage',

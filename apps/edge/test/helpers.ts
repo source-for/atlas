@@ -162,3 +162,9 @@ export function memoryCache(options: MemoryCacheOptions = {}): Cache & { keys: s
     async delete(key: RequestInfo | URL) { return store.delete(String(key)); },
   } as unknown as Cache & { keys: string[]; matches: string[] };
 }
+
+/** A token with a signature that can never verify: the first character carries 6 of the first byte's bits, so the decoded bytes always change (the last one carries only 4 real bits and atob ignores the rest). */
+export function tamperSignature(token: string): string {
+  const [v, payload, signature] = token.split('.');
+  return `${v}.${payload}.${signature![0] === 'A' ? 'B' : 'A'}${signature!.slice(1)}`;
+}
