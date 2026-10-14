@@ -4181,6 +4181,8 @@ export function App() {
 
   /** Called only for user camera intent, never for renderer or flight samples. */
   function beginUserCameraIntent() {
+    // Any camera the reader chooses supersedes a pan file handoff still being prepared.
+    fenceScanPanFileHandoff();
     if (!beginForegroundCameraIntent(levelCompileAbortRef.current, () => cancelForegroundSceneRequest())) return false;
     foregroundSceneRequestRef.current.cameraIntent();
     levelCompileAbortRef.current?.abort();
@@ -4190,7 +4192,6 @@ export function App() {
   }
 
   function handleDirectCameraInput(): Camera {
-    fenceScanPanFileHandoff();
     beginUserCameraIntent();
     return cancelInspectorCameraFlight();
   }
@@ -7066,7 +7067,6 @@ export function App() {
 
           <Minimap camera={camera} onPan={(next, phase) => {
             if (phase === 'start') panStartCameraRef.current ??= { ...renderedCameraRef.current };
-            if (phase !== 'settle') fenceScanPanFileHandoff();
             if (levelScenePreparationPending(levelCompileAbortRef.current)) { setCamera(() => next); return; }
             if (phase === 'move') {
               beginUserCameraIntent();

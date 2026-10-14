@@ -436,3 +436,33 @@ it('a click that cancels a pending lens settle ends that pan: Back returns to wh
   expect(claims()).toMatchObject(onFile(FILE_A));
   expectCamera(captured.camera, stopped);
 });
+
+it('drops a pending file change when the reader presses Fit while it is prepared', async () => {
+  await openFileA();
+  const entries = window.history.length;
+  const held = holdCompiles();
+  await dragToCentre(cardCentre(FILE_B));
+  await idle();
+  expect(held.compile.mock.calls.some(call => call[0] === FILE_B)).toBe(true);
+  await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Fit architecture to view"]')!.click()); await settle();
+  const fitted = { ...captured.camera };
+  await held.release(); await idle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  expect(window.history.length).toBe(entries);
+  expectCamera(captured.camera, fitted);
+  expectCamera(urlCamera(), fitted);
+});
+
+it('drops a pending file change when the reader presses a zoom button while it is prepared', async () => {
+  await openFileA();
+  const held = holdCompiles();
+  await dragToCentre(cardCentre(FILE_B));
+  await idle();
+  expect(held.compile.mock.calls.some(call => call[0] === FILE_B)).toBe(true);
+  await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Zoom out"]')!.click()); await settle();
+  await held.release(); await idle();
+  const after = claims();
+  expect([after.urlRoot, after.navigationRoot, after.sceneRoot, after.lensOwner]).not.toContain(FILE_B);
+  expect(after.urlLens).not.toContain(FILE_B);
+  expect([after.urlRoot, after.navigationRoot]).toEqual([after.sceneRoot, after.sceneRoot]);
+});
