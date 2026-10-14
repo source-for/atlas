@@ -83,6 +83,12 @@ async function signInWithGithub(github: FakeGithub, returnTo = '/r/acme/app', en
   return { start, authorize, state, stateCookie, callback };
 }
 
+/** A token with a signature that can never verify: the first character carries 6 of the first byte's bits, so the decoded bytes always change (the last one carries only 4 real bits and atob ignores the rest). */
+function tamperSignature(token: string): string {
+  const [v, payload, signature] = token.split('.');
+  return `${v}.${payload}.${signature![0] === 'A' ? 'B' : 'A'}${signature!.slice(1)}`;
+}
+
 async function sessionCookieFor(githubId: number, login: string, options: { key?: string; exp?: number; iat?: number } = {}): Promise<string> {
   const iat = options.iat ?? Math.floor(NOW.getTime() / 1000);
   return signSession({ sub: String(githubId), login, iat, exp: options.exp ?? iat + SESSION_TTL_SECONDS }, options.key ?? KEY);
@@ -230,13 +236,13 @@ describe('GitHub sign-in (CLA-316)', () => {
     const start = await fetchAt('/api/auth/github?return=/', OAUTH);
     const state = new URL(start.headers.get('location')!).searchParams.get('state')!;
     const good = cookieValue(start, '__Host-sf_oauth_state')!;
-    const [v, payload, signature] = good.split('.');
+    const [v, , signature] = good.split('.');
     const tamperedPayload = btoa(JSON.stringify({ nonce: state, returnTo: '/', exp: 9999999999 })).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
     const cases: Array<[string, string | undefined, EdgeFetchOptions?]> = [
       ['no cookie', undefined],
       ['wrong state param', good],
       ['tampered payload', `${v}.${tamperedPayload}.${signature}`],
-      ['tampered signature', `${v}.${payload}.${signature!.slice(0, -2)}AA`],
+      ['tampered signature', tamperSignature(good)],
       ['garbage', 'not-a-token'],
       ['expired', good, { now: () => new Date(NOW.getTime() + 11 * 60 * 1000) }],
     ];
@@ -315,11 +321,11 @@ describe('GitHub sign-in (CLA-316)', () => {
     await insertUser(55, 'alice');
     const good = await sessionCookieFor(55, 'alice');
     expect(await (await fetchAt('/api/auth/me', OAUTH, { cookie: `${SESSION}=${good}` })).json()).toMatchObject({ authenticated: true, login: 'alice' });
-    const [v, payload, signature] = good.split('.');
+    const [v, , signature] = good.split('.');
     const forged = btoa(JSON.stringify({ sub: '1', login: 'admin', iat: 0, exp: 9999999999 })).replace(/=+$/, '');
     const bad = [
       `${v}.${forged}.${signature}`,
-      `${v}.${payload}.${signature!.slice(0, -2)}AA`,
+      tamperSignature(good),
       await sessionCookieFor(55, 'alice', { key: OTHER_KEY }),
       await sessionCookieFor(55, 'alice', { iat: 1_000_000, exp: Math.floor(NOW.getTime() / 1000) - 1 }),
       'v1.garbage',
