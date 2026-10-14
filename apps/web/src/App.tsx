@@ -9,6 +9,7 @@ import { navigateResidentInspectorChild } from './inspector/residentInspectorChi
 import { prepareReverseScene } from './renderer/reverseScenePreparation';
 import { initialSceneBandsMatch } from './renderer/initialSceneCompatibility';
 import { recordAtlasFirstFrame } from './performance/loadTimings';
+import { holdMermaidUntilFirstFrame } from './diagram/mermaidLoadGate';
 import { DiagramActionHelp } from './diagram/DiagramActionHelp';
 import { architectureStoryFromAppPlan, optionalDiagramResult } from './diagram/namedFlow';
 import { parseAppRoute } from './renderer/route';
@@ -1559,6 +1560,8 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
 }
 
 export function App() {
+  // Inline diagrams mount (and run their effects) before App's own effects: hold Mermaid from this first render.
+  useState(() => { holdMermaidUntilFirstFrame(); return true; });
   const query = useMemo(() => readDemoQuery(window.location.search), []);
   const draftPreviewContext = getDraftPreviewContext();
   const initialCameraExplicit = useMemo(() => {
@@ -1870,7 +1873,9 @@ export function App() {
   const [semanticLensSession, setSemanticLensSession] = useState<SemanticLensSession>(() => {
     const baseIndex = initialNavigation.detail ? semanticDetails.indexOf(initialNavigation.detail) : -1;
     const baseDetail = baseIndex >= 0 ? semanticDetails[baseIndex] : 'context';
-    const lensScene = query.fixture === 'stress' || initialNavigation.rootEntityId === goldenScene.rootEntityId
+    // A scan deep link's initialize restore compiles its root off-thread and installs the
+    // lens path validated against that scene (CLA-584); until then the bootstrap scene is on screen.
+    const lensScene = query.fixture === 'stress' || initialNavigation.rootEntityId === goldenScene.rootEntityId || scanFixture
       ? goldenScene
       : activeCreateScene(initialNavigation.rootEntityId, goldenScene);
     const settled = validateRestoredSemanticLensPath(
@@ -2426,9 +2431,15 @@ export function App() {
     path: navigationPathFromDraft(pathDraft),
   }, navigationDefaults);
   const navigationRef = useRef<NavigationState>(navigationState);
+  // The initialize restore of a deep link replaces the bootstrap root. Enriching that root
+  // meanwhile only queues speculative work its compile cancels, and that cancel ends the
+  // worker holding the graph (CLA-584); enrich only if the restore leaves the bootstrap scene.
+  const [bootRootRestorePending, setBootRootRestorePending] = useState(() => Boolean(scanFixture)
+    && query.fixture !== 'stress' && initialNavigation.rootEntityId !== goldenScene.rootEntityId);
   useEffect(() => {
     const fixture = scanFixture;
-    if (!fixture || sceneRef.current !== goldenScene) return;
+    if (!fixture || bootRootRestorePending) return;
+    if (sceneRef.current !== goldenScene) { setInitialDetailLoading(false); return; }
     let alive = true;
     const controller = new AbortController();
     initialEnrichmentAbortRef.current = controller;
@@ -2441,7 +2452,7 @@ export function App() {
       setScene(enriched);
     }).catch(() => { if (alive) setInitialDetailLoading(false); });
     return () => { alive = false; controller.abort(); };
-  }, [goldenScene]);
+  }, [bootRootRestorePending, goldenScene]);
   navigationRef.current = navigationState;
   const rendererReplayState = JSON.stringify({
     timeline: {
@@ -2917,7 +2928,7 @@ export function App() {
       },
     });
     historyControllerRef.current = controller;
-    void controller.start();
+    void controller.start().finally(() => { if (historyControllerRef.current === controller) setBootRootRestorePending(false); });
     return () => {
       controller.dispose();
       if (historyControllerRef.current === controller) historyControllerRef.current = undefined;
