@@ -4,9 +4,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { cargoManifestPathDependencies, cargoPackageName, cargoWorkspaceMembers, discoverExtractedTree, discoverRepository } from "./discover.js";
+import { cargoManifestDependencies, cargoManifestPathDependencies, cargoPackageName, cargoWorkspaceMembers, discoverExtractedTree, discoverRepository } from "./discover.js";
 import { pinRepository } from "./pin.js";
-import { buildScanArtifacts, discoveryLimitations, LIMITATION_TEXT_MAX_CHARS, scanRepository, UNRESOLVED_IMPORTS_SHOWN, unresolvedImportLimitations } from "./scan.js";
+import { buildScanArtifacts, discoveryLimitations, displayText, LIMITATION_TEXT_MAX_CHARS, scanRepository, UNRESOLVED_IMPORTS_SHOWN, unresolvedImportLimitations } from "./scan.js";
 
 /** Builds a tiny staged git repo (git ls-files sees staged files — no commit needed). */
 function makeRepo(files: Record<string, string>): string {
@@ -670,7 +670,8 @@ test("cargoManifestPathDependencies reads path deps from every dependency table 
     "[[bin]]",
     'path = "src/bin/x.rs"',
   ].join("\n");
-  assert.deepEqual(cargoManifestPathDependencies(manifest), ["crates/core", "crates/fixtures", "tools/gen", "crates/sys", "crates/shared"]);
+  // `[workspace.dependencies]` paths are not the manifest's own dependencies.
+  assert.deepEqual(cargoManifestPathDependencies(manifest), ["crates/core", "crates/fixtures", "tools/gen", "crates/sys"]);
   assert.equal(cargoPackageName('[package]\nname = "rustc_ast" # crate\nversion = "0.1.0"\n'), "rustc_ast");
   assert.equal(cargoPackageName('[workspace]\nmembers = []\n'), undefined);
 });
@@ -745,8 +746,8 @@ test("a source-empty root keeps main/module/types only when they name a tracked 
   withRepo({ "package.json": JSON.stringify({ name: "tools", version: "1.0.0", main: "index.js", scripts: { prepare: "husky" }, devDependencies: { husky: "^9.0.0" } }), ...crates }, dir => {
     assert.deepEqual(discoverRepository(dir).units.map(unit => `${unit.kind}:${unit.dir}`), ["rust:crates/a"]);
   });
-  withRepo({ "package.json": JSON.stringify({ name: "tools", types: "./index.d.ts" }), "index.d.ts": "export declare const a: number;\n", ...crates }, dir => {
-    assert.ok(discoverRepository(dir).units.some(unit => unit.kind === "root"), "a tracked types entry keeps the root");
+  withRepo({ "package.json": JSON.stringify({ name: "tools", main: "./index.ts" }), "index.ts": "export const a = 1;\n", ...crates }, dir => {
+    assert.ok(discoverRepository(dir).units.some(unit => unit.kind === "root"), "a main naming a source file keeps the root");
   });
 });
 
@@ -771,4 +772,78 @@ test("unresolved-import lines neutralize control characters and cap repository t
   assert.equal(lines[1], "Unresolved relative import src/a.ts:1: './esc�[31mRED'");
   assert.ok(!lines.join("").includes("\u001b"), "no raw ESC byte reaches the artifact or terminal");
   assert.equal(lines[2], `Unresolved relative import src/a.ts:2: '${long.slice(0, LIMITATION_TEXT_MAX_CHARS)}…'`);
+});
+
+// CLA-578 final round.
+
+test("a source-empty root keeps a main the extraction resolver maps to a source file, and its publicApi", () => {
+  const crate = {
+    "tsconfig.json": "{}",
+    "Cargo.toml": '[workspace]\nmembers = ["engine"]\n',
+    "engine/Cargo.toml": '[package]\nname = "engine"\n',
+    "engine/src/lib.rs": "pub fn run() {}\n",
+    "engine/index.ts": "export const api = 1;\n",
+  };
+  for (const main of ["./engine/index.js", "engine/index"]) {
+    withRepo({ "package.json": JSON.stringify({ name: "engine-app", main }), ...crate }, dir => {
+      assert.ok(discoverRepository(dir).units.some(unit => unit.kind === "root"), `main ${main} keeps the root`);
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+      const { snapshot } = scanRepository(dir, { analysisMode: "quick" });
+      const exposure = snapshot.entities.find(entity => entity.id === "code:engine-index-ts:api")?.exposure?.map(item => item.kind) ?? [];
+      assert.ok(exposure.includes("publicApi"), `main ${main} marks the public API`);
+    });
+  }
+  // npm init's dangling default is still pruned.
+  withRepo({ "package.json": JSON.stringify({ name: "engine-app", main: "index.js" }), ...crate }, dir => {
+    assert.ok(!discoverRepository(dir).units.some(unit => unit.kind === "root"), "a dangling main is no entry surface");
+  });
+});
+
+test("Cargo [workspace.dependencies] path entries are crates only when a reachable crate inherits them", () => {
+  const files = {
+    "Cargo.toml": [
+      "[workspace]", 'members = ["app"]',
+      "[workspace.dependencies]",
+      'inline = { path = "crates/inline" }', 'dotted = { path = "crates/dotted" }', 'sub = { path = "crates/sub" }',
+      'unused = { path = "crates/unused" }',
+    ].join("\n"),
+    "app/Cargo.toml": '[package]\nname = "app"\n\n[dependencies]\ninline = { workspace = true, features = ["x"] }\ndotted.workspace = true\n\n[dev-dependencies.sub]\nworkspace = true\n',
+    "app/src/main.rs": "fn main() {}\n",
+    ...Object.fromEntries(["inline", "dotted", "sub", "unused"].flatMap(name => [
+      [`crates/${name}/Cargo.toml`, `[package]\nname = "${name}"\n`], [`crates/${name}/src/lib.rs`, "pub fn f() {}\n"],
+    ])),
+  };
+  const check = (discovery: ReturnType<typeof discoverRepository>): void => {
+    assert.deepEqual(discovery.units.filter(unit => unit.kind === "rust").map(unit => unit.dir), ["app", "crates/dotted", "crates/inline", "crates/sub"]);
+  };
+  withRepo(files, dir => check(discoverRepository(dir)));
+  withTree(files, dir => check(discoverExtractedTree(dir)));
+});
+
+test("Cargo dependency parsing matches the exact path key: typed-path = \"0.9\" is not a path", () => {
+  const manifest = '[dependencies]\ntyped-path = "0.9"\nlib = { typed-path = "x", version = "1" }\ncore = { version = "1", path = "crates/core" }\n';
+  assert.deepEqual(cargoManifestPathDependencies(manifest), ["crates/core"]);
+  assert.deepEqual(cargoManifestDependencies(manifest).map(dependency => [dependency.name, dependency.path ?? null]), [["typed-path", null], ["lib", null], ["core", "crates/core"]]);
+});
+
+test("consecutive `**` segments collapse: packages/**/** and !**/**/test match like packages/** and !**/test", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "mono", workspaces: ["packages/**/**", "!**/**/test"] }),
+    "packages/package.json": JSON.stringify({ name: "@m/self" }),
+    "packages/self.ts": "export const s = 1;\n",
+    "packages/a/package.json": JSON.stringify({ name: "@m/a" }),
+    "packages/a/i.ts": "export const a = 1;\n",
+    "packages/test/package.json": JSON.stringify({ name: "@m/test" }),
+    "packages/test/i.ts": "export const t = 1;\n",
+  }, dir => {
+    assert.deepEqual(memberDirs(dir), ["packages", "packages/a"]);
+  });
+});
+
+test("displayText caps by code point and strips bidi override/isolate characters", () => {
+  const emoji = "😀".repeat(LIMITATION_TEXT_MAX_CHARS + 5);
+  const capped = displayText(emoji);
+  assert.equal(Array.from(capped).length, LIMITATION_TEXT_MAX_CHARS + 1, "200 code points + the ellipsis");
+  assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(capped), "no lone high surrogate");
+  assert.equal(displayText("./a\u202Etxt.ts\u2066\u2069\u202A"), "./atxt.ts");
 });

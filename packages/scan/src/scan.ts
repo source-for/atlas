@@ -404,12 +404,14 @@ export const LIMITATION_TEXT_MAX_CHARS = 200;
 
 /**
  * Repository-controlled text made safe for analysis.limitations and the terminal:
- * control characters (ANSI escapes) neutralized, then capped with an ellipsis so one
- * huge specifier cannot blow up the artifact.
+ * control characters (ANSI escapes) neutralized, bidi embedding/override/isolate
+ * characters (U+202A–202E, U+2066–2069) removed so a specifier cannot reorder the
+ * line around it, then capped by code point (never splitting a surrogate pair) with
+ * an ellipsis so one huge specifier cannot blow up the artifact.
  */
-function displayText(text: string): string {
-  const safe = sanitizeControlCharacters(text);
-  return safe.length > LIMITATION_TEXT_MAX_CHARS ? `${safe.slice(0, LIMITATION_TEXT_MAX_CHARS)}…` : safe;
+export function displayText(text: string): string {
+  const codePoints = Array.from(sanitizeControlCharacters(text).replace(/[\u202A-\u202E\u2066-\u2069]/g, ""));
+  return codePoints.length > LIMITATION_TEXT_MAX_CHARS ? `${codePoints.slice(0, LIMITATION_TEXT_MAX_CHARS).join("")}…` : codePoints.join("");
 }
 
 /** At most this many unresolved imports are itemized; the rest are counted. */

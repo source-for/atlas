@@ -240,11 +240,12 @@ function hasRootTsconfig(sourceRoot: string): boolean {
 /**
  * Whether the root package.json declares something the root unit carries even without
  * source of its own: an entry surface (`exports`/`bin`, or a `main`/`module`/`types`
- * that names a tracked file — npm init's default `"main": "index.js"` with no
- * index.js is no entry surface) or runtime `dependencies` (externals). Scripts,
- * devDependencies and a name alone do not.
+ * that resolves — with the resolver extraction uses for manifest entry paths — to a
+ * scanned source file, e.g. `./engine/index.js` -> `engine/index.ts`; npm init's
+ * dangling default `"main": "index.js"` is no entry surface) or runtime
+ * `dependencies` (externals). Scripts, devDependencies and a name alone do not.
  */
-function rootManifestDeclaresFacts(sourceRoot: string, trackedFiles: ReadonlySet<string>): boolean {
+function rootManifestDeclaresFacts(sourceRoot: string, sourceFiles: ReadonlySet<string>): boolean {
   const text = readRepositoryFile(sourceRoot, "package.json");
   if (text === undefined) return false;
   let manifest: Record<string, unknown>;
@@ -252,13 +253,10 @@ function rootManifestDeclaresFacts(sourceRoot: string, trackedFiles: ReadonlySet
   if (!manifest || typeof manifest !== "object") return false;
   const declared = (value: unknown): boolean =>
     typeof value === "string" ? value.trim() !== "" : value !== null && typeof value === "object" && Object.keys(value).length > 0;
-  const namesTrackedFile = (value: unknown): boolean => {
-    if (typeof value !== "string") return false;
-    const path = value.trim().replace(/^(\.\/)+/, "").replace(/\/+$/, "");
-    return Boolean(path) && [path, `${path}.js`, `${path}/index.js`].some(candidate => trackedFiles.has(candidate));
-  };
+  const namesSourceFile = (value: unknown): boolean =>
+    typeof value === "string" && value.trim() !== "" && resolveRelativeImport("package.json", value.trim(), sourceFiles) !== undefined;
   return ["exports", "bin"].some(key => declared(manifest[key]))
-    || ["main", "module", "types"].some(key => namesTrackedFile(manifest[key]))
+    || ["main", "module", "types"].some(key => namesSourceFile(manifest[key]))
     || declared(manifest.dependencies);
 }
 
@@ -354,7 +352,8 @@ function workspacePatterns(sourceRoot: string): WorkspacePatterns {
  * none appear in the workspace lists this has to read.
  */
 function workspaceGlobToRegExp(glob: string): RegExp {
-  const segments = glob.split("/");
+  // `a/**/**` = `a/**`: consecutive globstars collapse before compiling.
+  const segments = glob.split("/").filter((segment, index, all) => !(segment === "**" && all[index - 1] === "**"));
   let source = "";
   segments.forEach((segment, index) => {
     const first = index === 0;
@@ -424,20 +423,78 @@ function tomlLinesByTable(manifestText: string): Array<{ table: string | undefin
   return out;
 }
 
+/** One dependency declaration read from a Cargo manifest. */
+export interface CargoDependency {
+  /** The dependency key (`core` in `core = { path = "…" }`). */
+  name: string;
+  /** `own` for the crate's dependency tables; `workspace` for `[workspace.dependencies]`. */
+  scope: "own" | "workspace";
+  /** The `path` value as written (relative to the manifest's directory). */
+  path?: string;
+  /** `workspace = true`: the declaration is inherited from `[workspace.dependencies]`. */
+  inherited: boolean;
+}
+
+const CARGO_STRING = String.raw`(?:"((?:[^"\\]|\\.)*)"|'([^']*)')`;
+/** Exactly the `path` / `workspace` keys of an inline table — never `typed-path`. */
+const INLINE_PATH = new RegExp(String.raw`(?:^|[{,\s])path\s*=\s*${CARGO_STRING}`);
+const INLINE_WORKSPACE = /(?:^|[{,\s])workspace\s*=\s*true\b/;
+
 /**
- * Every `path = "…"` dependency of a Cargo manifest, in any dependency table:
+ * Dependency declarations of a Cargo manifest, from every dependency table:
  * `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`,
- * `[target.….dependencies]`, `[workspace.dependencies]` — inline-table form
- * (`core = { path = "crates/core" }`) and `[dependencies.core]` subsections. Values
- * are as written (relative to the manifest's directory).
+ * `[target.….dependencies]` (scope `own`) and `[workspace.dependencies]` (scope
+ * `workspace`). Reads the inline-table form (`core = { path = "crates/core" }`),
+ * dotted keys (`core.path = "…"`, `core.workspace = true`) and `[dependencies.core]`
+ * subsections. Only the exact `path` and `workspace` keys count (`typed-path = "0.9"`
+ * is a dependency named typed-path, not a path).
  */
-export function cargoManifestPathDependencies(manifestText: string): string[] {
-  const paths: string[] = [];
+export function cargoManifestDependencies(manifestText: string): CargoDependency[] {
+  const byKey = new Map<string, CargoDependency>();
+  const entry = (scope: CargoDependency["scope"], table: string, name: string): CargoDependency => {
+    const key = `${table}\0${name}`;
+    let dependency = byKey.get(key);
+    if (!dependency) { dependency = { name, scope, inherited: false }; byKey.set(key, dependency); }
+    return dependency;
+  };
   for (const { table, arrayTable, line } of tomlLinesByTable(manifestText)) {
-    if (arrayTable || !table || !/(^|\.)(?:dev-|build-)?dependencies(\.|$)/.test(table)) continue;
-    for (const match of line.matchAll(/\bpath\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/g)) paths.push(match[1] ?? match[2]!);
+    if (arrayTable || !table) continue;
+    const section = /^(.*?)(?:^|\.)((?:dev-|build-)?dependencies)(?:\.(.+))?$/.exec(table);
+    if (!section) continue;
+    const scope = /^workspace(\.|$)/.test(table) ? "workspace" : "own";
+    const tableKey = section[3] === undefined ? table : table.slice(0, -(section[3].length + 1));
+    const subsection = section[3]?.replace(/^"|"$/g, "");
+    if (subsection !== undefined) {
+      // `[dependencies.core]`: the keys belong to that one dependency.
+      const field = new RegExp(String.raw`^\s*(path|workspace)\s*=\s*(?:${CARGO_STRING}|(true))`).exec(line);
+      if (!field) continue;
+      const dependency = entry(scope, tableKey, subsection);
+      if (field[1] === "path" && (field[2] ?? field[3]) !== undefined) dependency.path = field[2] ?? field[3]!;
+      if (field[1] === "workspace" && field[4] === "true") dependency.inherited = true;
+      continue;
+    }
+    const declaration = /^\s*("[^"]+"|'[^']+'|[A-Za-z0-9_-]+)\s*(?:\.\s*(path|workspace)\s*)?=\s*(.*)$/.exec(line);
+    if (!declaration) continue;
+    const name = declaration[1]!.replace(/^["']|["']$/g, "");
+    const value = declaration[3]!.trim();
+    const dependency = entry(scope, tableKey, name);
+    if (declaration[2] === "path") {
+      const match = new RegExp(`^${CARGO_STRING}`).exec(value);
+      if (match) dependency.path = match[1] ?? match[2]!;
+    } else if (declaration[2] === "workspace") {
+      if (/^true\b/.test(value)) dependency.inherited = true;
+    } else if (value.startsWith("{")) {
+      const path = INLINE_PATH.exec(value);
+      if (path) dependency.path = path[1] ?? path[2]!;
+      if (INLINE_WORKSPACE.test(value)) dependency.inherited = true;
+    }
   }
-  return paths;
+  return [...byKey.values()];
+}
+
+/** The `path` values of a manifest's own dependency tables (not `[workspace.dependencies]`). */
+export function cargoManifestPathDependencies(manifestText: string): string[] {
+  return cargoManifestDependencies(manifestText).flatMap(dependency => dependency.scope === "own" && dependency.path !== undefined ? [dependency.path] : []);
 }
 
 /** `[package] name` of a Cargo manifest, when declared as a plain string. */
@@ -467,9 +524,12 @@ function repositoryPathFrom(dir: string, path: string): string | undefined {
  * has a tracked `Cargo.toml`. Without declared members, the conventional
  * `crates/<name>/Cargo.toml` layout is used (unchanged behaviour), still minus any
  * declared `exclude`. Either way, Cargo's implicit members join: every `path`
- * dependency (transitively, from the root manifest and each crate) that stays inside
- * the repository, has a tracked `Cargo.toml` and is not excluded. The root itself
- * (`.`) is never a crate unit.
+ * dependency actually used — declared in the root package's or a crate's own
+ * dependency tables, or inherited there (`foo = { workspace = true }`) from a
+ * `[workspace.dependencies]` entry with a `path` — transitively, that stays inside the
+ * repository, has a tracked `Cargo.toml` and is not excluded. An unused
+ * `[workspace.dependencies]` path entry is not a member. The root itself (`.`) is
+ * never a crate unit.
  */
 function rustCrateDirectories(sourceRoot: string, allFiles: readonly string[]): string[] {
   const manifestDirs = allFiles
@@ -486,6 +546,9 @@ function rustCrateDirectories(sourceRoot: string, allFiles: readonly string[]): 
     : (dir: string): boolean => members.some(pattern => workspaceGlobToRegExp(pattern).test(dir));
   const manifestDirSet = new Set(manifestDirs);
   const crates = new Set(manifestDirs.filter(dir => isMember(dir) && !isExcluded(dir)));
+  // `[workspace.dependencies]` paths are relative to the root and count only when inherited.
+  const workspacePaths = new Map((manifest === undefined ? [] : cargoManifestDependencies(manifest))
+    .flatMap(dependency => dependency.scope === "workspace" && dependency.path !== undefined ? [[dependency.name, dependency.path] as const] : []));
   const queue = ["", ...crates];
   const visited = new Set<string>();
   while (queue.length > 0) {
@@ -494,8 +557,12 @@ function rustCrateDirectories(sourceRoot: string, allFiles: readonly string[]): 
     visited.add(dir);
     const text = dir ? readRepositoryFile(sourceRoot, `${dir}/Cargo.toml`) : manifest;
     if (text === undefined) continue;
-    for (const path of cargoManifestPathDependencies(text)) {
-      const target = repositoryPathFrom(dir, path);
+    for (const dependency of cargoManifestDependencies(text)) {
+      if (dependency.scope !== "own") continue;
+      const inheritedPath = dependency.inherited ? workspacePaths.get(dependency.name) : undefined;
+      const target = dependency.path !== undefined
+        ? repositoryPathFrom(dir, dependency.path)
+        : inheritedPath !== undefined ? repositoryPathFrom("", inheritedPath) : undefined;
       if (!target || !manifestDirSet.has(target) || isExcluded(target) || crates.has(target)) continue;
       crates.add(target);
       queue.push(target);
@@ -711,7 +778,7 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
       if (owner?.skipped) continue; // fixture/example crate — dropped
       unitByFile.set(file, owner?.dir ?? rootKey);
     }
-    if (sourceCandidates.some(file => unitByFile.get(file) === rootKey) || rootManifestDeclaresFacts(sourceRoot, trackedFiles)) {
+    if (sourceCandidates.some(file => unitByFile.get(file) === rootKey) || rootManifestDeclaresFacts(sourceRoot, new Set(sourceCandidates))) {
       units.push({
         kind: "root",
         dir: rootKey,

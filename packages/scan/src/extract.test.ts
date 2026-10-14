@@ -1003,3 +1003,36 @@ test("NodeNext and directory resolution: ./b.mjs -> b.mts, ./c.cjs -> c.cts, '..
   assert.deepEqual(targets, ["component:index-ts", "component:src-b-mts", "component:src-c-cts"]);
   assert.deepEqual(collected.unresolvedRelativeImports, [{ path: "src/a.ts", line: 5, specifier: "./gone.mjs" }], "'..' and the ./lib directory are not misses; a missing .mjs still is");
 });
+
+// CLA-578 final round.
+test("a directory target counts only as a package: ./components with Button.tsx and no index is unresolved", () => {
+  const files: Record<string, string> = {
+    "src/a.ts": "import c from './components';\nimport lib from './lib';\nimport root from '..';\nexport const all = [c, lib, root];\n",
+    "src/components/Button.tsx": "export const Button = 1;\n",
+  };
+  const paths = Object.keys(files).sort();
+  const run = (extra: string[]) => {
+    const trackedFiles = new Set([...paths, "src/lib/package.json", "src/lib/main.ts", ...extra]);
+    const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "root", dir: "r", name: "r", evidencePath: "package.json", packageManifest: undefined }], unitByFile: new Map(paths.map(path => [path, "r"])), unitByPackageName: new Map(), trackedFiles, summary: { singlePackage: true, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+    return collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" }).unresolvedRelativeImports.map(item => item.specifier);
+  };
+  assert.deepEqual(run([]), ["./components", ".."], "a plain folder and a manifest-less root are misses; a package dir is not");
+  assert.deepEqual(run(["package.json"]), ["./components"], "the root counts once it has a package.json");
+});
+
+test("NodeNext: ./b.mjs prefers b.mts over a same-stem b.ts, ./c.cjs prefers c.cts over c.ts", () => {
+  const files: Record<string, string> = {
+    "src/a.ts": "import { b } from './b.mjs';\nimport { c } from './c.cjs';\nimport { d } from './d.js';\nexport const all = [b, c, d];\n",
+    "src/b.ts": "export const b = 0;\n",
+    "src/b.mts": "export const b = 1;\n",
+    "src/c.ts": "export const c = 0;\n",
+    "src/c.cts": "export const c = 1;\n",
+    "src/d.ts": "export const d = 1;\n",
+    "src/d.mts": "export const d = 0;\n",
+  };
+  const paths = Object.keys(files).sort();
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "root", dir: "r", name: "r", evidencePath: "package.json", packageManifest: undefined }], unitByFile: new Map(paths.map(path => [path, "r"])), unitByPackageName: new Map(), summary: { singlePackage: true, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const { extraction } = collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
+  const targets = extraction.relations.filter(relation => relation.from === "component:src-a-ts").map(relation => relation.to).sort();
+  assert.deepEqual(targets, ["component:src-b-mts", "component:src-c-cts", "component:src-d-ts"]);
+});
