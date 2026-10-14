@@ -11,6 +11,7 @@ import { cachedScipIndex, rustAnalyzerVersion, rustcIdentity, rustInputDigest } 
 import { createScanScratch, operatorCargoHome, rustToolchainPin, scanSpawnSync, scanWorkDir, type ScanScratch } from "./scan-env.js";
 import { inspectRustAncestors, nodeAncestorFs, rustProjectJsonIn, type AncestorFs } from "./rust-ancestors.js";
 import { labelledPrefix, pathPrefixRewriter } from "./path-prefixes.js";
+import { compareText } from "@okie/architecture";
 
 type Point = { row: number; column: number };
 type OccurrenceRange = { start: Point; end: Point };
@@ -31,7 +32,7 @@ function rustParser(): Parser {
 }
 
 function canonical<T>(items: Iterable<T>): T[] {
-  return [...items].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  return [...items].sort((left, right) => compareText(JSON.stringify(left), JSON.stringify(right)));
 }
 
 /** Sysroot crates are the language, not a dependency. */

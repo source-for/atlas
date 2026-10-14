@@ -20,6 +20,7 @@ import {
   type GuidedOrthogonalRouteReason,
   type OrthogonalRouteDiagnostic,
 } from './orthogonal-router.js';
+import { compareText } from './text-order.js';
 
 export type C4Band = StoryDetail;
 
@@ -341,7 +342,7 @@ export function c4CodeChildSlots(
   parent: NodeLayout,
   childIds: readonly string[],
 ): Record<string, NodeLayout> {
-  const ordered = [...childIds].sort((left, right) => left.localeCompare(right));
+  const ordered = [...childIds].sort(compareText);
   if (!ordered.length) return {};
   const focusZoom = C4_BAND_FOCUS_ZOOM.code;
   const padX = C4_INTRINSIC_LAYOUT.sidePadding / focusZoom;
@@ -481,7 +482,7 @@ export function selectL2ResidentPreviewPills(input: {
     const ranked = [...kids].sort((left, right) => {
       const leftWeight = codeWeight.get(left) ?? 0;
       const rightWeight = codeWeight.get(right) ?? 0;
-      return rightWeight - leftWeight || left.localeCompare(right);
+      return rightWeight - leftWeight || compareText(left, right);
     });
     for (const id of ranked.slice(0, cap)) kept.add(id);
   }
@@ -659,7 +660,7 @@ export function measureC4Grid(
   items: readonly C4GridItem[],
   metrics: C4GridMetrics,
 ): C4GridMeasurement {
-  const ordered = [...items].sort((left, right) => left.id.localeCompare(right.id));
+  const ordered = [...items].sort((left, right) => compareText(left.id, right.id));
   const columns = chooseColumns(ordered, metrics);
   const rows = columns === 0 ? 0 : Math.ceil(ordered.length / columns);
   const columnWidths = Array.from({ length: columns }, (_, column) => Math.max(
@@ -1116,7 +1117,7 @@ export function routeC4BandEdgesDetailed(
 
   const relevantOverrides = (options.routeOverrides ?? [])
     .filter(value => value.viewId === projection.familyId && value.detail === projection.band)
-    .sort((left, right) => left.id.localeCompare(right.id));
+    .sort((left, right) => compareText(left.id, right.id));
   const consumedOverrides = new Set<string>();
   const diagnostics: C4RouteOverrideDiagnostic[] = [];
   const edges: Record<string, EdgeLayout> = {};
@@ -1154,7 +1155,7 @@ export function routeC4BandEdgesDetailed(
       ? value.visualEdgeId === edgeId
       : edge.relations.some(relation => relation.logicalId === value.relationId))
       .sort((left, right) => Number(right.visualEdgeId !== undefined) - Number(left.visualEdgeId !== undefined)
-        || left.id.localeCompare(right.id));
+        || compareText(left.id, right.id));
     const selectedOverride = matchingOverrides[0];
     for (const superseded of matchingOverrides.slice(1)) {
       consumedOverrides.add(superseded.id);
@@ -1207,7 +1208,7 @@ export function routeC4BandEdgesDetailed(
       reason: 'edge-not-visible',
     });
   }
-  diagnostics.sort((left, right) => left.overrideId.localeCompare(right.overrideId));
+  diagnostics.sort((left, right) => compareText(left.overrideId, right.overrideId));
   return { edges, diagnostics };
 }
 
@@ -1412,7 +1413,7 @@ export function buildC4ProjectionBundle(
 
     type EdgeGroup = { from: ArchitectureEntity; to: ArchitectureEntity; relations: ArchitectureRelation[] };
     const groups = new Map<string, EdgeGroup>();
-    for (const relation of [...snapshot.relations].sort((left, right) => left.id.localeCompare(right.id))) {
+    for (const relation of [...snapshot.relations].sort((left, right) => compareText(left.id, right.id))) {
       const fromEntity = entityById.get(relation.from);
       const toEntity = entityById.get(relation.to);
       if (!fromEntity || !toEntity) continue;
@@ -1458,7 +1459,7 @@ export function buildC4ProjectionBundle(
     }
 
     let visualNodeIds = [...includedEntities.values()]
-      .sort((left, right) => left.id.localeCompare(right.id))
+      .sort((left, right) => compareText(left.id, right.id))
       .map(entity => {
         const id = visualNodeId(familyId, entity);
         const parent = entity.parentId ? includedEntities.get(entity.parentId) : undefined;
@@ -1474,9 +1475,9 @@ export function buildC4ProjectionBundle(
         return id;
       });
 
-    const visualEdgeIds = [...groups.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([id, group]) => {
+    const visualEdgeIds = [...groups.entries()].sort(([left], [right]) => compareText(left, right)).map(([id, group]) => {
       const relations = [...new Map(group.relations.map(relation => [relation.id, relation])).values()]
-        .sort((left, right) => left.id.localeCompare(right.id));
+        .sort((left, right) => compareText(left.id, right.id));
       const first = relations[0]!;
       const labels = [...new Set(relations.map(relation => relation.label?.trim()).filter((label): label is string => Boolean(label)))].sort();
       visualEdgeById[id] = {
@@ -1641,7 +1642,7 @@ export function buildC4ProjectionBundle(
         touchesFocus(right) - touchesFocus(left)
         || visualEdgeById[right]!.aggregate.count - visualEdgeById[left]!.aggregate.count
         || kindRank(right) - kindRank(left)
-        || left.localeCompare(right));
+        || compareText(left, right));
       const kept = new Set(ranked.slice(0, options.maxEdgesPerBand));
       routedEdgeIds = candidateEdgeIds.filter(id => kept.has(id));
       omittedEdgeIds = visualEdgeIds.filter(id => !kept.has(id));
@@ -1687,11 +1688,11 @@ export function buildC4ProjectionBundle(
     visualEdgeIdsByRelationId: {},
     boundsByEntityIdAndBand: {},
   };
-  for (const node of Object.values(visualNodeById).sort((left, right) => left.id.localeCompare(right.id))) {
+  for (const node of Object.values(visualNodeById).sort((left, right) => compareText(left.id, right.id))) {
     index.entityIdByVisualNodeId[node.id] = node.entity.logicalId;
     index.visualNodeIdsByEntityId[node.entity.logicalId] = [node.id];
   }
-  for (const edge of Object.values(visualEdgeById).sort((left, right) => left.id.localeCompare(right.id))) {
+  for (const edge of Object.values(visualEdgeById).sort((left, right) => compareText(left.id, right.id))) {
     const relationIds = edge.relations.map(relation => relation.logicalId).sort();
     index.relationIdsByVisualEdgeId[edge.id] = relationIds;
     for (const relationId of relationIds) {

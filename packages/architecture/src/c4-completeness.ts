@@ -6,6 +6,7 @@ import {
   type RelationKind,
   type StoryDetail,
 } from "./model.js";
+import { compareText } from "./text-order.js";
 
 export const C4_DIAGRAM_TYPE_LABELS = {
   context: "System context diagram",
@@ -124,10 +125,6 @@ const technologyKinds = {
   component: new Set<EntityKind>(["component", "dataStore", "queue"]),
   code: new Set<EntityKind>(),
 } as const satisfies Record<StoryDetail, ReadonlySet<EntityKind>>;
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
 
 function uniqueSorted(values: readonly string[]): string[] {
   return [...new Set(values)].sort(compareText);

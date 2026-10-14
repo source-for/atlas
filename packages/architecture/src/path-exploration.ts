@@ -23,6 +23,7 @@ import type {
   RelationKind,
   SnapshotId,
 } from "./model.js";
+import { compareText } from "./text-order.js";
 
 export const PATH_EXPLORATION_VERSION = 1 as const;
 export const PATH_EXPLORATION_DEFAULT_MAX_HOPS = 64;
@@ -164,10 +165,6 @@ function compareEdges(left: PathEdge, right: PathEdge): number {
     return (left.via === "relation" ? 0 : 1) - (right.via === "relation" ? 0 : 1);
   }
   return compareText(left.relation.id, right.relation.id) || compareText(left.relation.kind, right.relation.kind);
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function normalizeQuery(query: PathExplorationQuery): NormalizedPathExplorationQuery {

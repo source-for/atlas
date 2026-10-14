@@ -30,6 +30,7 @@ import {
   type RelationRouteOverride,
   type VisualEdge,
   type VisualNode,
+  compareText,
 } from '@okie/architecture';
 import { RENDERER_PROTOCOL_VERSION, type LodRange, type Rect, type Representation, type SceneObject, type ScenePath, type SceneSnapshot, type Timeline } from './protocol.js';
 import { defaultTheme, type SceneTheme } from './theme.js';
@@ -788,7 +789,7 @@ function packScanContainerPeerMap(
   };
   const packed = new Map<string, NodeLayout>();
   packed.set(root.id, systemBounds);
-  const ordered = [...containers].sort((left, right) => left.id.localeCompare(right.id));
+  const ordered = [...containers].sort((left, right) => compareText(left.id, right.id));
   const gridX = systemBounds.x + metrics.paddingLeft;
   const gridY = systemBounds.y + metrics.paddingTop;
   ordered.forEach((child, index) => {
@@ -832,7 +833,7 @@ function packScanComponentPeerMap(
   const owners = [...childrenByOwner.keys()]
     .map(id => entities.get(id))
     .filter((entity): entity is ArchitectureEntity => Boolean(entity && isContainerPeerKind(entity.kind)))
-    .sort((left, right) => left.id.localeCompare(right.id));
+    .sort((left, right) => compareText(left.id, right.id));
   for (const owner of owners) {
     const files = (childrenByOwner.get(owner.id) ?? []).filter(child => child.kind === 'component');
     if (!files.length) continue;
@@ -849,7 +850,7 @@ function packScanComponentPeerMap(
       height: measurement.height,
     };
     packed.set(owner.id, ownerBounds);
-    const ordered = [...files].sort((left, right) => left.id.localeCompare(right.id));
+    const ordered = [...files].sort((left, right) => compareText(left.id, right.id));
     const gridX = ownerBounds.x + metrics.paddingLeft;
     const gridY = ownerBounds.y + metrics.paddingTop;
     ordered.forEach((child, index) => {
@@ -919,7 +920,7 @@ export function layoutContextPeersAroundSystem(
   const systemCenterY = system.y + faceHeight / 2;
   // Sort by id so the placement is order-independent (like measureC4Grid): a shuffled peer
   // list yields byte-identical geometry, which is what keeps a shared/restored scene stable.
-  const ordered = [...peers].sort((left, right) => left.id.localeCompare(right.id));
+  const ordered = [...peers].sort((left, right) => compareText(left.id, right.id));
   const left: ContextPeerItem[] = [];
   const right: ContextPeerItem[] = [];
   ordered.forEach((peer, index) => (index % 2 === 0 ? left : right).push(peer));
@@ -979,8 +980,8 @@ function placeResidentKidsInParents(
   for (const parentId of [...parentIds].sort()) {
     const parent = nodes[parentId];
     if (!parent) continue;
-    const kids = [...(byParent.get(parentId) ?? [])].sort((left, right) => left.localeCompare(right));
-    const fullKids = [...(fullChildIdsByParent?.get(parentId) ?? kids)].sort((left, right) => left.localeCompare(right));
+    const kids = [...(byParent.get(parentId) ?? [])].sort(compareText);
+    const fullKids = [...(fullChildIdsByParent?.get(parentId) ?? kids)].sort(compareText);
     const omitted = omittedCountByParent?.get(parentId) ?? 0;
     // Code paging supplies the full sibling order so a resident keeps its
     // canonical slot. Other bands retain their existing remainder behaviour.
@@ -1119,7 +1120,7 @@ function applyIntrinsicOwnerGeometry(
     childrenByOwner.set(owner.id, children);
     if (!entities.has(child.id)) entities.set(child.id, stub);
   }
-  for (const children of childrenByOwner.values()) children.sort((left, right) => left.id.localeCompare(right.id));
+  for (const children of childrenByOwner.values()) children.sort((left, right) => compareText(left.id, right.id));
   const fullCodeChildIdsByParent = new Map<string, string[]>();
   const persistentContextPeerVisualIds = new Set(snapshot.entities
     .filter(entity => entity.kind === 'person' || entity.kind === 'externalSystem')
@@ -1252,7 +1253,7 @@ function applyIntrinsicOwnerGeometry(
       + Math.max(0, availableWidth - measurement.contentWidth) / 2;
     const gridY = ownerBounds.y + metrics.paddingTop
       + Math.max(0, availableHeight - measurement.contentHeight) / 2;
-    const ordered = [...children].sort((left, right) => left.id.localeCompare(right.id));
+    const ordered = [...children].sort((left, right) => compareText(left.id, right.id));
     ordered.forEach((child, index) => {
       const size = requiredByEntityId.get(child.id)!;
       const column = index % measurement.columns;
@@ -1290,7 +1291,7 @@ function applyIntrinsicOwnerGeometry(
             : undefined;
         })
         .filter((value): value is ContextPeerItem => value !== undefined)
-        .sort((left, right) => left.id.localeCompare(right.id));
+        .sort((left, right) => compareText(left.id, right.id));
       for (const [entityId, bounds] of layoutContextPeersAroundSystem(
         scanContextPeerAnchor(systemBounds),
         peers,
@@ -1561,7 +1562,7 @@ export function normalizeC4OwnerGeometry(
         return Boolean(visualId && fromLayout.nodes[visualId] && toLayout.nodes[visualId])
           && [...targetEntityIds].some(candidate => candidate !== entity.id && isDescendantOrSelf(candidate, entity.id));
       })
-      .sort((left, right) => left.id.localeCompare(right.id));
+      .sort((left, right) => compareText(left.id, right.id));
     const ownerIds = new Set(owners.map(owner => owner.id));
     const transforms = new Map<string, OwnerTransform>();
     for (const owner of owners) {
@@ -1674,7 +1675,7 @@ export function compileC4Scene(
     visibleChildren(bundle.projectionById[bundle.family.projectionIds[band]]!, bundle),
   ]));
   const entityObjects = Object.values(bundle.visualNodeById)
-    .sort((left, right) => left.id.localeCompare(right.id))
+    .sort((left, right) => compareText(left.id, right.id))
     .map(node => objectForNode(snapshot, bundle, node, theme, options.targetAspect, entities, parentsByBand))
     .filter((object): object is SceneObject => object !== undefined);
   const paths: ScenePath[] = [];
@@ -1683,7 +1684,7 @@ export function compileC4Scene(
     const projection = bundle.projectionById[bundle.family.projectionIds[band]]!;
     const layout = bundle.bandLayoutById[projection.layoutId]!;
     const bandEdges = projection.visualEdgeIds.map(edgeId => bundle.visualEdgeById[edgeId]!)
-      .sort((left, right) => labelPriority(right) - labelPriority(left) || left.id.localeCompare(right.id));
+      .sort((left, right) => labelPriority(right) - labelPriority(left) || compareText(left.id, right.id));
     for (const edge of bandEdges) {
       const route = layout.edges[edge.id];
       if (!route) continue;
@@ -1706,7 +1707,7 @@ export function compileC4Scene(
       if (label) labelObjects.push(label);
     }
   }
-  const objects = [...entityObjects, ...labelObjects].sort((left, right) => left.id.localeCompare(right.id));
+  const objects = [...entityObjects, ...labelObjects].sort((left, right) => compareText(left.id, right.id));
   const worldBounds = expand(union(objects.map(object => object.bounds)), options.worldPadding ?? 120);
   return {
     scene: {
@@ -1715,7 +1716,7 @@ export function compileC4Scene(
       revision: options.revision ?? 1,
       worldBounds,
       objects,
-      paths: paths.sort((left, right) => left.id.localeCompare(right.id)),
+      paths: paths.sort((left, right) => compareText(left.id, right.id)),
     },
     projections: bundle,
     zoomPolicy: {

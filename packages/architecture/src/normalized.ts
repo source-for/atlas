@@ -10,6 +10,7 @@ import type {
   SourceRef,
   StoryDetail,
 } from './model.js';
+import { compareText } from './text-order.js';
 
 export const NORMALIZED_ARCHITECTURE_VERSION = 1 as const;
 
@@ -213,7 +214,7 @@ function evidenceId(source: SourceRef, reason: string | undefined) {
 }
 
 function sorted<T>(values: readonly T[], key: (value: T) => string) {
-  return [...values].sort((left, right) => key(left).localeCompare(key(right)));
+  return [...values].sort((left, right) => compareText(key(left), key(right)));
 }
 
 export function normalizeArchitecture({ snapshot, views = [], stories = [] }: NormalizeArchitectureInput): NormalizedArchitecture {
@@ -453,7 +454,7 @@ export function buildNormalizedIndexes(state: NormalizedArchitecture): Normalize
     appendIndex(incomingByEntityId, relation.to[1], relation);
   }
   for (const values of [...childrenByEntityId.values(), ...outgoingByEntityId.values(), ...incomingByEntityId.values()]) {
-    values.sort((left, right) => left.id.localeCompare(right.id));
+    values.sort((left, right) => compareText(left.id, right.id));
   }
   return { entityBySnapshotAndLogicalId, relationBySnapshotAndLogicalId, childrenByEntityId, outgoingByEntityId, incomingByEntityId };
 }

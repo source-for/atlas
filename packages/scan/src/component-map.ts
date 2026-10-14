@@ -1,5 +1,5 @@
 import type { ArchitectureExtraction, ArchitectureExtractionEntity, ArchitectureExtractionEvidence, ArchitectureExtractionRelation } from '@okie/architecture';
-import { ARCHITECTURE_EXTRACTION_LIMITS, validateArchitectureExtraction } from '@okie/architecture';
+import { ARCHITECTURE_EXTRACTION_LIMITS, validateArchitectureExtraction, compareText } from '@okie/architecture';
 import { createHash } from 'node:crypto';
 import { typedId } from './ids.js';
 
@@ -86,7 +86,7 @@ export function applyComponentMembership(base: ArchitectureExtraction, input: Co
   const reparented = base.entities.map(entity => entity.kind === 'code' && entity.parentId && mappedFileToComponent.has(entity.parentId)
     ? { ...entity, parentId: mappedFileToComponent.get(entity.parentId)! } : entity);
   const removed = new Set(mappedFileToComponent.keys());
-  const entities = [...reparented.filter(entity => !removed.has(entity.id)), ...additions].sort((a, b) => a.id.localeCompare(b.id));
+  const entities = [...reparented.filter(entity => !removed.has(entity.id)), ...additions].sort((a, b) => compareText(a.id, b.id));
   const grouped = new Map<string, ArchitectureExtractionRelation[]>();
   const untouched: ArchitectureExtractionRelation[] = [];
   for (const relation of base.relations) {
@@ -100,14 +100,14 @@ export function applyComponentMembership(base: ArchitectureExtraction, input: Co
   const mappedRelations: ArchitectureExtractionRelation[] = [];
   for (const [groupKey, bucket] of grouped) {
     const first = bucket[0]!;
-    const evidence = [...new Map(bucket.flatMap(row => row.evidence).map(item => [key(item), item])).values()].sort((a, b) => key(a).localeCompare(key(b)));
+    const evidence = [...new Map(bucket.flatMap(row => row.evidence).map(item => [key(item), item])).values()].sort((a, b) => compareText(key(a), key(b)));
     if (evidence.length > ARCHITECTURE_EXTRACTION_LIMITS.maxEvidenceItems) reasons.push(`aggregate ${first.from} -> ${first.to} has ${evidence.length} evidence items; maximum is ${ARCHITECTURE_EXTRACTION_LIMITS.maxEvidenceItems}`);
     const identity = createHash('sha256').update(groupKey).digest('hex').slice(0, 16);
     mappedRelations.push({ ...first, id: typedId('relation', local(first.from), local(first.to), first.kind, identity), evidence });
   }
   const relationIds = new Set(untouched.map(relation => relation.id));
   for (const relation of mappedRelations) if (relationIds.has(relation.id)) reasons.push(`mapped relation id collides with observed relation ${relation.id}`); else relationIds.add(relation.id);
-  const extraction = { schemaVersion: 1 as const, entities, relations: [...untouched, ...mappedRelations].sort((a, b) => a.id.localeCompare(b.id)) };
+  const extraction = { schemaVersion: 1 as const, entities, relations: [...untouched, ...mappedRelations].sort((a, b) => compareText(a.id, b.id)) };
   reasons.push(...validateArchitectureExtraction(extraction).map(issue => `gate: ${issue.path} ${issue.message}`));
   if (reasons.length) return { extraction: base, report: { accepted: false, ...(input.provenance ? { provenance: input.provenance } : {}), mappedComponents: 0, mappedPaths: 0, reasons: [...new Set(reasons)].sort() } };
   return { extraction, report: { accepted: true, ...(input.provenance ? { provenance: input.provenance } : {}), mappedComponents: additions.length, mappedPaths: mappedFileToComponent.size, reasons: [] } };

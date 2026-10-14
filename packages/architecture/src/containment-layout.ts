@@ -5,6 +5,7 @@ import {
   c4IntrinsicOwnerMetrics,
   measureC4Grid,
 } from "./c4.js";
+import { compareText } from "./text-order.js";
 
 /** Minimal containment row — scan snapshot ids/kinds, no enrichment. */
 export type ContainmentEntity = {
@@ -40,7 +41,7 @@ function childrenByOwner(
     children.push(entity);
     byOwner.set(owner.id, children);
   }
-  for (const children of byOwner.values()) children.sort((left, right) => left.id.localeCompare(right.id));
+  for (const children of byOwner.values()) children.sort((left, right) => compareText(left.id, right.id));
   return byOwner;
 }
 
@@ -121,7 +122,7 @@ export function computeContainmentLayout(
     const availableHeight = origin.height - metrics.paddingTop - metrics.paddingBottom;
     const gridX = origin.x + metrics.paddingLeft + Math.max(0, availableWidth - measurement.contentWidth) / 2;
     const gridY = origin.y + metrics.paddingTop + Math.max(0, availableHeight - measurement.contentHeight) / 2;
-    const ordered = [...items].sort((left, right) => left.id.localeCompare(right.id));
+    const ordered = [...items].sort((left, right) => compareText(left.id, right.id));
     ordered.forEach((item, index) => {
       const column = index % measurement.columns;
       const row = Math.floor(index / measurement.columns);
@@ -142,7 +143,7 @@ export function computeContainmentLayout(
   };
 
   const roots = entities.filter(entity => !entity.parentId || !byId.has(entity.parentId))
-    .sort((left, right) => left.id.localeCompare(right.id));
+    .sort((left, right) => compareText(left.id, right.id));
   let cursorX = 0;
   for (const root of roots) {
     const size = requiredById.get(root.id) ?? c4ContainmentLeafSize(root.kind, targetAspect);

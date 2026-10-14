@@ -6,6 +6,7 @@ import type { AnalysisDefinition, AnalysisExternalReference, AnalysisLocation, L
 import { dependencyContext } from './dependency-context.js';
 import { labelledPrefix, pathPrefixRewriter, type PathPrefix } from './path-prefixes.js';
 import { scanWorkDir } from './scan-env.js';
+import { compareText } from "@okie/architecture";
 
 /** The package owning a declaration file: the segment after the LAST `node_modules/` (pnpm `.pnpm/…` layout safe). */
 export function nodeModulesPackageOf(fileName: string): string | undefined {
@@ -72,7 +73,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
   const configs: string[] = [];
   const packages = new Map<string, string>();
   const walk = (directory: string): void => {
-    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => compareText(a.name, b.name))) {
       if (entry.isDirectory()) {
         if (!["node_modules", ".git", "target", "dist", "build"].includes(entry.name)) walk(resolve(directory, entry.name));
       } else if (entry.isFile()) {
@@ -308,7 +309,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
       visit(source);
     }
   }
-  const canonical = <T>(items: T[]): T[] => items.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  const canonical = <T>(items: T[]): T[] => items.sort((a, b) => compareText(JSON.stringify(a), JSON.stringify(b)));
   result.definitions = canonical([...definitions.values()]);
   result.references = canonical([...references.values()]);
   result.modules = canonical([...modules.values()]);

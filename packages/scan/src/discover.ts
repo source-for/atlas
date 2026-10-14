@@ -18,6 +18,7 @@ import {
   type ScanSizeLimits,
   type SkippedTreeEntries,
 } from "./source-tree.js";
+import { compareText } from "@okie/architecture";
 
 /**
  * A container-level unit of the repository: a workspace member, the whole repo
@@ -569,10 +570,6 @@ function rustCrateDirectories(sourceRoot: string, allFiles: readonly string[]): 
     }
   }
   return [...crates].sort(compareText);
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /**

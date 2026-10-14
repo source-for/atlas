@@ -13,6 +13,7 @@ import {
   type ArchitectureView,
   type ArchitectureExtractionSnapshotMetadata,
   type NodeLayout,
+  compareText,
 } from "@okie/architecture";
 import { compileC4Scene, compileC4Timeline, type CompiledC4Scene, type SceneSnapshot, type Timeline } from "@okie/scene-compiler";
 import { attachPathOwners, readCodeOwners } from "./codeowners.js";
@@ -134,7 +135,7 @@ function rootPackageName(sourceRoot: string): string | undefined {
  *  node rects exist ONLY to satisfy validateView and carry story membership. */
 function syntheticLayout(snapshot: ArchitectureSnapshot): Record<string, NodeLayout> {
   return Object.fromEntries([...snapshot.entities]
-    .sort((left, right) => left.id.localeCompare(right.id))
+    .sort((left, right) => compareText(left.id, right.id))
     .map((entity, index) => [entity.id, {
       x: 120 + (index % 8) * 330,
       y: 120 + Math.floor(index / 8) * 210,
