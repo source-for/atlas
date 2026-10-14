@@ -4,7 +4,7 @@ import { PRIVACY_POLICY_VERSION } from '../../web/src/siteMeta';
 import { SESSION_TTL_SECONDS, signSession, type UserRow } from '../src/auth';
 import type { EdgeEnv } from '../src/env';
 import { jsonText } from '../src/http';
-import { edgeEnv, edgeFetch, type EdgeFetchOptions } from './helpers';
+import { edgeEnv, edgeFetch, tamperSignature, type EdgeFetchOptions } from './helpers';
 
 const KEY = 'test-signing-key-0123456789abcdef-0123456789';
 const OTHER_KEY = 'another-signing-key-0123456789abcdef-xyz';
@@ -81,12 +81,6 @@ async function signInWithGithub(github: FakeGithub, returnTo = '/r/acme/app', en
   const stateCookie = cookieValue(start, name)!;
   const callback = await fetchAt(`/api/auth/github/callback?code=abc123&state=${encodeURIComponent(state)}`, env, { cookie: `${name}=${stateCookie}`, fetch: github.fetch });
   return { start, authorize, state, stateCookie, callback };
-}
-
-/** A token with a signature that can never verify: the first character carries 6 of the first byte's bits, so the decoded bytes always change (the last one carries only 4 real bits and atob ignores the rest). */
-function tamperSignature(token: string): string {
-  const [v, payload, signature] = token.split('.');
-  return `${v}.${payload}.${signature![0] === 'A' ? 'B' : 'A'}${signature!.slice(1)}`;
 }
 
 async function sessionCookieFor(githubId: number, login: string, options: { key?: string; exp?: number; iat?: number } = {}): Promise<string> {

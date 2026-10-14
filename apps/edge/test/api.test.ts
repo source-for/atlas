@@ -4,7 +4,7 @@ import worker from '../src/index';
 import { budgetConfig, budgetGuard, clientRateLimitKey, defaultGuards, rateLimitGuard, turnstileGuard, utcDay } from '../src/guards';
 import type { EdgeEnv } from '../src/env';
 import { signSession } from '../src/auth';
-import { edgeEnv, edgeFetch as rawEdgeFetch, recordingBackend, type EdgeFetchOptions } from './helpers';
+import { edgeEnv, edgeFetch as rawEdgeFetch, recordingBackend, tamperSignature, type EdgeFetchOptions } from './helpers';
 
 /** Ask on (the local/dev opt-in); staging/production and the code default are off. */
 const ON = { ASK_ENABLED: '1', BLOCK_PLAN_ENABLED: '1' } as const;
@@ -392,7 +392,7 @@ describe('signed-in Ask security boundary', () => {
     const good = await session(8101,at);
     const expired = await session(8102,at,{expired:true});
     const deleted = await session(8103,at,{deleted:true});
-    for (const token of [undefined,`${good.slice(0,-3)}xxx`,expired,deleted]) {
+    for (const token of [undefined,tamperSignature(good),expired,deleted]) {
       const response = await rawEdgeFetch('/api/ask',{backend,env:authEnv,now:()=>at,guards:defaultGuards(),...request(token,{'x-account-id':'8101','authorization':'Bearer fake'})});
       expect(response.status).toBe(401);
     }
