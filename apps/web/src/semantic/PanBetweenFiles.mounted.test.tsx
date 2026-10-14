@@ -148,6 +148,17 @@ async function openFileA() {
   expect(semanticBounds(captured.scene!, FILE_WITHOUT_CODE_FACE, 'code')).toBeUndefined();
 }
 
+/** The camera the URL (and so the current history entry) records. */
+function urlCamera() {
+  const url = new URL(window.location.href).searchParams;
+  return { x: Number(url.get('cx')), y: Number(url.get('cy')), zoom: Number(url.get('z')) };
+}
+function expectCamera(actual: Camera, expected: Camera) {
+  expect(actual.x).toBeCloseTo(expected.x, 1);
+  expect(actual.y).toBeCloseTo(expected.y, 1);
+  expect(actual.zoom).toBeCloseTo(expected.zoom, 3);
+}
+
 /** Hold every scene compile until released, as a busy worker would. */
 function holdCompiles() {
   const real = fixture.createSceneAsync.bind(fixture);
@@ -166,12 +177,13 @@ it('re-roots on the other file after a drag-pan onto it at L4, without moving it
   // The pan itself has finished; the lens settle is still 160 ms away.
   const landed = screenPoint(cardCentre(FILE_B));
   expect(landed.x).toBeCloseTo(720, 3); expect(landed.y).toBeCloseTo(450, 3);
+  const frame = screenPoint(semanticBounds(captured.scene!, FILE_B, 'component')!);
   await idle();
   expect(claims()).toMatchObject(onFile(FILE_B));
   expect(claims().urlLens).toEqual(['system:okie', 'container:web-app', FILE_B]);
-  const face = screenPoint(centreOf(semanticBounds(captured.scene!, FILE_B, 'code')!));
-  expect(Math.abs(face.x - landed.x)).toBeLessThan(1);
-  expect(Math.abs(face.y - landed.y)).toBeLessThan(1);
+  const face = screenPoint(semanticBounds(captured.scene!, FILE_B, 'code')!);
+  expect(Math.abs(face.x - frame.x)).toBeLessThan(1);
+  expect(Math.abs(face.y - frame.y)).toBeLessThan(1);
   expect(captured.camera.zoom).toBeCloseTo(reveal.fullZoom * 1.05, 3);
   expect(captured.renderers).toBe(1);
   expect(window.history.length).toBe(entries + 1);
@@ -205,10 +217,12 @@ it('drops a pending file change when the reader pans on to empty space', async (
   expect(held.compile.mock.calls.some(call => call[0] === FILE_B)).toBe(true);
   const container = semanticBounds(captured.scene!, 'container:web-app', 'component')!;
   await dragToCentre({ x: container.x - container.width * 4, y: container.y - container.height * 4 });
+  const reached = { ...captured.camera };
   await idle();
   await held.release(); await idle();
   expect(claims()).toMatchObject(onFile(FILE_A));
   expect(window.history.length).toBe(entries);
+  expectCamera(urlCamera(), reached);
 });
 
 it('never leaves the four disagreeing when the reader zooms while the other file is being prepared', async () => {
@@ -240,9 +254,11 @@ it('stays on the first file when the other file cannot be prepared', async () =>
     return real(...args);
   });
   await dragToCentre(cardCentre(FILE_B));
+  const reached = { ...captured.camera };
   await idle();
   expect(claims()).toMatchObject(onFile(FILE_A));
   expect(window.history.length).toBe(entries);
+  expectCamera(urlCamera(), reached);
 });
 
 it('changes nothing on a pan to empty space', async () => {
@@ -250,9 +266,11 @@ it('changes nothing on a pan to empty space', async () => {
   const entries = window.history.length;
   const container = semanticBounds(captured.scene!, 'container:web-app', 'component')!;
   await dragToCentre({ x: container.x - container.width * 4, y: container.y - container.height * 4 });
+  const reached = { ...captured.camera };
   await idle();
   expect(claims()).toMatchObject(onFile(FILE_A));
   expect(window.history.length).toBe(entries);
+  expectCamera(urlCamera(), reached);
 });
 
 it('changes nothing on a pan onto a file that has no code face in this scene', async () => {
@@ -260,7 +278,9 @@ it('changes nothing on a pan onto a file that has no code face in this scene', a
   const entries = window.history.length;
   const compile = vi.spyOn(fixture, 'createSceneAsync');
   await dragToCentre(cardCentre(FILE_WITHOUT_CODE_FACE));
+  const reached = { ...captured.camera };
   await idle();
+  expectCamera(urlCamera(), reached);
   expect(claims()).toMatchObject(onFile(FILE_A));
   expect(claims().urlLens).toEqual(['system:okie', 'container:web-app', FILE_A]);
   expect(compile.mock.calls.filter(call => call[0] === FILE_WITHOUT_CODE_FACE)).toEqual([]);
@@ -298,4 +318,100 @@ it('restores the same file from the URL the pan left behind', async () => {
   expect(captured.camera.x).toBeCloseTo(camera.x, 3);
   expect(captured.camera.y).toBeCloseTo(camera.y, 3);
   expect(captured.camera.zoom).toBeCloseTo(camera.zoom, 3);
+});
+
+it('keeps the file frame\'s top-left where it was when the other file\'s scene lays it out elsewhere', async () => {
+  await openFileA();
+  const real = fixture.createSceneAsync.bind(fixture);
+  // The demo fixture puts a file's code frame within 1 px of its L3 card; move and resize it.
+  vi.spyOn(fixture, 'createSceneAsync').mockImplementation(async (...args: Parameters<typeof real>) => {
+    const scene = await real(...args);
+    if (args[0] !== FILE_B) return scene;
+    const moved = structuredClone(scene);
+    const code = moved.projection!.boundsByEntityIdAndDetail[FILE_B]!.code!;
+    moved.projection!.boundsByEntityIdAndDetail[FILE_B]!.code = { ...code, x: code.x + 40, y: code.y - 30, width: code.width * .8, height: code.height * 1.3 };
+    return moved;
+  });
+  await dragToCentre(cardCentre(FILE_B));
+  const frame = screenPoint(semanticBounds(captured.scene!, FILE_B, 'component')!);
+  await idle();
+  expect(claims()).toMatchObject(onFile(FILE_B));
+  const component = semanticBounds(captured.scene!, FILE_B, 'component')!;
+  const code = semanticBounds(captured.scene!, FILE_B, 'code')!;
+  expect(Math.abs(centreOf(code).x - centreOf(component).x)).toBeGreaterThan(20);
+  const face = screenPoint(code);
+  expect(Math.abs(face.x - frame.x)).toBeLessThan(1);
+  expect(Math.abs(face.y - frame.y)).toBeLessThan(1);
+  expect(captured.renderers).toBe(1);
+});
+
+it('Back returns to the first file at the camera the pan began from, and a reload there shows the same', async () => {
+  await openFileA();
+  const before = { ...captured.camera };
+  await dragToCentre(cardCentre(FILE_B));
+  await idle();
+  expect(claims()).toMatchObject(onFile(FILE_B));
+  await act(async () => window.history.back()); await idle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  expectCamera(captured.camera, before);
+  expectCamera(urlCamera(), before);
+  const url = window.location.pathname + window.location.search;
+  const restored = claims();
+  await act(async () => root.unmount()); host.remove();
+  captured.scene = undefined;
+  await mount(url);
+  await idle();
+  expect(claims()).toEqual(restored);
+  expectCamera(captured.camera, before);
+  // Forward is not covered here (see the Back test above); QA covers it in a browser.
+});
+
+it('counts drags that end within the lens settle as one pan, from where the first began', async () => {
+  await openFileA();
+  const before = { ...captured.camera };
+  const target = cardCentre(FILE_B);
+  await dragToCentre({ x: (before.x + target.x) / 2, y: (before.y + target.y) / 2 });
+  await dragToCentre(target);
+  await idle();
+  expect(claims()).toMatchObject(onFile(FILE_B));
+  await act(async () => window.history.back()); await idle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  expectCamera(captured.camera, before);
+});
+
+it('after a settled pan to empty space, Back from the other file returns to that empty space', async () => {
+  await openFileA();
+  const container = semanticBounds(captured.scene!, 'container:web-app', 'component')!;
+  await dragToCentre({ x: container.x - container.width * 4, y: container.y - container.height * 4 });
+  await idle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  const settled = { ...captured.camera };
+  await dragToCentre(cardCentre(FILE_B));
+  await idle();
+  expect(claims()).toMatchObject(onFile(FILE_B));
+  await act(async () => window.history.back()); await idle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  expectCamera(captured.camera, settled);
+});
+
+it('drops a pending file change as soon as the reader starts another pan, before that pan settles', async () => {
+  for (const pan of [dragToCentre, scrollToCentre]) {
+    await openFileA();
+    const entries = window.history.length;
+    const held = holdCompiles();
+    await dragToCentre(cardCentre(FILE_B));
+    await idle();
+    expect(held.compile.mock.calls.some(call => call[0] === FILE_B)).toBe(true);
+    const container = semanticBounds(captured.scene!, 'container:web-app', 'component')!;
+    await pan({ x: container.x - container.width * 4, y: container.y - container.height * 4 });
+    // The compile lands inside the new pan's 160 ms settle window.
+    await held.release();
+    expect(claims()).toMatchObject(onFile(FILE_A));
+    expect(window.history.length).toBe(entries);
+    await idle();
+    expect(claims()).toMatchObject(onFile(FILE_A));
+    expect(window.history.length).toBe(entries);
+    held.compile.mockRestore();
+    await act(async () => root.unmount()); host.remove();
+  }
 });
