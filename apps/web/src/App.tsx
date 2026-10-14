@@ -1683,6 +1683,8 @@ export function App() {
   const panStartCameraRef = useRef<ScanPanStart | undefined>(undefined);
   /** Drops a pending pan file handoff (CLA-405) and returns its pan start if it was still pending. */
   const scanPanFileHandoffFenceRef = useRef<(() => ScanPanStart | undefined) | undefined>(undefined);
+  /** What that pending handoff began on; read only while its fence is set. */
+  const scanPanFileHandoffSourceRef = useRef<{ scene: AtlasScene; selectedId: string; fixture: unknown } | undefined>(undefined);
   const cameraPublicationGuardRef = useRef(createCameraPublicationEchoGuard());
   const previousReactCameraRef = useRef(camera);
   const pendingInspectorCameraFlightRef = useRef<PendingInspectorCameraFlight | undefined>(undefined);
@@ -1921,6 +1923,11 @@ export function App() {
       cancelForegroundSceneRequest();
     }
     if (reverseScenePendingRef.current && !reverseScenePendingRef.current.owns()) cancelReverseScenePreparation();
+    // A pan file handoff that began on this very scene, selection and fixture already owns them:
+    // this effect can run late, after a slow frame, for a scene published before that handoff
+    // began, and must not cancel it (CLA-405). The handoff checks scene, session and selection itself.
+    const panHandoff = scanPanFileHandoffFenceRef.current ? scanPanFileHandoffSourceRef.current : undefined;
+    if (panHandoff?.scene === scene && panHandoff.selectedId === selectedId && panHandoff.fixture === scanFixture) return;
     cancelGestureSceneRequests(false);
   }, [scene, selectedId, scanFixture]);
   useEffect(() => () => {
@@ -3286,6 +3293,7 @@ export function App() {
     };
     fenceScanPanFileHandoff();
     scanPanFileHandoffFenceRef.current = fence;
+    scanPanFileHandoffSourceRef.current = { scene: sourceScene, selectedId, fixture };
     const owns = () => !fenced && request.owns() && token === zoomHandoffGenerationRef.current && ownsScenePublication(
       { fixture, scene: sourceScene, session: sourceSession, selection },
       { fixture: scanFixture, scene: sceneRef.current, session: semanticLensSessionRef.current, selection: inspectorSelectionRef.current },

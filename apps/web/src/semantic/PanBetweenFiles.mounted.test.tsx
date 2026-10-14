@@ -628,3 +628,29 @@ it('a level navigation that finishes inside a pan\'s lens settle keeps its own v
   expect(Math.abs(captured.camera.x - panEnd.x)).toBeGreaterThan(1);
   expectCamera(urlCamera(), captured.camera);
 });
+
+it('a tile refresh that publishes just before the pan\'s lens settle does not drop the file change', async () => {
+  await openFileA();
+  await reopenFromUrl();
+  const real = fixture.createSceneAsync.bind(fixture);
+  const refresh: Array<() => void> = [];
+  const other: Array<() => void> = [];
+  // Hold the viewport tile refresh for the current file and the other file's compile separately.
+  vi.spyOn(fixture, 'createSceneAsync').mockImplementation(async (...args: Parameters<typeof real>) => {
+    await new Promise<void>(done => (args[0] === FILE_B ? other : refresh).push(done));
+    return real(...args);
+  });
+  await dragToCentre(cardCentre(FILE_B));
+  expect(refresh.length).toBeGreaterThan(0);
+  // The refresh publishes and the 160 ms lens settle fires before React commits that scene and
+  // runs its effects, as a slow frame does in a browser; the other file is still compiling.
+  await act(async () => {
+    for (const done of refresh.splice(0)) done();
+    await vi.advanceTimersByTimeAsync(200);
+  });
+  await settle();
+  expect(other.length).toBeGreaterThan(0);
+  await act(async () => { for (const done of other.splice(0)) done(); }); await settle();
+  await idle();
+  expect(claims()).toMatchObject(onFile(FILE_B));
+});
