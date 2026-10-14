@@ -415,3 +415,24 @@ it('drops a pending file change as soon as the reader starts another pan, before
     await act(async () => root.unmount()); host.remove();
   }
 });
+
+it('a click that cancels a pending lens settle ends that pan: Back returns to where it stopped', async () => {
+  await openFileA();
+  const before = { ...captured.camera };
+  const target = cardCentre(FILE_B);
+  await dragToCentre({ x: (before.x + target.x) / 2, y: (before.y + target.y) / 2 });
+  const stopped = { ...captured.camera };
+  // A click inside the 160 ms lens settle: pointer down and up with no move.
+  const surface = host.querySelector<HTMLElement>('[data-testid="atlas-canvas"]')!;
+  for (const type of ['pointerdown', 'pointerup']) {
+    await act(async () => { surface.dispatchEvent(new PointerEvent(type, { pointerId: 8, pointerType: 'mouse', button: 0, clientX: 720, clientY: 450, bubbles: true })); });
+  }
+  await idle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  await dragToCentre(cardCentre(FILE_B));
+  await idle();
+  expect(claims()).toMatchObject(onFile(FILE_B));
+  await act(async () => window.history.back()); await idle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  expectCamera(captured.camera, stopped);
+});

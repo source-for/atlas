@@ -385,6 +385,8 @@ type CanvasViewportProps = {
   onSemanticEditStart: (reason: string, camera: Camera) => void;
   onCameraFlightCancel: () => void;
   onCameraPanStart: () => void;
+  /** A pending pan lens settle was cancelled and no pan continues it (CLA-405). */
+  onPanSettleCancel: () => void;
   onLensCancel: (reason: string, camera: Camera) => void;
   onLensPan: (camera: Camera) => void;
   onSemanticZoomBurstStart: (camera: Camera) => Camera;
@@ -418,7 +420,7 @@ type CanvasViewportProps = {
   }) => void;
 };
 
-function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, semanticRenderPacketRef, semanticLensSession, scene, camera, setCamera, selectedId, onPick, onOpenInside, focusedIds, relationFocusIds, activeRelationIds, flowRelationIds, requestedBackend, reduceMotion, animationActive, inspectorFlightActive, flowActive, projectionOverride, onSemanticZoom, cinematicTransition, onDiagnostics, onViewportChange, onCameraSettled, onCameraInput, onNavigationFlush, onInteractionStart, onSemanticEditStart, onCameraFlightCancel, onCameraPanStart, onLensCancel, onLensPan, onSemanticZoomBurstStart, onLodState, scanZoomAdoptRawRef, semanticAssistCancelRef, visibilityMode, authoringTool, authoringEnabled, authoringDetail, authoringEntityIds, selectedRelationId, onCreateRelationship, onGuideRelationship }: CanvasViewportProps) {
+function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, semanticRenderPacketRef, semanticLensSession, scene, camera, setCamera, selectedId, onPick, onOpenInside, focusedIds, relationFocusIds, activeRelationIds, flowRelationIds, requestedBackend, reduceMotion, animationActive, inspectorFlightActive, flowActive, projectionOverride, onSemanticZoom, cinematicTransition, onDiagnostics, onViewportChange, onCameraSettled, onCameraInput, onNavigationFlush, onInteractionStart, onSemanticEditStart, onCameraFlightCancel, onCameraPanStart, onPanSettleCancel, onLensCancel, onLensPan, onSemanticZoomBurstStart, onLodState, scanZoomAdoptRawRef, semanticAssistCancelRef, visibilityMode, authoringTool, authoringEnabled, authoringDetail, authoringEntityIds, selectedRelationId, onCreateRelationship, onGuideRelationship }: CanvasViewportProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<AtlasRenderer | undefined>(undefined);
   const liveCameraRef = useRef(camera);
@@ -504,6 +506,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
   const onSemanticEditStartRef = useRef(onSemanticEditStart);
   const onCameraFlightCancelRef = useRef(onCameraFlightCancel);
   const onCameraPanStartRef = useRef(onCameraPanStart);
+  const onPanSettleCancelRef = useRef(onPanSettleCancel);
   const onLensCancelRef = useRef(onLensCancel);
   const onLensPanRef = useRef(onLensPan);
   const onSemanticZoomBurstStartRef = useRef(onSemanticZoomBurstStart);
@@ -518,6 +521,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
   onSemanticEditStartRef.current = onSemanticEditStart;
   onCameraFlightCancelRef.current = onCameraFlightCancel;
   onCameraPanStartRef.current = onCameraPanStart;
+  onPanSettleCancelRef.current = onPanSettleCancel;
   onLensCancelRef.current = onLensCancel;
   semanticAssistCancelRef.current = cancelPendingSemanticGesture;
   onLensPanRef.current = onLensPan;
@@ -981,6 +985,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
         if (panSettleTimerRef.current !== undefined) window.clearTimeout(panSettleTimerRef.current);
         pinchSettleTimerRef.current = undefined;
         panSettleTimerRef.current = undefined;
+        onPanSettleCancelRef.current();
       },
       clearPendingRawAdoption: () => { consumeScanZoomAdoptRaw(); },
       rebaseRawCamera: camera => { rawCameraRef.current = { ...camera }; },
@@ -1435,6 +1440,8 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
     const pointer = pointerRef.current;
     if (!pointer || pointer.id !== event.pointerId) return;
     if (!pointer.moved) {
+      // A click ends any pan whose settle its pointerdown cancelled.
+      onPanSettleCancelRef.current();
       const bounds = event.currentTarget.getBoundingClientRect();
       const picked = rendererRef.current?.pick(event.clientX - bounds.left, event.clientY - bounds.top);
       if (picked) onPick(picked);
@@ -1496,6 +1503,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
       onPointerCancel={event => {
         if (panSettleTimerRef.current !== undefined) window.clearTimeout(panSettleTimerRef.current);
         panSettleTimerRef.current = undefined;
+        onPanSettleCancelRef.current();
         touchPointersRef.current.delete(event.pointerId);
         pinchRef.current = undefined;
         pointerRef.current = undefined;
@@ -6994,6 +7002,7 @@ export function App() {
             onGuideRelationship={guideRelationship}
             onInteractionStart={handleMapInteractionStart}
             onSemanticEditStart={handleSemanticEditStart}
+            onPanSettleCancel={() => { panStartCameraRef.current = undefined; }}
             onLensCancel={cancelSemanticLensAt}
             onLensPan={stabilizeSemanticLensForPan}
             onLodState={publishLodState}
