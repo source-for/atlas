@@ -875,8 +875,8 @@
           "path": "apps/web/src/renderer/WasmRendererAdapter.ts",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "WasmRendererAdapter",
-          "startLine": 43,
-          "endLine": 48
+          "startLine": 48,
+          "endLine": 53
         }
       ],
       "sourceExcerpts": [
@@ -884,9 +884,9 @@
           "path": "apps/web/src/renderer/WasmRendererAdapter.ts",
           "symbol": "WasmRendererAdapter",
           "language": "typescript",
-          "startLine": 43,
-          "endLine": 48,
-          "highlightLine": 43,
+          "startLine": 48,
+          "endLine": 53,
+          "highlightLine": 48,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "export class WasmRendererAdapter implements AtlasRenderer {",

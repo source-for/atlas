@@ -6806,7 +6806,7 @@ export function App() {
           >
             {shareFeedback?.tone === 'success' ? <CheckIcon/> : <ShareIcon/>}
           </button>
-          {embedAtlas.visible && <EmbedAtlasControl displayNames={embedAtlas.displayNames} readPageHref={readCurrentViewHref}/>}
+          {embedAtlas.visible ? <EmbedAtlasControl displayNames={embedAtlas.displayNames} readPageHref={readCurrentViewHref}/> : embedAtlas.reserved && <span aria-hidden="true" className="embed-atlas-control header-slot-reserved" data-testid="embed-slot-reserved"><span className="icon-button embed-atlas-button"/></span>}
           {sourceRepositoryUrl && <SourceRepoLink url={sourceRepositoryUrl}/>}
           {!portableAtlas && askAuth !== undefined && askAuth.publicMode !== true && <details className="diagram-add-menu screenshot-menu account-menu"><summary aria-label={askSignedIn ? `Account menu for @${askAuth?.login}` : 'Sign in with GitHub'} className="avatar-button" data-testid="account-menu" title={askSignedIn ? `@${askAuth?.login}` : 'Sign in with GitHub'}>{accountInitials(askAuth?.login)}</summary><div>{askSignedIn ? <><p>@{askAuth?.login}</p>{askAuth?.accountPath ? <a data-testid="account-page-link" href={askAuth.accountPath}>Account</a> : null}<OperatorMenuLink signedIn={askSignedIn}/><a href={askSignInHref(askAuth?.logoutPath ?? '/api/auth/logout', askReturnPath)}>Sign out</a></> : <><a data-testid="account-signin" href={askSignInHref(askAuth?.loginPath ?? '/api/auth/github', askReturnPath)}>Sign in with GitHub</a>{askAuth?.testLoginPath ? <a data-testid="account-test-login" href={askSignInHref(askAuth.testLoginPath, askReturnPath)}>Use the local test sign-in</a> : null}</>}</div></details>}
         </div>

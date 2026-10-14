@@ -12,7 +12,11 @@ import '@fontsource/ibm-plex-mono/latin-600.css';
 import '@okie/theme/tokens.css';
 import './app.css';
 import { ASPECT_PRESET_TARGET, parsePortableAtlas, type PortableAtlas } from '@okie/architecture';
-import { installPublishedAtlasAttribution } from './atlasAttribution';
+import { installPublishedAtlasAttribution, releaseAtlasAttributionReservation, reserveAtlasAttribution } from './atlasAttribution';
+import { BootShell } from './BootShell';
+import { advanceBootShellStep, bootShellHeaderSlots, bootShellLayout, type BootShellStep } from './bootShellState';
+import { bootNeighborhoodAtlas } from './neighborhoodBoot';
+import type { AppRoute } from './renderer/route';
 import { hostedAtlasBootPlan } from './hostedAtlas';
 import { installPublicAtlasOembedDiscovery } from './oembed';
 import { readDemoQuery } from './renderer/query';
@@ -96,25 +100,87 @@ async function tryBootScanFixture(
   }
 }
 
+/**
+ * CLA-268: App's module, requested while the atlas data is still being prepared instead of after it. App reads the
+ * active fixture at import (refreshAppScanFixture re-reads it before mount).
+ */
+let appModule: Promise<typeof import('./App')> | undefined;
+function loadAppModule(): Promise<typeof import('./App')> {
+  appModule ??= import('./App');
+  return appModule;
+}
+
+/** CLA-268: start the renderer's WASM download/compile (not for the Canvas 2D backend, which never loads it). */
+function prewarmRenderer(): void {
+  if (readDemoQuery(window.location.search).backend === 'canvas2d') return;
+  // A failure here is the renderer's to report: createRenderer awaits the same initialization and falls back.
+  import('./renderer/WasmRendererAdapter').then(module => module.prewarmAtlasWasm()).catch(() => undefined);
+}
+
+/**
+ * CLA-268: the atlas shell skeleton, in App's boxes, naming the boot step in progress. It replaces the old
+ * "Preparing architecture map…" text on every page that loads a published neighbourhood (`/r/…`, embeds of it, and
+ * `?fixture=scan`). Steps only move forward.
+ */
+let bootShellStep: BootShellStep | undefined;
+let bootShellFonts: 'pending' | 'loading' | 'ready' = 'pending';
+const BOOT_SHELL_FONTS = ['400 14px "IBM Plex Sans"', '600 14px "IBM Plex Sans"'];
+function showBootShell(route: AppRoute, step: BootShellStep): void {
+  bootShellStep = bootShellStep ? advanceBootShellStep(bootShellStep, step) : step;
+  if (bootShellFonts === 'pending') {
+    bootShellFonts = 'loading';
+    try {
+      if (BOOT_SHELL_FONTS.every(font => document.fonts.check(font))) bootShellFonts = 'ready';
+      // Re-render once the wordmark's faces are in (a failure shows it in the fallback face rather than never).
+      else void Promise.allSettled(BOOT_SHELL_FONTS.map(font => document.fonts.load(font))).then(() => {
+        bootShellFonts = 'ready';
+        if (bootShellStep && !startupLifetime.signal.aborted && document.querySelector('[data-shell-skeleton]')) showBootShell(route, bootShellStep);
+      });
+    } catch {
+      bootShellFonts = 'ready';
+    }
+  }
+  const layout = bootShellLayout(window, window.location.search);
+  root.render(<BootShell fontsReady={bootShellFonts === 'ready'} headerSlots={bootShellHeaderSlots(route, layout.embed)} layout={layout} step={bootShellStep}/>);
+}
+
 async function tryBootNeighborhoodFixture(
   slug: string | undefined,
+  route: AppRoute,
 ): Promise<{ ok: true } | { ok: false; error: unknown }> {
   startupLifetime.assertCurrent();
-  root.render(<main aria-busy="true" role="status" style={{ padding: '4rem 2rem', color: '#eef4f2', fontFamily: 'IBM Plex Sans, sans-serif' }}><h1>Preparing architecture map…</h1><p>Loading the published information and arranging your first view.</p></main>);
+  showBootShell(route, 'data');
   try {
-    const fixture: ScanFixture = await loadScanNeighborhoodFixtureFromSearch(
-      fetchScanNeighborhoodHost(slug),
-      window.location.search,
-      { targetAspect: bootstrapScanAspect() },
-      startupLifetime.signal,
-    );
+    const { fixture, explanations } = await bootNeighborhoodAtlas({
+      slug,
+      host: fetchScanNeighborhoodHost(slug),
+      loadFixture: host => loadScanNeighborhoodFixtureFromSearch(
+        host,
+        window.location.search,
+        { targetAspect: bootstrapScanAspect() },
+        startupLifetime.signal,
+      ),
+      loadExplanations: loadPublishedExplanations,
+      onNeighborhoodArrived: () => {
+        if (startupLifetime.signal.aborted) return;
+        // The neighbourhood has the link (and the main thread) to itself until here. App's chunk, the explanations and
+        // the renderer's WASM then load during the worker compile instead of after it (measured: holding the WASM
+        // back until App's chunk and the explanations land mounts App ~160 ms sooner on Fast 4G but draws the map
+        // ~150 ms later, so it starts here).
+        void loadAppModule().catch(() => undefined);
+        prewarmRenderer();
+        showBootShell(route, 'view');
+      },
+    });
     startupLifetime.own(() => fixture.disposeSceneWorker());
     setActiveScanFixture(fixture);
+    showBootShell(route, 'opening');
     // CLA-149: the Jev block planner (flagged) plans against this exact immutable publication only.
     setBlockPlannerScan(slug && fixture.publication ? { slug, versionId: fixture.publication.versionId } : undefined);
     if (slug && fixture.publication) {
       try {
-        const scopes = await awaitAbortableWork(loadPublishedExplanations(slug, fixture.publication.versionId), startupLifetime.signal);
+        // Requested when the neighbourhood arrived (neighborhoodBoot.ts); still awaited before App mounts.
+        const scopes = await awaitAbortableWork(explanations, startupLifetime.signal);
         startupLifetime.assertCurrent();
         if (scopes) setPublishedPreviewContext(fixture.publication.versionId, scopes);
       } catch {
@@ -349,6 +415,8 @@ async function boot() {
   if (route.kind === 'repo') {
     // Public share URL (no login). oEmbed discovery points docs sites at /oembed.
     installPublicAtlasOembedDiscovery(window.location.href);
+    // CLA-268: lay the shell out at its final height (the attribution strip's) from the first frame.
+    reserveAtlasAttribution(document, bootShellLayout(window, window.location.search).embed);
     const plan = hostedAtlasBootPlan(route, { bundledSlugs: availableScanRepoSlugs() });
     let lastError: unknown;
     let atlasReady = false;
@@ -358,7 +426,7 @@ async function boot() {
         break;
       }
       if (step.kind === 'fetch') {
-        const neighborhood = await tryBootNeighborhoodFixture(step.slug);
+        const neighborhood = await tryBootNeighborhoodFixture(step.slug, route);
         if (neighborhood.ok) {
           atlasReady = true;
           break;
@@ -374,6 +442,7 @@ async function boot() {
       lastError = result.error;
     }
     if (!atlasReady) {
+      releaseAtlasAttributionReservation(document);
       setDocumentPage(documentPageFor('error'));
       root.render(<StrictMode><ScanErrorScreen error={lastError} /></StrictMode>);
       return;
@@ -381,7 +450,7 @@ async function boot() {
   } else {
     const query = readDemoQuery(window.location.search);
     if (query.fixture === 'scan') {
-      const neighborhood = await tryBootNeighborhoodFixture(query.scanRepo);
+      const neighborhood = await tryBootNeighborhoodFixture(query.scanRepo, route);
       if (!neighborhood.ok) {
         const bundled = query.scanRepo === undefined || availableScanRepoSlugs().includes(query.scanRepo);
         const load = bundled ? undefined : fetchScanTrioLoader(query.scanRepo);
@@ -390,8 +459,10 @@ async function boot() {
     }
   }
   startupLifetime.assertCurrent();
-  const { App } = await import('./App');
+  const { App, refreshAppScanFixture } = await loadAppModule();
   startupLifetime.assertCurrent();
+  // App may have been imported before the fixture was set (CLA-268): read it now, while App is unmounted.
+  refreshAppScanFixture();
   setDocumentPage(documentPageFor('atlas'));
   root.render(<StrictMode><App /></StrictMode>);
   // CLA-266: a published atlas credits its upstream repository, commit and licence; embeds get the compact

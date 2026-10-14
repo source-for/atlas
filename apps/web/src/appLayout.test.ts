@@ -729,7 +729,9 @@ describe('header Open source and account chrome (CLA-101)', () => {
   it('CLA-329: the embed button renders only behind the availability gate, right after Share', () => {
     expect(app).toContain('const embedAtlas = useEmbedAtlasAvailability(Boolean(portableAtlas));');
     expect(app.match(/<EmbedAtlasControl /g)).toHaveLength(1);
-    expect(app).toContain('{embedAtlas.visible && <EmbedAtlasControl displayNames={embedAtlas.displayNames} readPageHref={readCurrentViewHref}/>}');
+    // CLA-268: until the publication index answers, an inert copy of the control's boxes holds its place.
+    expect(app).toContain('{embedAtlas.visible ? <EmbedAtlasControl displayNames={embedAtlas.displayNames} readPageHref={readCurrentViewHref}/> : embedAtlas.reserved && <span aria-hidden="true" className="embed-atlas-control header-slot-reserved" data-testid="embed-slot-reserved"><span className="icon-button embed-atlas-button"/></span>}');
+    expect(css).toContain('.header-slot-reserved { visibility: hidden; }');
     const share = app.indexOf('title="Copy current view"');
     expect(share).toBeGreaterThan(0);
     expect(app.indexOf('<EmbedAtlasControl ')).toBeGreaterThan(share);
