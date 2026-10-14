@@ -123,41 +123,124 @@ function compareVersions(left: string, right: string): number {
   return 0;
 }
 
-/** Cargo version requirement (`0.7`, `^1.2`, `~1`, `=1.2.3`, `>=1, <2`, `1.*`); undefined when unparsable. */
-export function cargoRequirementMatches(requirement: string, version: string): boolean | undefined {
-  const target = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
-  if (!target) return undefined;
-  const v = [Number(target[1]), Number(target[2]), Number(target[3])] as const;
-  const cmp = (other: readonly number[]): number => (v[0] - other[0]!) || (v[1] - other[1]!) || (v[2] - other[2]!);
-  let all = true;
-  for (const rawPart of requirement.split(",")) {
-    const part = rawPart.trim();
-    if (!part) continue;
-    const match = /^(\^|~|=|>=|<=|>|<)?\s*(\d+|\*)(?:\.(\d+|\*))?(?:\.(\d+|\*))?(?:[-+][0-9A-Za-z.-]+)?$/.exec(part);
-    if (!match) return undefined;
-    const op = match[1] ?? "^";
-    const parts = [match[2], match[3], match[4]].map(item => (item === undefined || item === "*" ? undefined : Number(item)));
-    const given = parts.findIndex(item => item === undefined);
-    const count = given < 0 ? 3 : given;
-    const low = [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0];
-    let ok: boolean;
-    if (count === 0) ok = true; // `*`
-    else if (op === "=" || (match[2] !== undefined && [match[3], match[4]].includes("*"))) {
-      ok = low.slice(0, count).every((item, index) => item === v[index]);
-    } else if (op === "^") {
-      if (cmp(low) < 0) ok = false;
-      else if (low[0]! > 0 || count === 1) ok = v[0] === low[0];
-      else if (low[1]! > 0 || count === 2) ok = v[0] === 0 && v[1] === low[1];
-      else ok = v[0] === 0 && v[1] === 0 && v[2] === low[2];
-    } else if (op === "~") {
-      ok = cmp(low) >= 0 && v[0] === low[0] && (count === 1 || v[1] === low[1]);
-    } else {
-      const c = cmp(low);
-      ok = op === ">=" ? c >= 0 : op === ">" ? c > 0 : op === "<=" ? c <= 0 : c < 0;
-    }
-    all &&= ok;
+/** A semver version: numeric core plus prerelease identifiers (build metadata dropped). */
+interface SemverVersion { major: number; minor: number; patch: number; pre: string[] }
+const SEMVER_PRE = String.raw`(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?`;
+
+function parseSemver(version: string): SemverVersion | undefined {
+  const match = new RegExp(String.raw`^v?(\d+)\.(\d+)\.(\d+)${SEMVER_PRE}$`).exec(version.trim());
+  if (!match) return undefined;
+  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), pre: match[4] ? match[4].split(".") : [] };
+}
+
+/**
+ * Semver prerelease order: a release (no identifiers) sorts AFTER any prerelease; numeric
+ * identifiers compare numerically and before alphanumeric ones; a longer list wins a tie.
+ */
+function comparePrerelease(left: readonly string[], right: readonly string[]): number {
+  if (left.length === 0 || right.length === 0) return (left.length === 0 ? 1 : 0) - (right.length === 0 ? 1 : 0);
+  for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+    const a = left[index]!;
+    const b = right[index]!;
+    const numericA = /^\d+$/.test(a);
+    const numericB = /^\d+$/.test(b);
+    if (numericA && numericB && Number(a) !== Number(b)) return Number(a) - Number(b);
+    if (numericA !== numericB) return numericA ? -1 : 1;
+    if (a !== b) return a < b ? -1 : 1;
   }
-  return all;
+  return left.length - right.length;
+}
+
+/** One comparator; `minor`/`patch` are undefined when the requirement omits them (`1`, `<=1.2`). */
+interface SemverComparator { op: "=" | ">" | ">=" | "<" | "<=" | "~" | "^" | "*"; major: number; minor?: number; patch?: number; pre: string[] }
+
+function parseComparator(text: string): SemverComparator | undefined {
+  const match = new RegExp(String.raw`^(\^|~|=|>=|<=|>|<)?\s*v?(\d+)(?:\.(\d+|[*xX]))?(?:\.(\d+|[*xX]))?${SEMVER_PRE}$`).exec(text);
+  if (!match) return undefined;
+  const wildcard = (part: string | undefined): boolean => part !== undefined && /^[*xX]$/.test(part);
+  const minor = match[3] === undefined || wildcard(match[3]) ? undefined : Number(match[3]);
+  const patch = minor === undefined || match[4] === undefined || wildcard(match[4]) ? undefined : Number(match[4]);
+  const pre = match[5] ? match[5].split(".") : [];
+  // `1.*` / `1.2.*` are wildcards (the `semver` crate's Op::Wildcard, matched like `=`).
+  const op = wildcard(match[3]) || wildcard(match[4]) ? "*" : (match[1] ?? "^") as SemverComparator["op"];
+  return { op, major: Number(match[2]), ...(minor !== undefined ? { minor } : {}), ...(patch !== undefined ? { patch } : {}), pre };
+}
+
+// The `semver` crate's comparator semantics (what Cargo uses), partial versions included:
+// `<=1` admits 1.4.0, `>1` starts at 2.0.0, `=1.2` is 1.2.x, `~1` is 1.x, `^0.2` is 0.2.x.
+function matchesExact(cmp: SemverComparator, v: SemverVersion): boolean {
+  return v.major === cmp.major && (cmp.minor === undefined || v.minor === cmp.minor)
+    && (cmp.patch === undefined || v.patch === cmp.patch) && comparePrerelease(v.pre, cmp.pre) === 0;
+}
+function matchesGreater(cmp: SemverComparator, v: SemverVersion): boolean {
+  if (v.major !== cmp.major) return v.major > cmp.major;
+  if (cmp.minor === undefined) return false;
+  if (v.minor !== cmp.minor) return v.minor > cmp.minor;
+  if (cmp.patch === undefined) return false;
+  if (v.patch !== cmp.patch) return v.patch > cmp.patch;
+  return comparePrerelease(v.pre, cmp.pre) > 0;
+}
+function matchesLess(cmp: SemverComparator, v: SemverVersion): boolean {
+  if (v.major !== cmp.major) return v.major < cmp.major;
+  if (cmp.minor === undefined) return false;
+  if (v.minor !== cmp.minor) return v.minor < cmp.minor;
+  if (cmp.patch === undefined) return false;
+  if (v.patch !== cmp.patch) return v.patch < cmp.patch;
+  return comparePrerelease(v.pre, cmp.pre) < 0;
+}
+function matchesTilde(cmp: SemverComparator, v: SemverVersion): boolean {
+  if (v.major !== cmp.major) return false;
+  if (cmp.minor !== undefined && v.minor !== cmp.minor) return false;
+  if (cmp.patch !== undefined && v.patch !== cmp.patch) return v.patch > cmp.patch;
+  return comparePrerelease(v.pre, cmp.pre) >= 0;
+}
+function matchesCaret(cmp: SemverComparator, v: SemverVersion): boolean {
+  if (v.major !== cmp.major) return false;
+  if (cmp.minor === undefined) return true;
+  if (cmp.patch === undefined) return cmp.major > 0 ? v.minor >= cmp.minor : v.minor === cmp.minor;
+  if (cmp.major > 0) {
+    if (v.minor !== cmp.minor) return v.minor > cmp.minor;
+    if (v.patch !== cmp.patch) return v.patch > cmp.patch;
+  } else if (cmp.minor > 0) {
+    if (v.minor !== cmp.minor) return false;
+    if (v.patch !== cmp.patch) return v.patch > cmp.patch;
+  } else if (v.minor !== cmp.minor || v.patch !== cmp.patch) return false;
+  return comparePrerelease(v.pre, cmp.pre) >= 0;
+}
+function matchesComparator(cmp: SemverComparator, v: SemverVersion): boolean {
+  switch (cmp.op) {
+    case "=": case "*": return matchesExact(cmp, v);
+    case ">": return matchesGreater(cmp, v);
+    case ">=": return matchesExact(cmp, v) || matchesGreater(cmp, v);
+    case "<": return matchesLess(cmp, v);
+    case "<=": return matchesExact(cmp, v) || matchesLess(cmp, v);
+    case "~": return matchesTilde(cmp, v);
+    case "^": return matchesCaret(cmp, v);
+  }
+}
+
+/**
+ * Whether a Cargo version requirement (`0.7`, `^1.2`, `~1`, `=1.2.3`, `>=1, <2`, `<=1`,
+ * `1.*`, `*`, `>=1.0.0-beta`) admits `version`, with the `semver` crate's rules: every
+ * comparator must match (partial versions as above), and a prerelease version (`1.0.0-alpha`)
+ * is admitted only when some comparator names the same major.minor.patch with a prerelease.
+ * Undefined when the requirement or version is unparsable.
+ */
+export function cargoRequirementMatches(requirement: string, version: string): boolean | undefined {
+  const target = parseSemver(version);
+  if (!target) return undefined;
+  const parts = requirement.split(",").map(part => part.trim());
+  if (parts.length === 1 && /^[*xX]?$/.test(parts[0]!)) return target.pre.length === 0; // `*` / empty: any release
+  const comparators: SemverComparator[] = [];
+  for (const part of parts) {
+    const comparator = parseComparator(part);
+    if (!comparator) return undefined;
+    comparators.push(comparator);
+  }
+  if (!comparators.every(comparator => matchesComparator(comparator, target))) return false;
+  if (target.pre.length === 0) return true;
+  return comparators.some(comparator => comparator.pre.length > 0 && comparator.major === target.major
+    && comparator.minor === target.minor && comparator.patch === target.patch);
 }
 
 const NPM_NAME = /^(?:@[A-Za-z0-9._~-]+\/)?[A-Za-z0-9_~-][A-Za-z0-9._~-]*$/;
@@ -331,6 +414,12 @@ export interface CargoDependencySpec {
   gitRef?: string;
   package?: string;
   workspace?: boolean;
+  /** `registry = "…"`: the alternate registry a version requirement resolves from. */
+  registry?: string;
+  /** 1-based line where `path` was set (the inline table, dotted key or subsection field). */
+  pathLine?: number;
+  /** 1-based line where `workspace = true` was set. */
+  workspaceLine?: number;
 }
 export interface CargoManifestEntry extends CargoDependencySpec {
   key: string;
@@ -338,11 +427,26 @@ export interface CargoManifestEntry extends CargoDependencySpec {
   target?: string;
   line: number;
 }
+/** One entry of a `[patch.<source>]` table (inline, dotted keys or `[patch.<source>.<key>]`). */
+export interface CargoManifestPatch extends CargoDependencySpec {
+  /** The `<source>` key, unquoted: a registry name (`crates-io`) or a git URL. */
+  source: string;
+  key: string;
+  line: number;
+}
 export interface CargoManifest {
   packageName?: string;
+  /** `[package] version` as written. */
+  packageVersion?: string;
+  /** `[package] version.workspace = true`: the version comes from `[workspace.package]`. */
+  packageVersionInherited?: boolean;
+  /** `[workspace.package] version`. */
+  workspacePackageVersion?: string;
   isWorkspace: boolean;
   workspaceDependencies: Map<string, CargoDependencySpec & { line: number }>;
   entries: CargoManifestEntry[];
+  /** `[patch.*]` entries in source order (Cargo honours them only in the workspace root). */
+  patches: CargoManifestPatch[];
 }
 
 /** Remove a TOML `#` comment that is outside any string. */
@@ -382,7 +486,7 @@ function inlineSpec(text: string): CargoDependencySpec {
   const plain = /^"((?:[^"\\]|\\.)*)"|^'([^']*)'/.exec(value);
   if (plain) return { version: plain[1] ?? plain[2]! };
   const spec: CargoDependencySpec = {};
-  for (const key of ["version", "path", "git", "package"] as const) {
+  for (const key of ["version", "path", "git", "package", "registry"] as const) {
     const found = tomlString(value, key);
     if (found !== undefined) spec[key] = found;
   }
@@ -397,7 +501,7 @@ function assignField(spec: CargoDependencySpec, field: string, rawValue: string)
   const text = /^"((?:[^"\\]|\\.)*)"|^'([^']*)'/.exec(value);
   if (!text) return;
   const content = text[1] ?? text[2]!;
-  if (field === "version" || field === "path" || field === "git" || field === "package") spec[field] = content;
+  if (field === "version" || field === "path" || field === "git" || field === "package" || field === "registry") spec[field] = content;
   else if (field === "rev" || field === "tag" || field === "branch") spec.gitRef = content;
 }
 
@@ -408,9 +512,10 @@ function assignField(spec: CargoDependencySpec, field: string, rawValue: string)
  * multi-line inline table never turns its continuation (`package = …`) into a key.
  */
 export function parseCargoManifest(text: string): CargoManifest {
-  const manifest: CargoManifest = { isWorkspace: false, workspaceDependencies: new Map(), entries: [] };
+  const manifest: CargoManifest = { isWorkspace: false, workspaceDependencies: new Map(), entries: [], patches: [] };
   const lines = text.split(/\r?\n/);
-  type Context = { kind: "package" } | { kind: "workspace-deps"; sub?: string } | { kind: "deps"; section: CargoManifestEntry["section"]; target?: string; sub?: string } | { kind: "other" };
+  type Context = { kind: "package" } | { kind: "workspace-package" } | { kind: "workspace-deps"; sub?: string } | { kind: "deps"; section: CargoManifestEntry["section"]; target?: string; sub?: string }
+    | { kind: "patch"; source: string; sub?: string } | { kind: "other" };
   let context: Context = { kind: "other" };
   const byKey = new Map<string, CargoManifestEntry>();
   const entryFor = (key: string, section: CargoManifestEntry["section"], target: string | undefined, line: number): CargoManifestEntry => {
@@ -430,6 +535,17 @@ export function parseCargoManifest(text: string): CargoManifest {
     manifest.workspaceDependencies.set(key, created);
     return created;
   };
+  const patchesByKey = new Map<string, CargoManifestPatch>();
+  const patchFor = (source: string, key: string, line: number): CargoManifestPatch => {
+    const id = `${source}\u0000${key}`;
+    let patch = patchesByKey.get(id);
+    if (!patch) {
+      patch = { source, key, line };
+      patchesByKey.set(id, patch);
+      manifest.patches.push(patch);
+    }
+    return patch;
+  };
   const unquoteKey = (key: string): string => key.trim().replace(/^["']|["']$/g, "");
   for (let index = 0; index < lines.length; index += 1) {
     const lineNumber = index + 1;
@@ -438,8 +554,16 @@ export function parseCargoManifest(text: string): CargoManifest {
     const header = /^\[\s*([^\][]+?)\s*\]$/.exec(line);
     if (header) {
       const name = header[1]!;
+      const patch = /^patch\s*\.\s*("[^"]*"|'[^']*'|[A-Za-z0-9_-]+)\s*(?:\.\s*("[^"]*"|'[^']*'|[A-Za-z0-9_-]+))?$/.exec(name);
       if (name === "package") context = { kind: "package" };
       else if (name === "workspace") { manifest.isWorkspace = true; context = { kind: "other" }; }
+      else if (name === "workspace.package") { manifest.isWorkspace = true; context = { kind: "workspace-package" }; }
+      else if (patch) {
+        const source = unquoteKey(patch[1]!);
+        const sub = patch[2] !== undefined ? unquoteKey(patch[2]) : undefined;
+        context = { kind: "patch", source, ...(sub !== undefined ? { sub } : {}) };
+        if (sub !== undefined) patchFor(source, sub, lineNumber);
+      }
       else if (/^workspace\.dependencies(\.|$)/.test(name)) {
         manifest.isWorkspace = true;
         const sub = /^workspace\.dependencies\.(.+)$/.exec(name)?.[1];
@@ -458,33 +582,47 @@ export function parseCargoManifest(text: string): CargoManifest {
       continue;
     }
     if (/^\[\[/.test(line)) { context = { kind: "other" }; continue; }
-    const assignment = /^((?:"[^"]*"|'[^']*'|[A-Za-z0-9_-]+)(?:\.[A-Za-z0-9_-]+)?)\s*=\s*(.*)$/.exec(line);
+    // TOML allows whitespace around the dot of a dotted key (`core . workspace = true`);
+    // `left` is normalised to `key.field`.
+    const assignment = /^("[^"]*"|'[^']*'|[A-Za-z0-9_-]+)(?:\s*\.\s*("[^"]*"|'[^']*'|[A-Za-z0-9_-]+))?\s*=\s*(.*)$/.exec(line);
     if (!assignment) continue;
-    const left = assignment[1]!;
-    let value = assignment[2]!;
+    const left = assignment[2] !== undefined ? `${assignment[1]!}.${unquoteKey(assignment[2])}` : assignment[1]!;
+    let value = assignment[3]!;
     // Join continuation lines of a multi-line inline table / array (bounded).
     for (let guard = 0; bracketDepth(value) > 0 && index + 1 < lines.length && guard < 500; guard += 1) {
       index += 1;
       value += ` ${stripTomlComment(lines[index]!).trim()}`;
     }
-    if (context.kind === "package") {
-      const name = /^"([^"]*)"|^'([^']*)'/.exec(value);
-      if (left === "name" && name) manifest.packageName = name[1] ?? name[2]!;
+    if (context.kind === "package" || context.kind === "workspace-package") {
+      const text = /^"([^"]*)"|^'([^']*)'/.exec(value);
+      if (context.kind === "package" && left === "name" && text) manifest.packageName = text[1] ?? text[2]!;
+      else if (left === "version" && text) {
+        if (context.kind === "package") manifest.packageVersion = text[1] ?? text[2]!;
+        else manifest.workspacePackageVersion = text[1] ?? text[2]!;
+      } else if (context.kind === "package" && ((left === "version.workspace" && /^true\b/.test(value))
+        || (left === "version" && /^\{(?:[^}]*[,\s])?workspace\s*=\s*true\b/.test(value)))) {
+        // `version.workspace = true` or the inline `version = { workspace = true }`.
+        manifest.packageVersionInherited = true;
+      }
       continue;
     }
-    if (context.kind !== "deps" && context.kind !== "workspace-deps") continue;
-    if (context.sub) {
-      const spec = context.kind === "deps"
-        ? entryFor(context.sub, context.section, context.target, lineNumber)
-        : workspaceFor(context.sub, lineNumber);
+    if (context.kind !== "deps" && context.kind !== "workspace-deps" && context.kind !== "patch") continue;
+    const specFor = (key: string): CargoDependencySpec => context.kind === "deps"
+      ? entryFor(key, context.section, context.target, lineNumber)
+      : context.kind === "patch" ? patchFor(context.source, key, lineNumber) : workspaceFor(key, lineNumber);
+    let spec: CargoDependencySpec;
+    if (context.sub !== undefined) {
+      spec = specFor(context.sub);
       assignField(spec, left, value);
-      continue;
+    } else {
+      const dotted = /^((?:"[^"]*"|'[^']*'|[A-Za-z0-9_-]+))\.([A-Za-z0-9_-]+)$/.exec(left);
+      spec = specFor(unquoteKey(dotted ? dotted[1]! : left));
+      if (dotted) assignField(spec, dotted[2]!, value);
+      else Object.assign(spec, inlineSpec(value));
     }
-    const dotted = /^((?:"[^"]*"|'[^']*'|[A-Za-z0-9_-]+))\.([A-Za-z0-9_-]+)$/.exec(left);
-    const key = unquoteKey(dotted ? dotted[1]! : left);
-    const spec = context.kind === "deps" ? entryFor(key, context.section, context.target, lineNumber) : workspaceFor(key, lineNumber);
-    if (dotted) assignField(spec, dotted[2]!, value);
-    else Object.assign(spec, inlineSpec(value));
+    // Evidence lines: where `path` / `workspace = true` were actually written.
+    if (spec.path !== undefined && spec.pathLine === undefined) spec.pathLine = lineNumber;
+    if (spec.workspace && spec.workspaceLine === undefined) spec.workspaceLine = lineNumber;
   }
   return manifest;
 }

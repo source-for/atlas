@@ -139,6 +139,22 @@ Discovery generalizes beyond Okie's own layout (validated against third-party cl
   root container is kept without source of its own only when the root `package.json` declares
   `exports`/`main`/`types`/`module`/`bin` or runtime `dependencies` (a Cargo virtual workspace or a
   tooling-only manifest yields no empty root).
+- **Crate edges** come from `Cargo.toml` `path` dependencies (inline, `[dependencies.x]`,
+  inherited `workspace = true`) and from root **`[patch.<source>]` path overrides**: a crate that
+  depends on `foo` by registry version or git URL gets a `foo` crate edge when the root manifest
+  patches that source's `foo` to an in-repo crate (tokio's `[patch.crates-io] tokio = { path =
+  "tokio" }`); the edge cites both lines. As in Cargo, a patch is used only when the patched
+  crate's version (its `[workspace.package]` one when inherited, `0.0.0` when absent) satisfies the
+  dependent's requirement, prereleases included. A patch path outside the repository is never
+  followed; one naming no scanned crate, or whose version no scanned crate's normal dependency
+  accepts, records nothing — all three are listed in `analysis.limitations`. Every
+  Cargo.toml form (literal strings, quoted and dotted keys, multi-line inline tables) is read by the
+  one Cargo reader, `parseCargoManifest`.
+- **Declarations without a name** — a syntax error the parser recovers from with a missing
+  identifier (`export default interface {}`, `enum {}` in babel's parser fixtures) — become code
+  entities named `default` (a default export) or `anonymous <kind>`, never a blank name. A name
+  over the gate's 160 characters is shortened for display with an ellipsis (a file-component keeps
+  its path tail); ids still derive from the full path/symbol and `sourceRefs.symbol` is never cut.
 - **Single-package repos** (no workspace members) become **one root container**, named and
   evidenced from the root `package.json` (falling back to the directory name). The synthetic
   `tooling` container only appears when non-member scripts sit beside real workspace members.
