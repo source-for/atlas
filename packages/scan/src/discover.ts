@@ -584,9 +584,11 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
 
   if (singlePackage) {
     // No JS workspace members: files outside every Rust crate form one root container
-    // derived from the root manifest — emitted only when it owns a file (a Cargo
-    // virtual workspace has none). Its key never equals a crate dir (a crate `tokio`
-    // in a repo named tokio): NUL can't be a path byte and `slug` drops it.
+    // derived from the root manifest. It is pruned only when it owns no file AND there
+    // is no root package.json (a Cargo virtual workspace like tokio); a real root
+    // manifest keeps it, so its name/exports/bin facts survive even when all source
+    // lives in crates. Its key never equals a crate dir (a crate `tokio` in a repo
+    // named tokio): NUL can't be a path byte and `slug` drops it.
     const rootPackage = readPackageName(sourceRoot, "");
     const rootName = rootPackage ?? basename(sourceRoot);
     const rootSlug = slug(rootName);
@@ -597,7 +599,7 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
       if (owner?.skipped) continue; // fixture/example crate — dropped
       unitByFile.set(file, owner?.dir ?? rootKey);
     }
-    if (sourceCandidates.some(file => unitByFile.get(file) === rootKey)) {
+    if (hasRootManifest || sourceCandidates.some(file => unitByFile.get(file) === rootKey)) {
       units.push({
         kind: "root",
         dir: rootKey,

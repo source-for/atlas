@@ -1088,23 +1088,27 @@ const IMPORT_TARGET_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".d.ts", ".d.mt
  * `x.ts` / `x.d.ts`) or the path as a directory index, with any
  * {@link IMPORT_TARGET_EXTENSIONS} suffix. Any tracked file counts (an asset, JSON, a
  * declaration file, a `.js` the TS-repo rule skipped): such an import is not broken.
- * Paths under `node_modules/` are absent from the tarball listing (never walked), so
- * a committed one is probed directly through `readFile`.
+ * Never reads the disk: the answer depends only on the listing, so a local checkout and
+ * a tarball agree.
  */
-function isTrackedImportTarget(fromFile: string, specifier: string, trackedFiles: ReadonlySet<string>, readFile: (path: string) => string): boolean {
-  const baseDir = fromFile.includes("/") ? fromFile.slice(0, fromFile.lastIndexOf("/")) : "";
-  const base = normalizeRepoPath(baseDir, specifier);
+function isTrackedImportTarget(base: string, trackedFiles: ReadonlySet<string>): boolean {
   const stem = base.replace(/\.(?:[cm]?[jt]s|[jt]sx)$/, "");
   const candidates = [
     base,
     ...IMPORT_TARGET_EXTENSIONS.map(extension => `${stem}${extension}`),
     ...IMPORT_TARGET_EXTENSIONS.map(extension => `${base}/index${extension}`),
   ];
-  if (candidates.some(candidate => trackedFiles.has(candidate))) return true;
-  if (!/(^|\/)node_modules\//.test(base)) return false;
-  return candidates.some(candidate => {
-    try { readFile(candidate); return true; } catch { return false; }
-  });
+  return candidates.some(candidate => trackedFiles.has(candidate));
+}
+
+/**
+ * A target inside a `node_modules` directory points into a package-manager location
+ * whose contents the scanner does not model (installed or committed, it is never
+ * listed), so such an import is never reported as unresolved — on every provider and
+ * whatever happens to be installed.
+ */
+function isPackageManagerPath(base: string): boolean {
+  return /(^|\/)node_modules(\/|$)/.test(base);
 }
 
 /**
@@ -1329,9 +1333,10 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
           // A relative import escaping the discovered set (e.g. the generated WASM
           // pkg) still names its owning unit — keep the container-level fact.
           const targetUnit = resolveRelativeUnitImport(file, specifierPath, unitDirs);
+          const targetPath = normalizeRepoPath(file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : "", specifierPath);
           if (targetUnit && targetUnit !== unitDir) {
             addRelation(unitDir, targetUnit, typedId("relation", unitDir, targetUnit), `unit:${unitDir}->${targetUnit}`, evidence);
-          } else if (!isTrackedImportTarget(file, specifierPath, trackedFiles, readFile)) {
+          } else if (!isPackageManagerPath(targetPath) && !isTrackedImportTarget(targetPath, trackedFiles)) {
             // No relation and no such file in the repository: the edge is lost, so say
             // so (never silent). An existing asset/JSON/skipped file is not a gap.
             unresolvedRelativeImports.push({ path: file, line: dependency.startLine, specifier: dependency.specifier });

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { cargoWorkspaceMembers, discoverExtractedTree, discoverRepository } from "./discover.js";
-import { discoveryLimitations, scanRepository, UNRESOLVED_IMPORTS_SHOWN, unresolvedImportLimitations } from "./scan.js";
+import { pinRepository } from "./pin.js";
+import { buildScanArtifacts, discoveryLimitations, scanRepository, UNRESOLVED_IMPORTS_SHOWN, unresolvedImportLimitations } from "./scan.js";
 
 /** Builds a tiny staged git repo (git ls-files sees staged files — no commit needed). */
 function makeRepo(files: Record<string, string>): string {
@@ -548,21 +549,18 @@ test("same dir as both a JS member and a Rust crate: one Rust unit that keeps th
 
 // CLA-578 round QA (real-repo scans).
 
-test("a committed node_modules file named by a relative import is not reported as unresolved", () => {
+test("relative imports into node_modules (committed or missing) are never reported as unresolved", () => {
   withRepo({
     "package.json": JSON.stringify({ name: "setup" }),
     "e2e/setup.js": "const example = require('./node_modules/example');\nimport('./node_modules/example');\nimport('./node_modules/missing');\nmodule.exports = example;\n",
     "e2e/node_modules/example/index.js": "module.exports = 1;\n",
   }, dir => {
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
-    assert.deepEqual(scanRepository(dir, { analysisMode: "quick" }).analysis.limitations, [
-      "1 relative import(s) name no file in the repository; no relation was recorded for them.",
-      "Unresolved relative import e2e/setup.js:3: './node_modules/missing'",
-    ]);
+    assert.equal(scanRepository(dir, { analysisMode: "quick" }).analysis.limitations, undefined, "package-manager locations are not modelled, so never reported");
   });
 });
 
-test("Cargo virtual workspace without JS members: no empty root container, even when its slug equals a crate dir", () => {
+test("Cargo virtual workspace without JS members: no empty root container; a root slug equal to a crate dir gets its own key", () => {
   const crates = {
     "Cargo.toml": '[workspace]\nmembers = ["tokio", "benches", "examples", "harness"]\n',
     "tokio/Cargo.toml": '[package]\nname = "tokio"\n',
@@ -574,7 +572,7 @@ test("Cargo virtual workspace without JS members: no empty root container, even 
     "harness/Cargo.toml": '[package]\nname = "harness"\n',
     "harness/tests/it.rs": "fn it() {}\n",
   };
-  withRepo({ "package.json": JSON.stringify({ name: "tokio" }), ...crates }, dir => {
+  withRepo(crates, dir => {
     const discovery = discoverRepository(dir);
     assert.equal(discovery.summary.singlePackage, true);
     assert.deepEqual(discovery.units.map(unit => `${unit.kind}:${unit.dir}`), ["rust:tokio"], "no empty root; benches/harness own no scanned file; examples is a fixture member");
@@ -592,6 +590,52 @@ test("Cargo virtual workspace without JS members: no empty root container, even 
     assert.deepEqual(discovery.units.map(unit => `${unit.kind}:${unit.name}`).sort(), ["root:tokio", "rust:tokio"]);
   });
   withRepo({ "package.json": JSON.stringify({ name: "tokio" }), ...crates }, dir => {
+    const root = discoverRepository(dir).units.find(unit => unit.kind === "root");
+    assert.equal(root?.dir, "\0tokio", "a root package.json keeps the source-empty root unit, on its own key");
+    assert.equal(root?.packageManifest, "package.json");
+  });
+  withRepo({ "package.json": JSON.stringify({ name: "tokio" }), ...crates }, dir => {
     assert.deepEqual(discoverRepository(dir, { includeAllMembers: true }).summary.skippedMembers, [], "--include-members also un-skips Cargo fixture members");
+  });
+});
+
+// CLA-578 round 5.
+
+test("a root package.json keeps its exports/bin facts when all source lives in a Cargo crate", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "engine-app", exports: "./engine/src/index.ts", bin: "./engine/src/cli.ts" }),
+    "tsconfig.json": "{}",
+    "Cargo.toml": '[workspace]\nmembers = ["engine"]\n',
+    "engine/Cargo.toml": '[package]\nname = "engine"\n',
+    "engine/src/lib.rs": "pub fn run() {}\n",
+    "engine/src/index.ts": "export const api = 1;\n",
+    "engine/src/cli.ts": "export function main() {}\n",
+  }, dir => {
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    const { snapshot } = scanRepository(dir, { analysisMode: "quick" });
+    const exposureOf = (id: string) => snapshot.entities.find(entity => entity.id === id)?.exposure?.map(item => item.kind) ?? [];
+    assert.ok(exposureOf("code:engine-src-index-ts:api").includes("publicApi"), "root exports marks the public API");
+    assert.ok(exposureOf("component:engine-src-cli-ts").includes("entryPoint"), "root bin marks the entry point");
+  });
+});
+
+test("node_modules targets are never unresolved: a checkout with untracked installed packages and the committed tree agree", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "setup" }),
+    "tsconfig.json": "{}",
+    "src/setup.ts": "import a from './node_modules/installed';\nimport b from '../node_modules/absent/lib.js';\nimport c from './gone';\nexport default [a, b, c];\n",
+  }, dir => {
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    // Installed after the commit: on disk in the checkout, never in the committed tree.
+    mkdirSync(join(dir, "src/node_modules/installed"), { recursive: true });
+    writeFileSync(join(dir, "src/node_modules/installed/index.js"), "module.exports = 1;\n");
+    const expected = [
+      "1 relative import(s) name no file in the repository; no relation was recorded for them.",
+      "Unresolved relative import src/setup.ts:3: './gone'",
+    ];
+    const committed = scanRepository(dir, { analysisMode: "quick" }).analysis.limitations;
+    const checkout = buildScanArtifacts({ discovery: discoverRepository(dir), pin: pinRepository(dir), readFile: path => readFileSync(join(dir, path), "utf8"), repositorySlug: "setup", systemName: "setup" }).analysis.limitations;
+    assert.deepEqual(committed, expected);
+    assert.deepEqual(checkout, expected);
   });
 });

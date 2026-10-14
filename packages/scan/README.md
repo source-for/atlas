@@ -136,10 +136,15 @@ Discovery generalizes beyond Okie's own layout (validated against third-party cl
   Files belong to the deepest root across crates and JS members (same dir: the crate). A crate
   with no scanned source file (e.g. only `benches/`/`tests/`) is not a container, and fixture
   names (`examples`, `e2e`, …) skip Cargo members exactly like JS members. Without JS members the
-  root container appears only when files sit outside every crate (a Cargo virtual workspace has none).
+  root container is dropped only when it owns no file and there is no root `package.json` (a Cargo
+  virtual workspace).
 - **Single-package repos** (no workspace members) become **one root container**, named and
   evidenced from the root `package.json` (falling back to the directory name). The synthetic
   `tooling` container only appears when non-member scripts sit beside real workspace members.
+- **Unresolved relative imports** (no relation recorded, no tracked file named) are listed in
+  `analysis.limitations` with file:line and specifier (capped). A target inside a `node_modules`
+  directory is never listed: the scanner does not model package-manager contents, and never reads
+  the disk for it, so a local checkout and a tarball agree.
 - **Extensions:** `.ts/.tsx/.mts/.cts/.js/.mjs/.cjs/.jsx/.rs` are scanned. In a TypeScript repo
   (root tsconfig *or* any TypeScript source) a `.js` file is left out when it sits under a
   `test/`, `tests/`, `fixture(s)/`, `__fixtures__/`, `vendor/` or `third_party/` directory
