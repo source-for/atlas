@@ -987,3 +987,19 @@ test("extensionless relative imports resolve to .js/.jsx/.cjs modules and JS dir
   const targets = extraction.relations.filter(relation => relation.from === "component:e2e-esm-dynamic-import-js").map(relation => relation.to).sort();
   assert.deepEqual(targets, ["component:e2e-esm-common-cjs", "component:e2e-esm-index-js", "component:e2e-esm-util-index-js", "component:e2e-esm-view-jsx"]);
 });
+
+test("NodeNext and directory resolution: ./b.mjs -> b.mts, ./c.cjs -> c.cts, '..' -> root index.ts; a directory target is never unresolved", () => {
+  const files: Record<string, string> = {
+    "index.ts": "export const root = 1;\n",
+    "src/a.ts": "import { b } from './b.mjs';\nimport { c } from './c.cjs';\nimport { root } from '..';\nimport q from './lib';\nimport gone from './gone.mjs';\nexport const all = [b, c, root, q, gone];\n",
+    "src/b.mts": "export const b = 1;\n",
+    "src/c.cts": "export const c = 1;\n",
+  };
+  const paths = Object.keys(files).sort();
+  const trackedFiles = new Set([...paths, "src/lib/package.json", "src/lib/main.ts"]);
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "root", dir: "r", name: "r", evidencePath: "package.json", packageManifest: undefined }], unitByFile: new Map(paths.map(path => [path, "r"])), unitByPackageName: new Map(), trackedFiles, summary: { singlePackage: true, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const collected = collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
+  const targets = collected.extraction.relations.filter(relation => relation.from === "component:src-a-ts").map(relation => relation.to).sort();
+  assert.deepEqual(targets, ["component:index-ts", "component:src-b-mts", "component:src-c-cts"]);
+  assert.deepEqual(collected.unresolvedRelativeImports, [{ path: "src/a.ts", line: 5, specifier: "./gone.mjs" }], "'..' and the ./lib directory are not misses; a missing .mjs still is");
+});

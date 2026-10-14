@@ -186,6 +186,9 @@ function isExcludedPath(path: string): boolean {
 function isExcludedFile(path: string): boolean {
   return /\.d\.ts$/.test(path)
     || /(^|\/)dist\//.test(path)
+    // Package-manager contents, even when committed: the tarball walk never lists
+    // them, so the git listing must not scan them either (providers agree).
+    || /(^|\/)node_modules\//.test(path)
     || /\.test\.[cm]?[jt]sx?$/.test(path)
     || /\.spec\.[cm]?[jt]sx?$/.test(path)
     || /\.bench\.[cm]?[jt]sx?$/.test(path)
@@ -236,11 +239,12 @@ function hasRootTsconfig(sourceRoot: string): boolean {
 
 /**
  * Whether the root package.json declares something the root unit carries even without
- * source of its own: an entry surface (`exports`/`main`/`types`/`module`/`bin`, which
- * mark publicApi/entryPoint on crate files) or runtime `dependencies` (externals).
- * Scripts, devDependencies and a name alone do not.
+ * source of its own: an entry surface (`exports`/`bin`, or a `main`/`module`/`types`
+ * that names a tracked file — npm init's default `"main": "index.js"` with no
+ * index.js is no entry surface) or runtime `dependencies` (externals). Scripts,
+ * devDependencies and a name alone do not.
  */
-function rootManifestDeclaresFacts(sourceRoot: string): boolean {
+function rootManifestDeclaresFacts(sourceRoot: string, trackedFiles: ReadonlySet<string>): boolean {
   const text = readRepositoryFile(sourceRoot, "package.json");
   if (text === undefined) return false;
   let manifest: Record<string, unknown>;
@@ -248,7 +252,20 @@ function rootManifestDeclaresFacts(sourceRoot: string): boolean {
   if (!manifest || typeof manifest !== "object") return false;
   const declared = (value: unknown): boolean =>
     typeof value === "string" ? value.trim() !== "" : value !== null && typeof value === "object" && Object.keys(value).length > 0;
-  return ["exports", "main", "types", "module", "bin"].some(key => declared(manifest[key])) || declared(manifest.dependencies);
+  const namesTrackedFile = (value: unknown): boolean => {
+    if (typeof value !== "string") return false;
+    const path = value.trim().replace(/^(\.\/)+/, "").replace(/\/+$/, "");
+    return Boolean(path) && [path, `${path}.js`, `${path}/index.js`].some(candidate => trackedFiles.has(candidate));
+  };
+  return ["exports", "bin"].some(key => declared(manifest[key]))
+    || ["main", "module", "types"].some(key => namesTrackedFile(manifest[key]))
+    || declared(manifest.dependencies);
+}
+
+/** The crate's `[package] name`, else its dir (minus a `crates/` prefix). */
+function rustCrateName(sourceRoot: string, dir: string): string {
+  const manifest = readRepositoryFile(sourceRoot, `${dir}/Cargo.toml`);
+  return (manifest === undefined ? undefined : cargoPackageName(manifest)) ?? dir.replace(/^crates\//, "");
 }
 
 function readPackageName(sourceRoot: string, dir: string): string | undefined {
@@ -330,16 +347,27 @@ function workspacePatterns(sourceRoot: string): WorkspacePatterns {
 
 /**
  * Workspace glob -> anchored RegExp over a POSIX directory path. `*` matches within a
- * single path segment (`packages/*` = direct children); `**` matches one or more
- * segments. Unsupported, matched literally: `?`, `[...]` classes, `{a,b}` braces and
- * extglobs — none appear in the workspace lists this has to read.
+ * single path segment (`packages/*` = direct children); `**` matches ZERO or more
+ * segments, as fast-glob/tinyglobby do for pnpm and npm (`!**\/test/**` excludes
+ * `packages/test` and a top-level `test`; `packages/**` includes `packages`).
+ * Unsupported, matched literally: `?`, `[...]` classes, `{a,b}` braces and extglobs —
+ * none appear in the workspace lists this has to read.
  */
 function workspaceGlobToRegExp(glob: string): RegExp {
-  const source = glob.split("/").map(segment =>
-    segment === "**"
-      ? "[^/]+(?:/[^/]+)*"
-      : segment.replace(/[.+^${}()|[\]\\?]/g, "\\$&").replace(/\*/g, "[^/]*"),
-  ).join("/");
+  const segments = glob.split("/");
+  let source = "";
+  segments.forEach((segment, index) => {
+    const first = index === 0;
+    const last = index === segments.length - 1;
+    // A segment after `**` needs no separator: the globstar consumed its own `/`.
+    const separator = first || segments[index - 1] === "**" ? "" : "/";
+    if (segment === "**") {
+      if (!last) source += `${separator}(?:[^/]+/)*`;
+      else source += first ? "(?:[^/]+(?:/[^/]+)*)?" : "(?:/[^/]+)*";
+      return;
+    }
+    source += separator + segment.replace(/[.+^${}()|[\]\\?]/g, "\\$&").replace(/\*/g, "[^/]*");
+  });
   return new RegExp(`^${source}$`);
 }
 
@@ -370,16 +398,11 @@ function stripTomlComment(line: string): string {
  * and escapes inside strings beyond `\"`.
  */
 export function cargoWorkspaceMembers(manifestText: string): { members: string[]; exclude: string[] } {
-  const lines = manifestText.split(/\r?\n/).map(stripTomlComment);
-  const body: string[] = [];
-  let inWorkspace = false;
-  for (const line of lines) {
-    // Any table or array-of-tables header ends the `[workspace]` body.
-    const header = /^\s*\[(\[?)\s*([^\]]+?)\s*\]/.exec(line);
-    if (header) inWorkspace = !header[1] && header[2] === "workspace";
-    else if (inWorkspace) body.push(line);
-  }
-  const text = body.join("\n");
+  // Any table or array-of-tables header ends the `[workspace]` body.
+  const text = tomlLinesByTable(manifestText)
+    .filter(({ table, arrayTable }) => !arrayTable && table === "workspace")
+    .map(({ line }) => line)
+    .join("\n");
   const arrayOf = (key: string): string[] => {
     const match = new RegExp(`(?:^|\\n)\\s*${key}\\s*=\\s*\\[([^\\]]*)\\]`).exec(text);
     if (!match) return [];
@@ -388,12 +411,65 @@ export function cargoWorkspaceMembers(manifestText: string): { members: string[]
   return { members: arrayOf("members"), exclude: arrayOf("exclude") };
 }
 
+/** Splits a Cargo manifest into comment-stripped lines tagged with their table header. */
+function tomlLinesByTable(manifestText: string): Array<{ table: string | undefined; arrayTable: boolean; line: string }> {
+  const out: Array<{ table: string | undefined; arrayTable: boolean; line: string }> = [];
+  let table: string | undefined;
+  let arrayTable = false;
+  for (const line of manifestText.split(/\r?\n/).map(stripTomlComment)) {
+    const header = /^\s*\[(\[?)\s*([^\]]+?)\s*\]/.exec(line);
+    if (header) { table = header[2]; arrayTable = Boolean(header[1]); continue; }
+    out.push({ table, arrayTable, line });
+  }
+  return out;
+}
+
+/**
+ * Every `path = "…"` dependency of a Cargo manifest, in any dependency table:
+ * `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`,
+ * `[target.….dependencies]`, `[workspace.dependencies]` — inline-table form
+ * (`core = { path = "crates/core" }`) and `[dependencies.core]` subsections. Values
+ * are as written (relative to the manifest's directory).
+ */
+export function cargoManifestPathDependencies(manifestText: string): string[] {
+  const paths: string[] = [];
+  for (const { table, arrayTable, line } of tomlLinesByTable(manifestText)) {
+    if (arrayTable || !table || !/(^|\.)(?:dev-|build-)?dependencies(\.|$)/.test(table)) continue;
+    for (const match of line.matchAll(/\bpath\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/g)) paths.push(match[1] ?? match[2]!);
+  }
+  return paths;
+}
+
+/** `[package] name` of a Cargo manifest, when declared as a plain string. */
+export function cargoPackageName(manifestText: string): string | undefined {
+  for (const { table, arrayTable, line } of tomlLinesByTable(manifestText)) {
+    if (arrayTable || table !== "package") continue;
+    const match = /^\s*name\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\s*$/.exec(line);
+    if (match) return (match[1] ?? match[2]!).trim() || undefined;
+  }
+  return undefined;
+}
+
+/** `dir`-relative `path` as a repository path; undefined when it leaves the root. */
+function repositoryPathFrom(dir: string, path: string): string | undefined {
+  const stack = dir ? dir.split("/") : [];
+  for (const part of path.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") { if (stack.length === 0) return undefined; stack.pop(); }
+    else stack.push(part);
+  }
+  return stack.join("/");
+}
+
 /**
  * Rust crate directories. With a root `Cargo.toml` `[workspace] members` list, a crate
  * is a directory matched by a member glob (or path), not under an `exclude` path, that
  * has a tracked `Cargo.toml`. Without declared members, the conventional
  * `crates/<name>/Cargo.toml` layout is used (unchanged behaviour), still minus any
- * declared `exclude`. The root itself (`.`) is never a crate unit.
+ * declared `exclude`. Either way, Cargo's implicit members join: every `path`
+ * dependency (transitively, from the root manifest and each crate) that stays inside
+ * the repository, has a tracked `Cargo.toml` and is not excluded. The root itself
+ * (`.`) is never a crate unit.
  */
 function rustCrateDirectories(sourceRoot: string, allFiles: readonly string[]): string[] {
   const manifestDirs = allFiles
@@ -408,7 +484,24 @@ function rustCrateDirectories(sourceRoot: string, allFiles: readonly string[]): 
   const isMember = members.length === 0
     ? (dir: string): boolean => /^crates\/[^/]+$/.test(dir)
     : (dir: string): boolean => members.some(pattern => workspaceGlobToRegExp(pattern).test(dir));
-  return manifestDirs.filter(dir => isMember(dir) && !isExcluded(dir)).sort(compareText);
+  const manifestDirSet = new Set(manifestDirs);
+  const crates = new Set(manifestDirs.filter(dir => isMember(dir) && !isExcluded(dir)));
+  const queue = ["", ...crates];
+  const visited = new Set<string>();
+  while (queue.length > 0) {
+    const dir = queue.shift()!;
+    if (visited.has(dir)) continue;
+    visited.add(dir);
+    const text = dir ? readRepositoryFile(sourceRoot, `${dir}/Cargo.toml`) : manifest;
+    if (text === undefined) continue;
+    for (const path of cargoManifestPathDependencies(text)) {
+      const target = repositoryPathFrom(dir, path);
+      if (!target || !manifestDirSet.has(target) || isExcluded(target) || crates.has(target)) continue;
+      crates.add(target);
+      queue.push(target);
+    }
+  }
+  return [...crates].sort(compareText);
 }
 
 function compareText(left: string, right: string): number {
@@ -566,6 +659,7 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
   const memberDirs = new Set<string>();
   for (const path of allFiles) {
     if (!path.endsWith("/package.json") && path !== "package.json") continue;
+    if (/(^|\/)node_modules\//.test(path)) continue; // an installed package is never a workspace member
     if (path === "package.json") continue; // the root manifest is not a workspace member
     const dir = path.slice(0, -"/package.json".length);
     if (isWorkspaceMemberDir(dir, patterns)) memberDirs.add(dir);
@@ -617,7 +711,7 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
       if (owner?.skipped) continue; // fixture/example crate — dropped
       unitByFile.set(file, owner?.dir ?? rootKey);
     }
-    if (sourceCandidates.some(file => unitByFile.get(file) === rootKey) || rootManifestDeclaresFacts(sourceRoot)) {
+    if (sourceCandidates.some(file => unitByFile.get(file) === rootKey) || rootManifestDeclaresFacts(sourceRoot, trackedFiles)) {
       units.push({
         kind: "root",
         dir: rootKey,
@@ -666,7 +760,7 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
     units.push({
       kind: "rust",
       dir,
-      name: dir.replace(/^crates\//, ""),
+      name: rustCrateName(sourceRoot, dir),
       evidencePath: dir,
       ...(packageName ? { packageName } : {}),
       packageManifest: isJsMember ? `${dir}/package.json` : undefined,

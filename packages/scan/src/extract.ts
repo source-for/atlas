@@ -548,27 +548,32 @@ function normalizeRepoPath(baseDir: string, relative: string): string {
 function relativeCandidates(base: string): string[] {
   const out: string[] = [];
   const add = (candidate: string): void => { if (!out.includes(candidate)) out.push(candidate); };
+  // `'..'` up to the repository root normalizes to "": its index is `index.ts`, not `/index.ts`.
+  const index = base ? `${base}/index` : "index";
   const extMatch = /\.(js|jsx|mjs|cjs|ts|tsx)$/.exec(base);
   if (extMatch) {
     const stem = base.slice(0, base.length - extMatch[0].length);
     add(`${stem}.ts`);
     add(`${stem}.tsx`);
+    // NodeNext: `./b.mjs` is the emitted name of `b.mts`, `./c.cjs` of `c.cts`.
+    if (extMatch[1] === "mjs") add(`${stem}.mts`);
+    if (extMatch[1] === "cjs") add(`${stem}.cts`);
     add(`${stem}.mjs`);
     add(base);
   } else {
     add(`${base}.ts`);
     add(`${base}.tsx`);
     add(`${base}.mjs`);
-    add(`${base}/index.ts`);
-    add(`${base}/index.tsx`);
+    add(`${index}.ts`);
+    add(`${index}.tsx`);
     // Extensionless imports of JS modules (`export * from './index'` -> index.js),
     // tried after every TS candidate so an existing TS resolution never changes.
     add(`${base}.js`);
     add(`${base}.jsx`);
     add(`${base}.cjs`);
-    add(`${base}/index.js`);
-    add(`${base}/index.jsx`);
-    add(`${base}/index.mjs`);
+    add(`${index}.js`);
+    add(`${index}.jsx`);
+    add(`${index}.mjs`);
   }
   return out;
 }
@@ -1091,7 +1096,10 @@ const IMPORT_TARGET_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".d.ts", ".d.mt
  * Never reads the disk: the answer depends only on the listing, so a local checkout and
  * a tarball agree.
  */
-function isTrackedImportTarget(base: string, trackedFiles: ReadonlySet<string>): boolean {
+function isTrackedImportTarget(base: string, trackedFiles: ReadonlySet<string>, trackedDirectories: ReadonlySet<string>): boolean {
+  // A directory holding tracked files (the root itself, a folder resolved through its
+  // package.json `main`) exists; how it resolves is the resolver's concern, not a miss.
+  if (base === "" || trackedDirectories.has(base)) return true;
   const stem = base.replace(/\.(?:[cm]?[jt]s|[jt]sx)$/, "");
   const candidates = [
     base,
@@ -1099,6 +1107,19 @@ function isTrackedImportTarget(base: string, trackedFiles: ReadonlySet<string>):
     ...IMPORT_TARGET_EXTENSIONS.map(extension => `${base}/index${extension}`),
   ];
   return candidates.some(candidate => trackedFiles.has(candidate));
+}
+
+/** Every proper ancestor directory of the given repository paths. */
+function ancestorDirectories(paths: Iterable<string>): Set<string> {
+  const directories = new Set<string>();
+  for (const path of paths) {
+    for (let slash = path.lastIndexOf("/"); slash > 0; slash = path.lastIndexOf("/", slash - 1)) {
+      const directory = path.slice(0, slash);
+      if (directories.has(directory)) break;
+      directories.add(directory);
+    }
+  }
+  return directories;
 }
 
 /**
@@ -1259,6 +1280,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
   const unitDirs = discovery.units.map(unit => unit.dir);
   const unresolvedRelativeImports: UnresolvedRelativeImport[] = [];
   const trackedFiles: ReadonlySet<string> = discovery.trackedFiles ?? fileSet;
+  let trackedDirectories: ReadonlySet<string> | undefined; // built on the first miss only
 
   for (const file of discovery.sourceFiles) {
     const unitDir = discovery.unitByFile.get(file)!;
@@ -1336,7 +1358,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
           const targetPath = normalizeRepoPath(file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : "", specifierPath);
           if (targetUnit && targetUnit !== unitDir) {
             addRelation(unitDir, targetUnit, typedId("relation", unitDir, targetUnit), `unit:${unitDir}->${targetUnit}`, evidence);
-          } else if (!isPackageManagerPath(targetPath) && !isTrackedImportTarget(targetPath, trackedFiles)) {
+          } else if (!isPackageManagerPath(targetPath) && !isTrackedImportTarget(targetPath, trackedFiles, trackedDirectories ??= ancestorDirectories(trackedFiles))) {
             // No relation and no such file in the repository: the edge is lost, so say
             // so (never silent). An existing asset/JSON/skipped file is not a gap.
             unresolvedRelativeImports.push({ path: file, line: dependency.startLine, specifier: dependency.specifier });

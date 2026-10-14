@@ -4,9 +4,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { cargoWorkspaceMembers, discoverExtractedTree, discoverRepository } from "./discover.js";
+import { cargoManifestPathDependencies, cargoPackageName, cargoWorkspaceMembers, discoverExtractedTree, discoverRepository } from "./discover.js";
 import { pinRepository } from "./pin.js";
-import { buildScanArtifacts, discoveryLimitations, scanRepository, UNRESOLVED_IMPORTS_SHOWN, unresolvedImportLimitations } from "./scan.js";
+import { buildScanArtifacts, discoveryLimitations, LIMITATION_TEXT_MAX_CHARS, scanRepository, UNRESOLVED_IMPORTS_SHOWN, unresolvedImportLimitations } from "./scan.js";
 
 /** Builds a tiny staged git repo (git ls-files sees staged files — no commit needed). */
 function makeRepo(files: Record<string, string>): string {
@@ -647,4 +647,128 @@ test("node_modules targets are never unresolved: a checkout with untracked insta
     assert.deepEqual(committed, expected);
     assert.deepEqual(checkout, expected);
   });
+});
+
+// CLA-578 Opus review round 1.
+
+test("cargoManifestPathDependencies reads path deps from every dependency table and form", () => {
+  const manifest = [
+    "[package]",
+    'name = "app"',
+    'path = "not-a-dependency"',
+    "[dependencies]",
+    'core = { path = "crates/core" } # inline table',
+    'serde = "1"',
+    "[dev-dependencies]",
+    "fixtures = { path = 'crates/fixtures', optional = true }",
+    "[build-dependencies.gen]",
+    'path = "tools/gen"',
+    '[target.\'cfg(unix)\'.dependencies]',
+    'sys = { version = "1", path = "crates/sys" }',
+    "[workspace.dependencies]",
+    'shared = { path = "crates/shared" }',
+    "[[bin]]",
+    'path = "src/bin/x.rs"',
+  ].join("\n");
+  assert.deepEqual(cargoManifestPathDependencies(manifest), ["crates/core", "crates/fixtures", "tools/gen", "crates/sys", "crates/shared"]);
+  assert.equal(cargoPackageName('[package]\nname = "rustc_ast" # crate\nversion = "0.1.0"\n'), "rustc_ast");
+  assert.equal(cargoPackageName('[workspace]\nmembers = []\n'), undefined);
+});
+
+test("Cargo implicit members: in-repo path dependencies (transitive, all tables) are crates, minus exclude", () => {
+  const files = {
+    "Cargo.toml": '[package]\nname = "app"\n\n[workspace]\nmembers = ["xtask"]\nexclude = ["vendor/skip"]\n\n[dependencies]\ncore = { path = "crates/core" }\nskip = { path = "vendor/skip" }\n',
+    "src/main.rs": "fn main() {}\n",
+    "crates/core/Cargo.toml": '[package]\nname = "core"\n\n[dependencies.util]\npath = "../util"\n\n[dev-dependencies]\nescape = { path = "../../../outside" }\n',
+    "crates/core/src/lib.rs": "pub fn core() {}\n",
+    "crates/util/Cargo.toml": '[package]\nname = "util"\n',
+    "crates/util/src/lib.rs": "pub fn util() {}\n",
+    "vendor/skip/Cargo.toml": '[package]\nname = "skip"\n',
+    "vendor/skip/src/lib.rs": "pub fn skip() {}\n",
+    "xtask/Cargo.toml": '[package]\nname = "xtask"\n',
+    "xtask/src/main.rs": "fn main() {}\n",
+  };
+  const check = (discovery: ReturnType<typeof discoverRepository>): void => {
+    assert.deepEqual(discovery.units.filter(unit => unit.kind === "rust").map(unit => unit.dir), ["crates/core", "crates/util", "xtask"]);
+    assert.equal(discovery.unitByFile.get("crates/core/src/lib.rs"), "crates/core", "not swallowed by the root");
+    assert.notEqual(discovery.unitByFile.get("vendor/skip/src/lib.rs"), "vendor/skip", "an excluded path dependency is not a crate");
+  };
+  withRepo(files, dir => check(discoverRepository(dir)));
+  withTree(files, dir => check(discoverExtractedTree(dir)));
+});
+
+test("`**` matches zero or more segments: the pnpm-docs negation `!**/test/**` excludes test members at any depth", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "mono", workspaces: ["packages/**", "fixtures", "!**/test/**", "!**/fixtures"] }),
+    "packages/a/package.json": JSON.stringify({ name: "@m/a" }),
+    "packages/a/src/i.ts": "export const a = 1;\n",
+    "packages/test/package.json": JSON.stringify({ name: "@m/test" }),
+    "packages/test/src/i.ts": "export const t = 1;\n",
+    "packages/a/test/package.json": JSON.stringify({ name: "@m/a-test" }),
+    "packages/a/test/i.ts": "export const at = 1;\n",
+    "fixtures/package.json": JSON.stringify({ name: "@m/fixtures" }),
+    "fixtures/i.ts": "export const f = 1;\n",
+  }, dir => {
+    const discovery = discoverRepository(dir);
+    assert.deepEqual(memberDirs(dir), ["packages/a"]);
+    assert.deepEqual(discovery.summary.skippedMembers, [], "negated dirs are not members at all (not merely skipped fixtures)");
+  });
+});
+
+test("committed node_modules is excluded on both providers (git listing and tarball walk agree)", () => {
+  const files = {
+    "package.json": JSON.stringify({ name: "act", workspaces: ["packages/**"] }),
+    "tsconfig.json": "{}",
+    "src/index.ts": "export const x = 1;\n",
+    "node_modules/dep/index.js": "module.exports = 1;\n",
+    "node_modules/dep/package.json": JSON.stringify({ name: "dep" }),
+    "packages/a/package.json": JSON.stringify({ name: "@m/a" }),
+    "packages/a/index.ts": "export const a = 1;\n",
+    "packages/a/node_modules/inner/package.json": JSON.stringify({ name: "inner" }),
+    "packages/a/node_modules/inner/index.ts": "export const inner = 1;\n",
+  };
+  const shape = (discovery: ReturnType<typeof discoverRepository>) => ({ sourceFiles: discovery.sourceFiles, units: discovery.units.map(unit => unit.dir) });
+  let git: ReturnType<typeof shape> | undefined;
+  withRepo(files, dir => { git = shape(discoverRepository(dir)); });
+  withTree(files, dir => assert.deepEqual(shape(discoverExtractedTree(dir)), git));
+  assert.deepEqual(git!.sourceFiles, ["packages/a/index.ts", "src/index.ts"]);
+  assert.ok(!git!.units.some(unit => unit.includes("node_modules")), "an installed package is never a workspace member");
+});
+
+test("a source-empty root keeps main/module/types only when they name a tracked file", () => {
+  const crates = {
+    "Cargo.toml": '[workspace]\nmembers = ["crates/*"]\n',
+    "crates/a/Cargo.toml": '[package]\nname = "a"\n',
+    "crates/a/src/lib.rs": "pub fn a() {}\n",
+  };
+  // npm init's default: "main": "index.js" with no index.js — tooling only.
+  withRepo({ "package.json": JSON.stringify({ name: "tools", version: "1.0.0", main: "index.js", scripts: { prepare: "husky" }, devDependencies: { husky: "^9.0.0" } }), ...crates }, dir => {
+    assert.deepEqual(discoverRepository(dir).units.map(unit => `${unit.kind}:${unit.dir}`), ["rust:crates/a"]);
+  });
+  withRepo({ "package.json": JSON.stringify({ name: "tools", types: "./index.d.ts" }), "index.d.ts": "export declare const a: number;\n", ...crates }, dir => {
+    assert.ok(discoverRepository(dir).units.some(unit => unit.kind === "root"), "a tracked types entry keeps the root");
+  });
+});
+
+test("a crate container is named by its Cargo [package] name, else its dir", () => {
+  withRepo({
+    "Cargo.toml": '[workspace]\nmembers = ["compiler/rustc_ast", "tools/*"]\n',
+    "compiler/rustc_ast/Cargo.toml": '[package]\nname = "rustc_ast"\n',
+    "compiler/rustc_ast/src/lib.rs": "pub fn ast() {}\n",
+    "tools/x/Cargo.toml": '[package]\nname.workspace = true\n',
+    "tools/x/src/main.rs": "fn main() {}\n",
+  }, dir => {
+    assert.deepEqual(discoverRepository(dir).units.map(unit => [unit.dir, unit.name]), [["compiler/rustc_ast", "rustc_ast"], ["tools/x", "tools/x"]]);
+  });
+});
+
+test("unresolved-import lines neutralize control characters and cap repository text", () => {
+  const long = `./${"a".repeat(LIMITATION_TEXT_MAX_CHARS + 50)}`;
+  const lines = unresolvedImportLimitations([
+    { path: "src/a.ts", line: 1, specifier: "./esc\u001b[31mRED" },
+    { path: "src/a.ts", line: 2, specifier: long },
+  ]);
+  assert.equal(lines[1], "Unresolved relative import src/a.ts:1: './esc�[31mRED'");
+  assert.ok(!lines.join("").includes("\u001b"), "no raw ESC byte reaches the artifact or terminal");
+  assert.equal(lines[2], `Unresolved relative import src/a.ts:2: '${long.slice(0, LIMITATION_TEXT_MAX_CHARS)}…'`);
 });

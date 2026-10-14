@@ -3,6 +3,7 @@ import {
   adaptArchitectureExtraction,
   ASPECT_PRESET_TARGET,
   buildC4ProjectionBundle,
+  sanitizeControlCharacters,
   validateSnapshot,
   validateStory,
   validateView,
@@ -398,6 +399,19 @@ export function discoveryLimitations(summary: DiscoverySummary): string[] {
   ];
 }
 
+/** Longest repository-controlled text (a specifier, a path) shown in a limitation line. */
+export const LIMITATION_TEXT_MAX_CHARS = 200;
+
+/**
+ * Repository-controlled text made safe for analysis.limitations and the terminal:
+ * control characters (ANSI escapes) neutralized, then capped with an ellipsis so one
+ * huge specifier cannot blow up the artifact.
+ */
+function displayText(text: string): string {
+  const safe = sanitizeControlCharacters(text);
+  return safe.length > LIMITATION_TEXT_MAX_CHARS ? `${safe.slice(0, LIMITATION_TEXT_MAX_CHARS)}…` : safe;
+}
+
 /** At most this many unresolved imports are itemized; the rest are counted. */
 export const UNRESOLVED_IMPORTS_SHOWN = 20;
 
@@ -411,7 +425,8 @@ export const UNRESOLVED_IMPORTS_SHOWN = 20;
  */
 export function unresolvedImportLimitations(imports: readonly UnresolvedRelativeImport[]): string[] {
   if (imports.length === 0) return [];
-  const shown = imports.slice(0, UNRESOLVED_IMPORTS_SHOWN).map(item => `Unresolved relative import ${item.path}:${item.line}: '${item.specifier}'`);
+  const shown = imports.slice(0, UNRESOLVED_IMPORTS_SHOWN).map(item =>
+    `Unresolved relative import ${displayText(item.path)}:${item.line}: '${displayText(item.specifier)}'`);
   const hidden = imports.length - shown.length;
   return [
     `${imports.length} relative import(s) name no file in the repository; no relation was recorded for them.`,
