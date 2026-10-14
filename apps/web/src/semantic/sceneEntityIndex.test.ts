@@ -147,6 +147,23 @@ describe('per-scene entity index', () => {
     expect(ghostCount).toBeGreaterThan(0);
   }, 60_000);
 
+  it('matches the old scan for an absent target and for duplicate ids', () => {
+    const visibleAt = (entities: SceneEntity[]) => ({ entities, relations: [], projection: {
+      boundsByEntityIdAndDetail: {}, entityIdsByDetail: { context: [], container: [], component: entities.map(entity => entity.id), code: [] },
+    } }) as unknown as AtlasScene;
+    const entity = (id: string, parentId?: string) => ({ id, name: id, kind: 'component', detail: 'component', ...(parentId ? { parentId } : {}) }) as SceneEntity;
+    // Orphans still naming an absent target are not its descendants.
+    const orphans = visibleAt([entity('a', 'X'), entity('b', 'a')]);
+    expect(scanDescendantsInDetail(orphans, 'X', 'component')).toEqual([]);
+    expect(descendantsInDetail(orphans, 'X', 'component')).toEqual([]);
+    // Duplicate ids: every entity whose own ancestor walk reaches the target, in scene order.
+    const duplicates = visibleAt([entity('T'), entity('c', 'T'), entity('T', 'P'), entity('d', 'c'), entity('P')]);
+    for (const target of ['T', 'c', 'P', 'd']) {
+      expect(descendantsInDetail(duplicates, target, 'component')).toEqual(scanDescendantsInDetail(duplicates, target, 'component'));
+    }
+    expect(descendantsInDetail(duplicates, 'T', 'component').map(found => found.id)).toEqual(['T', 'c', 'T', 'd']);
+  });
+
   it('builds once per entities array and rebuilds when the entities change', () => {
     const scene = createGoldenC4Scene();
     const index = sceneEntityIndex(scene);

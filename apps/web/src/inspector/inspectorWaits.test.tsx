@@ -3,6 +3,8 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SceneSourceExcerpt } from '../renderer/types';
+import type { ArchitectureSnapshot } from '@okie/architecture';
+import { resolveInspectorEntity } from './inspectorEntity';
 import { useInspectorSourceExcerpt, type InspectorSourceExcerptStatus } from './inspectorSourceExcerpt';
 import { createPendingInspectorChildSlot, inspectorLevelLabel, pendingInspectorChild, visiblePendingInspectorChild, type PendingInspectorChild } from './pendingInspectorChild';
 
@@ -48,11 +50,20 @@ describe('pending inspector child slot', () => {
     expect(visiblePendingInspectorChild(undefined, 'container:web', false)).toBeUndefined();
   });
 
-  it('labels scene and snapshot entities the way the loaded inspector kicker does', () => {
-    expect(inspectorLevelLabel({ id: 'a', name: 'A', kind: 'component' })).toBe('L3 · COMPONENT');
-    expect(inspectorLevelLabel({ id: 'a', name: 'A', kind: 'dataStore' })).toBe('L2 · CONTAINER');
-    expect(inspectorLevelLabel({ id: 'a', name: 'A', kind: 'component', detail: 'component', kindLabel: 'Library' })).toBe('L3 · LIBRARY');
-    expect(pendingInspectorChild({ id: 'a', name: 'A', kind: 'container' }, 'system:s')).toEqual({ id: 'a', name: 'A', levelLabel: 'L2 · CONTAINER', fromSelectionId: 'system:s' });
+  it('gives the pending header the kicker the loaded inspector shows, for every kind', () => {
+    // A published scan inspector resolves the canonical record (entityForScene) and labels it
+    // with inspectorLevelLabel; the pending header is built from that same resolved record.
+    const expected: Record<string, string> = {
+      person: 'L1 · PERSON', softwareSystem: 'L1 · SOFTWARE SYSTEM', externalSystem: 'L1 · EXTERNAL SYSTEM', boundary: 'L1 · BOUNDARY',
+      container: 'L2 · CONTAINER', dataStore: 'L2 · DATA STORE', queue: 'L2 · QUEUE', component: 'L3 · COMPONENT', code: 'L4 · SOURCE',
+    };
+    for (const [kind, label] of Object.entries(expected)) {
+      const canonical = { id: `${kind}:x`, name: 'X', kind, sourceRefs: [] } as unknown as ArchitectureSnapshot['entities'][number];
+      const loaded = resolveInspectorEntity({ entities: [canonical] } as unknown as ArchitectureSnapshot, [], canonical.id, true);
+      expect(inspectorLevelLabel(loaded)).toBe(label);
+      expect(pendingInspectorChild(loaded, 'system:s')).toEqual({ id: canonical.id, name: 'X', levelLabel: label, fromSelectionId: 'system:s' });
+    }
+    expect(inspectorLevelLabel({ kind: 'component', detail: 'component', kindLabel: 'Library' })).toBe('L3 · LIBRARY');
   });
 });
 

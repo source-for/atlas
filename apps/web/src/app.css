@@ -892,6 +892,8 @@ a.icon-button { text-decoration: none; }
 .inspector-pending-section-title { width: 38%; height: 9px; }
 .inspector-pending-row { height: 52px; margin-top: 8px; }
 /* Open-inside: the target's header shows at once; the placeholders appear only if the map takes over 120 ms. */
+/* Focus lands on the pending heading only because the activated row was replaced; no ring for that hand-off. */
+#inspector-pending-title:focus { outline: none; }
 .inspector-pending-body { animation: inspector-pending-reveal 1ms 120ms both; }
 @keyframes inspector-pending-reveal { from { visibility: hidden; } to { visibility: visible; } }
 @media (prefers-reduced-motion: reduce) {

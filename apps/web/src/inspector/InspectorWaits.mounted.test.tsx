@@ -37,6 +37,7 @@ async function click(selector: string) { await act(async () => (host.querySelect
 const entityTitle = () => host.querySelector('#inspector-entity-title')?.textContent;
 const pendingTitle = () => host.querySelector('#inspector-pending-title')?.textContent;
 const kicker = () => host.querySelector('.entity-kicker > span')?.textContent;
+const liveMessage = () => host.querySelector('div.sr-only[aria-live="polite"][role="status"]')?.textContent;
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(done => { resolve = done; });
@@ -86,6 +87,7 @@ describe('Source tab while the excerpt is in flight', () => {
     expect(panel.querySelector('[data-testid="source-loading"]')).not.toBeNull();
     expect(panel.querySelector('[data-testid="source-loading"]')!.classList.contains('source-viewer')).toBe(true);
     expect(panel.textContent).not.toContain('unavailable');
+    expect(liveMessage()).toBe('Loading source excerpt…');
     await act(async () => request.resolve([excerpt]));
     await settle();
     expect(panel.querySelector('[data-testid="source-loading"]')).toBeNull();
@@ -168,8 +170,14 @@ describe('open inside a non-resident child', () => {
 
   it("shows the target's header at once and a skeleton until the compiled map commits, then the normal content", async () => {
     const compiles = await openContainer();
+    await settle(); // the Details tab's own deferred focus runs first
+    const row = host.querySelector(childButton('component:web-navigation')) as HTMLButtonElement;
+    row.focus();
     await click(childButton('component:web-navigation'));
     await settle();
+    // The activated row was replaced: focus moves to the pending heading, and the wait is announced.
+    expect(document.activeElement?.id).toBe('inspector-pending-title');
+    expect(liveMessage()).toBe('Loading Navigation and history…');
     expect(compiles.map(compile => compile.focus)).toEqual(['component:web-navigation']);
     // Waiting: the target's own header, no stale container title, actions or child list.
     expect(pendingTitle()).toBe('Navigation and history');
@@ -300,6 +308,53 @@ describe('open inside a non-resident child', () => {
     await settle();
     expect(pendingTitle()).toBeUndefined();
     expect(entityTitle()).toBe(restored);
+  });
+
+  it('gives the pending header the same kicker the loaded inspector shows', async () => {
+    await mount('/?fixture=scan&backend=canvas2d&sel=system%3Aokie');
+    await click('#details-tab');
+    resident.enabled = false;
+    const compiles: Array<() => void> = [];
+    vi.spyOn(fixture, 'createSceneAsync').mockImplementation((focus, previous, residency) => new Promise<AtlasScene>(done => {
+      compiles.push(() => done(fixture.createScene(focus, previous, residency)));
+    }));
+    await click(childButton('container:web-app'));
+    await settle();
+    expect(pendingTitle()).toBe('Atlas web app');
+    const pendingKicker = kicker();
+    await act(async () => compiles[0]!());
+    await settle();
+    expect(entityTitle()).toBe('Atlas web app');
+    expect(kicker()).toBe(pendingKicker);
+  });
+
+  // Code children keep their own open (owner-rooted L4 compile, maybe no selection change). In a
+  // compiled scene they carry kind 'component' and only detail 'code', so the guard must use detail.
+  it.each([
+    ['the component is the L4 root', '/?fixture=scan&backend=canvas2d&root=component%3Aweb-navigation&sel=component%3Aweb-navigation&detail=code', true],
+    ['the component is under a container root', '/?fixture=scan&backend=canvas2d&root=container%3Aweb-app&sel=component%3Aweb-navigation', true],
+    ['the component is the L4 root, resident path off', '/?fixture=scan&backend=canvas2d&root=component%3Aweb-navigation&sel=component%3Aweb-navigation&detail=code', false],
+  ] as const)('never shows a pending view for a code child when %s, and keeps focus on its row', async (_case, url, residentPath) => {
+    await mount(url);
+    await click('#details-tab');
+    expect(entityTitle()).toBe('Navigation and history');
+    resident.enabled = residentPath;
+    vi.spyOn(fixture, 'createSceneAsync').mockImplementation(() => new Promise<AtlasScene>(() => {}));
+    const pending: boolean[] = [];
+    const observer = new MutationObserver(() => pending.push(Boolean(host.querySelector('[data-testid="inspector-pending-child"]'))));
+    observer.observe(host, { childList: true, subtree: true });
+    await settle(); // the Details tab's own deferred focus runs first
+    const row = host.querySelector(childButton('code:web-navigation:canonical-url')) as HTMLButtonElement;
+    expect(row).not.toBeNull();
+    row.focus();
+    expect(document.activeElement).toBe(row);
+    await click(childButton('code:web-navigation:canonical-url'));
+    await settle();
+    observer.disconnect();
+    expect(pending).not.toContain(true);
+    expect(host.querySelector('[data-testid="inspector-pending-child"]')).toBeNull();
+    expect(row.isConnected).toBe(true);
+    expect(document.activeElement).toBe(row);
   });
 
   it('keeps the resident fast path free of any pending view', async () => {

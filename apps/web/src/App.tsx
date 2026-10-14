@@ -6,7 +6,7 @@ import { navigationEntityReference } from './navigation/entityReferences';
 import { prepareLevelSceneWithDeadline, clearLevelScenePreparation, levelScenePreparationPending, runLevelSceneGesture, LEVEL_SCENE_PREPARING } from './renderer/levelScenePreparation';
 import { compileCurrentGeneration } from './renderer/compileCurrentGeneration';
 import { navigateResidentInspectorChild } from './inspector/residentInspectorChild';
-import { createPendingInspectorChildSlot, pendingInspectorChild, PendingInspectorChildView, visiblePendingInspectorChild, type PendingInspectorChild } from './inspector/pendingInspectorChild';
+import { createPendingInspectorChildSlot, inspectorLevelLabel, pendingInspectorChild, PendingInspectorChildView, visiblePendingInspectorChild, type PendingInspectorChild } from './inspector/pendingInspectorChild';
 import { prepareReverseScene } from './renderer/reverseScenePreparation';
 import { initialSceneBandsMatch } from './renderer/initialSceneCompatibility';
 import { recordAtlasFirstFrame } from './performance/loadTimings';
@@ -2005,8 +2005,13 @@ export function App() {
         };
       });
       // Shown after the navigation began (beginning cancels any older pending child).
-      const child = sceneRef.current.entities.find(entity => entity.id === id) ?? activeSnapshot.entities.find(entity => entity.id === id);
-      const pending = child && child.kind !== 'code' ? pendingChildSlotRef.current.show(pendingInspectorChild(child, selected.id)) : undefined;
+      // Code children keep their own path (scene code entities carry kind 'component', detail 'code').
+      // The header is the entity the loaded inspector will resolve, so its kicker matches byte for byte.
+      const canonicalChild = activeSnapshot.entities.find(entity => entity.id === id);
+      const child = canonicalChild || sceneRef.current.entities.some(entity => entity.id === id)
+        ? resolveInspectorEntity(activeSnapshot, sceneRef.current.entities, id, publishedInspector) : undefined;
+      const pending = child && child.detail !== 'code' && canonicalChild?.kind !== 'code' ? pendingChildSlotRef.current.show(pendingInspectorChild(child, selected.id)) : undefined;
+      if (pending && child) setLiveMessage(`Loading ${child.name}…`);
       try { await navigation; } finally { pending?.settle(); }
       return;
     }
@@ -2058,8 +2063,7 @@ export function App() {
   const selectedHasChildren = scanFixture
     ? scanEntityHasChildren(activeSnapshot, selected.id)
     : selectedChildren.length > 0;
-  const selectedLevel = Math.max(0, semanticDetails.indexOf(selected.detail ?? 'context'));
-  const selectedLevelLabel = `${levels[selectedLevel]?.short ?? 'L1'} · ${(selected.kindLabel ?? selected.detail ?? selected.kind).toUpperCase()}`;
+  const selectedLevelLabel = inspectorLevelLabel(selected);
   const detailsWidthRange = inspectorWidthRange(window.innerWidth);
   useEffect(() => {
     if (inspectorSelectionRef.current === selected.id) return;

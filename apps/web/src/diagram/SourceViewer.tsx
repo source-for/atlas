@@ -240,7 +240,7 @@ export function SourceViewer({
     }
   };
 
-  if (!excerpt && pending === 'loading') return <SourceViewerSkeleton/>;
+  if (!excerpt && pending === 'loading') return <SourceViewerSkeleton onFeedback={onFeedback}/>;
   if (!excerpt && pending === 'failed') {
     return <div className="source-unavailable" role="status"><strong>Source excerpt could not be loaded</strong><p>Select Details and then Source to try again. Details and relative evidence remain available.</p></div>;
   }
@@ -296,13 +296,18 @@ export function SourceViewer({
 
 const skeletonLineWidths = [62, 48, 71, 39, 66, 54, 30, 58, 74, 45, 61, 36];
 
-/** The viewer's own boxes with placeholder lines, so the excerpt replaces it in place. */
-export function SourceViewerSkeleton() {
+/**
+ * The viewer's own boxes with placeholder lines, so the excerpt replaces it in place.
+ * "Loading …" goes to the app's polite live region (`onFeedback`): a status node
+ * mounted with its text, inside `aria-busy`, is not reliably announced.
+ */
+export function SourceViewerSkeleton({ onFeedback }: { onFeedback: (message: string) => void }) {
+  useEffect(() => { onFeedback('Loading source excerpt…'); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return <section aria-busy="true" aria-label="Loading source excerpt" className="source-viewer source-viewer-loading" data-testid="source-loading">
     <header className="source-meta"><div><span className="inspector-skeleton-line" style={{ width: 180 }}/><span className="inspector-skeleton-line" style={{ width: 120 }}/></div></header>
     <div className="source-code"><div className="source-lines">
       {skeletonLineWidths.map((width, index) => <div aria-hidden="true" className="source-line" key={index}><span className="source-line-number"/><span className="inspector-skeleton-line" style={{ width: `${width}%` }}/></div>)}
     </div></div>
-    <p className="source-loading-status" role="status">Loading source excerpt…</p>
+    <p aria-hidden="true" className="source-loading-status">Loading source excerpt…</p>
   </section>;
 }

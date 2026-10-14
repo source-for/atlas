@@ -26,6 +26,8 @@ describe('source viewer helpers', () => {
     expect(loading).toContain('class="source-viewer source-viewer-loading"');
     expect(loading).toContain('aria-busy="true"');
     expect(loading).not.toContain('unavailable');
+    // Announced through the app's live region, not a prefilled status inside aria-busy.
+    expect(loading).not.toContain('role="status"');
     const failed = renderToStaticMarkup(createElement(SourceViewer, { excerpt: undefined, pending: 'failed', onFeedback: () => undefined }));
     expect(failed).toContain('Source excerpt could not be loaded');
     expect(failed).not.toContain('no portable frozen source excerpt');
