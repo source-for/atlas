@@ -15,7 +15,7 @@ import { ASPECT_PRESET_TARGET, parsePortableAtlas, type PortableAtlas } from '@o
 import { installPublishedAtlasAttribution, releaseAtlasAttributionReservation, reserveAtlasAttribution } from './atlasAttribution';
 import { AppLoadErrorScreen } from './AppLoadErrorScreen';
 import { BootShell } from './BootShell';
-import { retryableImport } from './retryableImport';
+import { ScanErrorScreen } from './ScanErrorScreen';
 import { bootShellHeaderSlots, bootShellLayout, bootShellRepositoryId, createBootShellOwner, recallRouteRepository, rememberRouteRepository, type BootShellStep } from './bootShellState';
 import { bootNeighborhoodAtlas } from './neighborhoodBoot';
 import type { AppRoute } from './renderer/route';
@@ -47,7 +47,6 @@ import {
   fetchScanTrioLoader,
   loadScanFixture,
   loadScanNeighborhoodFixtureFromSearch,
-  ScanFixtureError,
   type ScanFixture,
   type ScanTrioLoader,
 } from './renderer/scanFixture';
@@ -73,19 +72,6 @@ function bootstrapScanAspect(): number {
   return ASPECT_PRESET_TARGET.landscape;
 }
 
-function ScanErrorScreen({ error }: { error: unknown }) {
-  const issues = error instanceof ScanFixtureError ? error.issues : [];
-  const message = error instanceof Error ? error.message : String(error);
-  return <main role="alert" style={{ maxWidth: '720px', margin: '0 auto', padding: '4rem 1.5rem', color: '#eef4f2', fontFamily: 'IBM Plex Sans, ui-sans-serif, system-ui, sans-serif' }}>
-    <h1 style={{ fontSize: '1.4rem', marginBottom: '0.75rem' }}>Scanned snapshot could not be loaded</h1>
-    <p style={{ color: '#b7c3c0' }}>The <code>fixtures/scan/</code> trio failed to load or validate. Nothing is rendered rather than showing an invalid snapshot.</p>
-    {issues.length
-      ? <ul style={{ lineHeight: 1.8 }}>{issues.map((issue, index) => <li key={index}>{issue.path ? <><code style={{ color: '#d9ff70' }}>{issue.path}</code>{' — '}</> : null}{issue.message}</li>)}</ul>
-      : <pre style={{ whiteSpace: 'pre-wrap', color: '#ff9b9b' }}>{message}</pre>}
-    <p style={{ color: '#79dfd4', marginTop: '1.5rem' }}>Regenerate with <code>okie-scan</code>, or load the <a href="?fixture=okie" style={{ color: '#79dfd4' }}>demo</a>.</p>
-  </main>;
-}
-
 async function tryBootScanFixture(
   load: ScanTrioLoader | undefined,
   slug: string | undefined,
@@ -104,10 +90,15 @@ async function tryBootScanFixture(
 
 /**
  * CLA-268: App's module, requested while the atlas data is still being prepared instead of after it. App reads the
- * active fixture at import (refreshAppScanFixture re-reads it before mount). A failed import is not kept, so the await
- * before mount (or a later boot) imports again.
+ * active fixture at import (refreshAppScanFixture re-reads it before mount). The early request and the await before
+ * mount share one import. A failed import cannot be retried in the page (the browser's module map replays the
+ * failure for that URL without refetching), so the error screen's Reload is the recovery.
  */
-const loadAppModule = retryableImport(() => import('./App'));
+let appModule: Promise<typeof import('./App')> | undefined;
+function loadAppModule(): Promise<typeof import('./App')> {
+  appModule ??= import('./App');
+  return appModule;
+}
 
 /** CLA-268: start the renderer's WASM download/compile (not for the Canvas 2D backend, which never loads it). */
 function prewarmRenderer(): void {
@@ -209,7 +200,7 @@ async function bootScanFixture(load: ScanTrioLoader | undefined, slug: string | 
   const result = await tryBootScanFixture(load, slug);
   if (!result.ok) {
     setDocumentPage(documentPageFor('error'));
-    renderRoot(<StrictMode><ScanErrorScreen error={result.error} /></StrictMode>);
+    renderRoot(<StrictMode><ScanErrorScreen error={result.error} onRetry={() => window.location.reload()} /></StrictMode>);
     return false;
   }
   return true;
@@ -453,7 +444,7 @@ async function boot() {
     if (!atlasReady) {
       releaseAtlasAttributionReservation(document);
       setDocumentPage(documentPageFor('error'));
-      renderRoot(<StrictMode><ScanErrorScreen error={lastError} /></StrictMode>);
+      renderRoot(<StrictMode><ScanErrorScreen error={lastError} onRetry={() => window.location.reload()} /></StrictMode>);
       return;
     }
   } else {
@@ -468,18 +459,19 @@ async function boot() {
     }
   }
   startupLifetime.assertCurrent();
-  let appModule: Awaited<ReturnType<typeof loadAppModule>>;
+  let app: Awaited<ReturnType<typeof loadAppModule>>;
   try {
-    appModule = await loadAppModule();
+    app = await loadAppModule();
   } catch (error) {
-    // The skeleton must not keep claiming "Opening the map…": say what failed and offer a reload.
+    // The skeleton must not keep claiming "Opening the map…": say what failed and offer a reload (only a reload
+    // fetches the chunk again).
     startupLifetime.assertCurrent();
     releaseAtlasAttributionReservation(document);
     setDocumentPage(documentPageFor('error'));
     renderRoot(<StrictMode><AppLoadErrorScreen error={error} onReload={() => window.location.reload()}/></StrictMode>);
     return;
   }
-  const { App, refreshAppScanFixture } = appModule;
+  const { App, refreshAppScanFixture } = app;
   startupLifetime.assertCurrent();
   // App may have been imported before the fixture was set (CLA-268): read it now, while App is unmounted.
   refreshAppScanFixture();
