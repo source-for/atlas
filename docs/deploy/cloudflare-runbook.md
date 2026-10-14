@@ -434,6 +434,32 @@ pnpm --silent --filter @okie/edge requests:status production --id 8 --status dec
 The user sees the status on `/account`, with a link to the atlas once it is `published`. Nothing emails them
 yet. Deleting an account, from `/account` or with `users:delete`, deletes its requests too.
 
+**Daily Ask count (CLA-539):** each account gets five Asks per UTC day, counted in the `AtlasBudget` Durable
+Object. To see an account's count for today, or give it its five Asks back:
+
+```sh
+pnpm --silent --filter @okie/edge asks:show production --github-id 123456    # count, refunds, Asks in flight, the UTC day
+pnpm --silent --filter @okie/edge asks:reset production --github-id 123456   # count back to 0; prints the count before
+```
+
+- **What reset clears:** that account's count for today, nothing else. Its refund count, Asks still in flight, the
+  shared daily Ask bucket (`ASK_DAILY_MAX_REQUESTS`) and the dollar ledger stay as they are, so a reset cannot lift
+  the global caps. An Ask in flight during the reset still finishes and its cost is still recorded, but if it ends
+  without an answer it gives no Ask back and is not counted as a refund: the reset already returned it. Asks made
+  after the reset are refunded as usual.
+- **Credentials:** `wrangler login`, as for the commands above. Each run writes a one-time grant into `USERS_DB`
+  (`operator_grants`, only a hash of a random token) with `wrangler d1 execute --remote`, then sends the token to
+  `POST /api/operator/ask-usage`. The grant is for that one action and account, is deleted when the Worker accepts
+  it, and expires after about two minutes (the Worker refuses any grant expiring more than five minutes ahead,
+  written to live longer than five minutes, or with a timestamp that is not a real UTC time in the script's shape).
+  Without a live grant the route answers like any unknown `/api` path.
+- **Staging** is behind Cloudflare Access: set `STAGING_ACCESS_CLIENT_ID` / `STAGING_ACCESS_CLIENT_SECRET` (the
+  `atlas-staging-smoke` token, environment or repo-root `.env`) as for `smoke:staging`.
+- The account must exist in `users`; an unknown GitHub id is reported and exits non-zero. A 404 means the grant was
+  not accepted (or the Worker predates the route): run the command again.
+- Local QA: `asks:show local --github-id 0 [--port 4196]` uses `wrangler d1 execute --local` and a running
+  `pnpm --filter @okie/edge dev` (both read `apps/edge/.wrangler/state`).
+
 **Privacy, terms and cookie notice:** the `/privacy` copy lives in `PRIVACY_COPY` at the top of `apps/web/src/privacyPage.ts` and the `/terms` copy in `TERMS_COPY` in `apps/web/src/termsPage.ts` (its date is `TERMS_VERSION` in `siteMeta.ts`; the operator's legal name on both pages is the one `SITE_OPERATOR` line in `privacyPage.ts`) (its cookie table comes from `auth.ts`, its date from `PRIVACY_POLICY_VERSION` in `apps/web/src/siteMeta.ts`: bump that when the policy changes); the notice's words are `COOKIE_NOTICE_TEXT` in the same `siteMeta.ts`. Copy the owner still has to fill in carries the marker `[pending owner]` (or `[pending owner: <what to do>]`); `deploy:production` refuses to run while `privacyPage.ts` or `termsPage.ts` contains it (staging deploys anyway, and a production `--dry-run` only prints a warning).
 
 **Local:** in `apps/edge/.dev.vars` set `SESSION_SIGNING_KEY` (32+ characters) and either `DEV_AUTH_TEST_LOGIN=1` (a fixed

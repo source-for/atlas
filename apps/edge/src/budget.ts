@@ -14,6 +14,10 @@ import type { EdgeEnv } from './env';
  * A reservation whose settle never arrives (isolate died mid-request) stays counted — fail closed.
  * CLA-472: a settle marked unanswered also gives the account's daily Ask back, at most five times per account per day
  * (the bucket count and dollars stand).
+ * CLA-539: an operator can read one account's count for a day and reset it (operator.ts). A reset clears that
+ * account's `user_requests` row; the bucket, the dollars, the refund count and the open admissions stand. Asks that
+ * were in flight at the reset are remembered in `ask_reset_cleared`: their charge is already gone, so when one of
+ * them settles unanswered it gives nothing back (it must not refund an Ask counted after the reset).
  * All methods are synchronous SQL inside one Durable Object, so admission is atomic.
  */
 
@@ -42,8 +46,11 @@ export type DayUsage = {
   openReservations: number;
 };
 
+/** One account's Ask numbers for a day (CLA-539). `openAdmissions` = Asks admitted and not yet settled. */
+export type AccountAskUsage = { day: string; requests: number; refunds: number; openAdmissions: number };
+
 const KEEP_DAYS = 14;
-const USER_DAILY_ASKS = 5;
+export const USER_DAILY_ASKS = 5;
 const USER_DAILY_REFUNDS = 5;
 
 function dayMinus(day: string, days: number): string {
@@ -64,6 +71,7 @@ export class AtlasBudget extends DurableObject<EdgeEnv> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS dollar_reservations (id TEXT PRIMARY KEY, day TEXT NOT NULL, amount REAL NOT NULL)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS ask_admissions (reservation_id TEXT PRIMARY KEY, day TEXT NOT NULL, account_id TEXT NOT NULL)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS ask_refunds (day TEXT NOT NULL, account_id TEXT NOT NULL, refunds INTEGER NOT NULL, PRIMARY KEY (day, account_id))`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS ask_reset_cleared (reservation_id TEXT PRIMARY KEY, day TEXT NOT NULL)`);
   }
 
   private requests(day: string, bucket: BudgetBucket): number {
@@ -92,6 +100,7 @@ export class AtlasBudget extends DurableObject<EdgeEnv> {
     this.sql.exec('DELETE FROM dollar_reservations WHERE day < ?', cutoff);
     this.sql.exec('DELETE FROM ask_admissions WHERE day < ?', cutoff);
     this.sql.exec('DELETE FROM ask_refunds WHERE day < ?', cutoff);
+    this.sql.exec('DELETE FROM ask_reset_cleared WHERE day < ?', cutoff);
 
     if (this.requests(input.day, input.bucket) + 1 > input.maxRequests) return { ok: false, reason: 'requests' };
     let reservationId: string | undefined;
@@ -114,14 +123,16 @@ export class AtlasBudget extends DurableObject<EdgeEnv> {
   /**
    * Close a reservation at the real cost (`undefined`/invalid → keep the estimate). Unknown ids are ignored.
    * `unanswered` (CLA-472) also returns the account's daily Ask, once per reservation and at most five times per
-   * account per day, so one account cannot spend the shared daily bucket on refunded failures.
+   * account per day, so one account cannot spend the shared daily bucket on refunded failures. An admission whose
+   * charge an operator reset already cleared (CLA-539) settles like any other but returns nothing.
    */
   settle(reservationId: string, actualDollars?: number, unanswered = false): void {
     const admission = this.sql.exec<{ day: string; account_id: string }>('SELECT day, account_id FROM ask_admissions WHERE reservation_id = ?', reservationId).toArray()[0];
     if (admission) {
       this.sql.exec('DELETE FROM ask_admissions WHERE reservation_id = ?', reservationId);
+      const cleared = this.sql.exec('DELETE FROM ask_reset_cleared WHERE reservation_id = ? RETURNING reservation_id', reservationId).toArray().length > 0;
       const refunds = this.sql.exec<{ refunds: number }>('SELECT refunds FROM ask_refunds WHERE day = ? AND account_id = ?', admission.day, admission.account_id).toArray()[0]?.refunds ?? 0;
-      if (unanswered && refunds < USER_DAILY_REFUNDS) {
+      if (unanswered && !cleared && refunds < USER_DAILY_REFUNDS) {
         this.sql.exec('UPDATE user_requests SET requests = requests - 1 WHERE day = ? AND account_id = ? AND requests > 0', admission.day, admission.account_id);
         this.sql.exec('INSERT INTO ask_refunds (day, account_id, refunds) VALUES (?, ?, 1) ON CONFLICT (day, account_id) DO UPDATE SET refunds = refunds + 1', admission.day, admission.account_id);
       }
@@ -135,6 +146,26 @@ export class AtlasBudget extends DurableObject<EdgeEnv> {
       row.day,
       amount,
     );
+  }
+
+  accountUsage(day: string, accountId: string): AccountAskUsage {
+    const requests = this.sql.exec<{ requests: number }>('SELECT requests FROM user_requests WHERE day = ? AND account_id = ?', day, accountId).toArray()[0]?.requests ?? 0;
+    const refunds = this.sql.exec<{ refunds: number }>('SELECT refunds FROM ask_refunds WHERE day = ? AND account_id = ?', day, accountId).toArray()[0]?.refunds ?? 0;
+    const openAdmissions = this.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM ask_admissions WHERE day = ? AND account_id = ?', day, accountId).toArray()[0]?.count ?? 0;
+    return { day, requests, refunds, openAdmissions };
+  }
+
+  /**
+   * Operator reset (CLA-539): the account has its five Asks for `day` again. Only the account's `user_requests`
+   * row goes; its refunds and open admissions, the shared bucket count and the dollar ledger stand. The Asks in
+   * flight right now are marked in `ask_reset_cleared`: each still settles (admission closed, dollars settled), but
+   * an unanswered one no longer returns an Ask or counts as a refund, since the reset already returned it.
+   */
+  resetAccount(day: string, accountId: string): AccountAskUsage & { requestsBefore: number } {
+    const requestsBefore = this.accountUsage(day, accountId).requests;
+    this.sql.exec('INSERT OR IGNORE INTO ask_reset_cleared (reservation_id, day) SELECT reservation_id, day FROM ask_admissions WHERE day = ? AND account_id = ?', day, accountId);
+    this.sql.exec('DELETE FROM user_requests WHERE day = ? AND account_id = ?', day, accountId);
+    return { ...this.accountUsage(day, accountId), requestsBefore };
   }
 
   usage(day: string): DayUsage {
