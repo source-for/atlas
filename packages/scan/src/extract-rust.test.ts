@@ -60,7 +60,7 @@ test("rust crate extraction emits L3 files and L4 outline; Open inside is enable
   const discovery: Discovery = {
     sourceFiles: ["crates/engine/src/lib.rs", "crates/engine/src/hit_test.rs"],
     units: [
-      { kind: "rust", dir: "crates/engine", name: "engine", evidencePath: "crates/engine" },
+      { kind: "rust", dir: "crates/engine", name: "engine", evidencePath: "crates/engine", packageManifest: undefined },
     ],
     unitByFile: new Map([
       ["crates/engine/src/lib.rs", "crates/engine"],
@@ -109,7 +109,7 @@ test("rust crate extraction emits L3 files and L4 outline; Open inside is enable
 test("rust --public-api keeps pub items and pub methods only", () => {
   const discovery: Discovery = {
     sourceFiles: ["crates/engine/src/lib.rs"],
-    units: [{ kind: "rust", dir: "crates/engine", name: "engine", evidencePath: "crates/engine" }],
+    units: [{ kind: "rust", dir: "crates/engine", name: "engine", evidencePath: "crates/engine", packageManifest: undefined }],
     unitByFile: new Map([["crates/engine/src/lib.rs", "crates/engine"]]),
     unitByPackageName: new Map(),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },

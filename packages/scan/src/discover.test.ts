@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { discoverExtractedTree, discoverRepository } from "./discover.js";
-import { scanRepository } from "./scan.js";
+import { cargoManifestDependencies, cargoManifestPathDependencies, cargoPackageName, cargoWorkspaceMembers, discoverExtractedTree, discoverRepository } from "./discover.js";
+import { pinRepository } from "./pin.js";
+import { buildScanArtifacts, discoveryLimitations, displayText, LIMITATION_TEXT_MAX_CHARS, scanRepository, UNRESOLVED_IMPORTS_SHOWN, unresolvedImportLimitations } from "./scan.js";
 
 /** Builds a tiny staged git repo (git ls-files sees staged files — no commit needed). */
 function makeRepo(files: Record<string, string>): string {
@@ -49,7 +50,7 @@ test("single-package repo (no workspace) becomes one root container named from p
   });
 });
 
-test("discovers .mts/.cts/.cjs/.jsx; skips .js in a TS repo (counted); includes .js only in a pure-JS repo", () => {
+test("discovers .mts/.cts/.cjs/.jsx and hand-written .js in a TS repo; a pure-JS repo includes every .js", () => {
   withRepo({
     "package.json": JSON.stringify({ name: "m" }),
     "tsconfig.json": "{}",
@@ -61,10 +62,10 @@ test("discovers .mts/.cts/.cjs/.jsx; skips .js in a TS repo (counted); includes 
     "legacy.js": "module.exports = 1;\n",
   }, dir => {
     const discovery = discoverRepository(dir);
-    for (const file of ["a.mts", "b.cts", "c.cjs", "d.jsx", "e.ts"]) assert.ok(discovery.sourceFiles.includes(file), `${file} discovered`);
-    assert.ok(!discovery.sourceFiles.includes("legacy.js"), ".js skipped in a TS repo");
-    assert.equal(discovery.summary.includedJs, false);
-    assert.equal(discovery.summary.skippedJsFiles, 1);
+    for (const file of ["a.mts", "b.cts", "c.cjs", "d.jsx", "e.ts", "legacy.js"]) assert.ok(discovery.sourceFiles.includes(file), `${file} discovered`);
+    assert.equal(discovery.summary.includedJs, false, "a TS repo filters .js");
+    assert.equal(discovery.summary.skippedJsFiles, 0);
+    assert.equal("skippedJsByReason" in discovery.summary, false, "absent when nothing was skipped");
   });
   withRepo({
     "package.json": JSON.stringify({ name: "j" }),
@@ -193,13 +194,15 @@ test("tarball walk applies the same extension/exclusion filters and skips node_m
     "src/index.ts": "export const x = 1;\n",
     "src/index.spec.ts": "1;\n",
     "src/legacy.js": "module.exports = 1;\n",
+    "src/bundle.min.js": "1;\n",
     "dist/index.js": "1;\n",
     "types.d.ts": "export {};\n",
     "node_modules/dep/index.ts": "export const dep = 1;\n",
   }, dir => {
     const discovery = discoverExtractedTree(dir);
-    assert.deepEqual(discovery.sourceFiles, ["src/index.ts"]);
-    assert.equal(discovery.summary.skippedJsFiles, 1, ".js counted, not silently dropped");
+    assert.deepEqual(discovery.sourceFiles, ["src/index.ts", "src/legacy.js"]);
+    assert.equal(discovery.summary.skippedJsFiles, 1, "minified .js counted, not silently dropped");
+    assert.deepEqual(discovery.summary.skippedJsByReason, { testOrVendorDirectory: 0, minified: 1, compiledSibling: 0 });
     assert.ok(!discovery.sourceFiles.some(f => f.startsWith("node_modules/")), "node_modules never walked");
   });
 });
@@ -233,11 +236,636 @@ test("conventional testdata/ directories are excluded and counted (CLA-299)", ()
   withRepo(files, dir => {
     const discovery = discoverRepository(dir);
     assert.deepEqual(discovery.sourceFiles, ["src/checker.ts", "src/testdata-helpers.ts"], "only a testdata/ DIRECTORY is excluded");
-    assert.equal(discovery.summary.excludedTestDataFiles, 2, "only files newly excluded by the testdata rule are counted (.d.ts / *.test.ts were already out; .js is not scanned in a TS repo)");
+    assert.equal(discovery.summary.excludedTestDataFiles, 3, "only files newly excluded by the testdata rule are counted (.d.ts / *.test.ts were already out; a TS repo scans .js, so testdata .js counts)");
   });
-  withTree(files, dir => assert.equal(discoverExtractedTree(dir).summary.excludedTestDataFiles, 2));
+  withTree(files, dir => assert.equal(discoverExtractedTree(dir).summary.excludedTestDataFiles, 3));
   withRepo({ "package.json": JSON.stringify({ name: "plain" }), "index.ts": "export {};\n" }, dir => {
     assert.equal("excludedTestDataFiles" in discoverRepository(dir).summary, false, "absent when nothing was excluded");
     assert.equal("skippedEntries" in discoverRepository(dir).summary, false);
   });
+});
+
+// CLA-578: workspace declarations beyond pnpm-workspace.yaml.
+
+const memberDirs = (dir: string): string[] => discoverRepository(dir).units.filter(unit => unit.kind === "member").map(unit => unit.dir);
+
+test("root package.json workspaces (array form) declares members", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "mono", workspaces: ["packages/*", "./apps/web/"] }),
+    "tsconfig.json": "{}",
+    "packages/a/package.json": JSON.stringify({ name: "@m/a" }),
+    "packages/a/src/index.ts": "export const a = 1;\n",
+    "apps/web/package.json": JSON.stringify({ name: "@m/web" }),
+    "apps/web/src/main.ts": "export const web = 1;\n",
+    "apps/other/package.json": JSON.stringify({ name: "@m/other" }),
+    "apps/other/src/main.ts": "export const other = 1;\n",
+  }, dir => {
+    const discovery = discoverRepository(dir);
+    assert.equal(discovery.summary.singlePackage, false);
+    assert.deepEqual(memberDirs(dir), ["apps/web", "packages/a"], "./ prefix and trailing / are normalized; undeclared apps/other is not a member");
+    assert.equal(discovery.unitByPackageName.get("@m/a"), "packages/a");
+  });
+});
+
+test("root package.json workspaces (yarn object form) declares members; nohoist is ignored", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "mono", workspaces: { packages: ["libs/**"], nohoist: ["**/react-native"] } }),
+    "libs/core/package.json": JSON.stringify({ name: "@m/core" }),
+    "libs/core/index.ts": "export const core = 1;\n",
+    "libs/ui/button/package.json": JSON.stringify({ name: "@m/button" }),
+    "libs/ui/button/index.ts": "export const button = 1;\n",
+  }, dir => assert.deepEqual(memberDirs(dir), ["libs/core", "libs/ui/button"], "`**` matches nested member dirs"));
+});
+
+test("pnpm-workspace.yaml and package.json workspaces: union of includes, negations applied after", () => {
+  withRepo({
+    "pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n  - '!packages/legacy'\n",
+    "package.json": JSON.stringify({ name: "mono", workspaces: ["apps/*", "!apps/admin"] }),
+    "packages/a/package.json": JSON.stringify({ name: "@m/a" }),
+    "packages/a/index.ts": "export const a = 1;\n",
+    "packages/legacy/package.json": JSON.stringify({ name: "@m/legacy" }),
+    "packages/legacy/index.ts": "export const legacy = 1;\n",
+    "apps/web/package.json": JSON.stringify({ name: "@m/web" }),
+    "apps/web/index.ts": "export const web = 1;\n",
+    "apps/admin/package.json": JSON.stringify({ name: "@m/admin" }),
+    "apps/admin/index.ts": "export const admin = 1;\n",
+  }, dir => {
+    assert.deepEqual(memberDirs(dir), ["apps/web", "packages/a"], "members from both files; each file's negation removes a member");
+    const discovery = discoverRepository(dir);
+    assert.equal(discovery.unitByFile.get("packages/legacy/index.ts"), "\0tooling", "a negated member's files fall to the tooling bucket");
+  });
+});
+
+test("cargoWorkspaceMembers reads members/exclude: globs, paths, multi-line arrays, comments, quotes", () => {
+  const manifest = [
+    "[package]",
+    'name = "root" # members = ["nope"]',
+    "",
+    "[workspace]",
+    'resolver = "2"',
+    "members = [",
+    '  "crates/*", # glob',
+    "  'tools/gen',",
+    '  "engine/#core",',
+    "  # \"commented/out\",",
+    "]",
+    'exclude = ["crates/scratch"]',
+    "",
+    "[workspace.package]",
+    'members = ["not/workspace"]',
+    "",
+    "[[bin]]",
+    'name = "x"',
+  ].join("\n");
+  assert.deepEqual(cargoWorkspaceMembers(manifest), { members: ["crates/*", "tools/gen", "engine/#core"], exclude: ["crates/scratch"] });
+  assert.deepEqual(cargoWorkspaceMembers('[package]\nname = "solo"\n'), { members: [], exclude: [] });
+});
+
+test("root Cargo.toml [workspace] members decide Rust crates (globs, paths, exclude, tracked manifest only)", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "mixed" }),
+    "Cargo.toml": '[workspace]\nmembers = [\n  "crates/*",\n  "tools/gen", # a plain path\n  "rust/*",\n]\nexclude = ["crates/scratch"]\n',
+    "crates/engine/Cargo.toml": '[package]\nname = "engine"\n',
+    "crates/engine/src/lib.rs": "pub fn run() {}\n",
+    "crates/scratch/Cargo.toml": '[package]\nname = "scratch"\n',
+    "crates/scratch/src/lib.rs": "pub fn scratch() {}\n",
+    "tools/gen/Cargo.toml": '[package]\nname = "gen"\n',
+    "tools/gen/src/main.rs": "fn main() {}\n",
+    "rust/no-manifest/src/lib.rs": "pub fn orphan() {}\n",
+  }, dir => {
+    const discovery = discoverRepository(dir);
+    assert.deepEqual(discovery.units.filter(unit => unit.kind === "rust").map(unit => unit.dir), ["crates/engine", "tools/gen"]);
+    assert.equal(discovery.unitByFile.get("tools/gen/src/main.rs"), "tools/gen", "a member outside crates/ is a crate unit");
+    assert.notEqual(discovery.unitByFile.get("crates/scratch/src/lib.rs"), "crates/scratch", "an excluded member is not a crate unit");
+    assert.notEqual(discovery.unitByFile.get("rust/no-manifest/src/lib.rs"), "rust/no-manifest", "a matched dir without a tracked Cargo.toml is not a crate");
+  });
+});
+
+test("without declared [workspace] members, crates/*/Cargo.toml is the Rust crate fallback", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "mixed" }),
+    "Cargo.toml": '[workspace]\nresolver = "2"\n',
+    "crates/engine/Cargo.toml": '[package]\nname = "engine"\n',
+    "crates/engine/src/lib.rs": "pub fn run() {}\n",
+    "tools/gen/Cargo.toml": '[package]\nname = "gen"\n',
+    "tools/gen/src/main.rs": "fn main() {}\n",
+  }, dir => {
+    assert.deepEqual(discoverRepository(dir).units.filter(unit => unit.kind === "rust").map(unit => unit.dir), ["crates/engine"]);
+  });
+});
+
+// CLA-578: `.js` in a TypeScript repo.
+
+test("TS repo scans hand-written .js; skips test/vendor dirs, *.min.js and compiled siblings, counted by reason", () => {
+  const files = {
+    "package.json": JSON.stringify({ name: "m" }),
+    "tsconfig.json": "{}",
+    "src/index.ts": "export const x = 1;\n",
+    "src/index.js": "exports.x = 1;\n",
+    "src/view.tsx": "export const View = 1;\n",
+    "src/view.js": "exports.View = 1;\n",
+    "src/legacy.js": "module.exports = 1;\n",
+    "src/typed.js": "module.exports = 1;\n",
+    "src/typed.d.ts": "export declare const typed: number;\n",
+    "src/lib/chart.min.js": "1;\n",
+    "test/helper.js": "1;\n",
+    "src/tests/setup.js": "1;\n",
+    "src/fixture/a.js": "1;\n",
+    "src/fixtures/b.js": "1;\n",
+    "src/__fixtures__/c.js": "1;\n",
+    "vendor/jquery.js": "1;\n",
+    "third_party/lib.js": "1;\n",
+    "contest/entry.js": "1;\n",
+    "vendored-ui/button.js": "1;\n",
+    "vendor/keep.mjs": "export const keep = 1;\n",
+    "test/keep.cjs": "module.exports = 1;\n",
+    "dist/out.js": "1;\n",
+  };
+  const check = (discovery: ReturnType<typeof discoverRepository>): void => {
+    assert.deepEqual(discovery.sourceFiles, [
+      "contest/entry.js",
+      "src/index.ts",
+      "src/legacy.js",
+      "src/typed.js",
+      "src/view.tsx",
+      "test/keep.cjs",
+      "vendor/keep.mjs",
+      "vendored-ui/button.js",
+    ], "whole-segment dirs only; a .d.ts alone does not make a .js compiled; .mjs/.cjs always scanned");
+    assert.equal(discovery.summary.includedJs, false);
+    assert.equal(discovery.summary.skippedJsFiles, 10);
+    assert.deepEqual(discovery.summary.skippedJsByReason, { testOrVendorDirectory: 7, minified: 1, compiledSibling: 2 });
+    assert.deepEqual(discoveryLimitations(discovery.summary), [
+      "10 .js file(s) in this TypeScript repository were not scanned: 7 under a test/fixture/vendor directory; 1 minified (*.min.js); 2 compiled output beside a .ts/.tsx source.",
+    ]);
+  };
+  withRepo(files, dir => check(discoverRepository(dir)));
+  withTree(files, dir => check(discoverExtractedTree(dir)));
+});
+
+test("a pure-JS repo still scans every .js (min, test/ and vendor/ included)", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "j" }),
+    "index.js": "module.exports = 1;\n",
+    "lib/chart.min.js": "1;\n",
+    "vendor/jquery.js": "1;\n",
+    "test/helper.js": "1;\n",
+  }, dir => {
+    const discovery = discoverRepository(dir);
+    assert.equal(discovery.summary.includedJs, true);
+    assert.deepEqual(discovery.sourceFiles, ["index.js", "lib/chart.min.js", "test/helper.js", "vendor/jquery.js"]);
+    assert.equal(discovery.summary.skippedJsFiles, 0);
+    assert.deepEqual(discoveryLimitations(discovery.summary), []);
+  });
+});
+
+// CLA-578: unresolved relative imports become scan-level limitations.
+
+test("a quick scan lists unresolved relative imports in analysis.limitations (file:line and specifier)", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "broken" }),
+    "tsconfig.json": "{}",
+    "src/index.ts": "import { ok } from './ok.js';\nimport { gone } from './gone.js';\nexport const all = [ok, gone];\n",
+    "src/ok.ts": "export const ok = 1;\n",
+  }, dir => {
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    const artifacts = scanRepository(dir, { analysisMode: "quick" });
+    assert.deepEqual(artifacts.analysis.limitations, [
+      "1 relative import(s) name no file in the repository; no relation was recorded for them.",
+      "Unresolved relative import src/index.ts:2: './gone.js'",
+    ]);
+  });
+});
+
+test("unresolved-import limitations are capped with a +N more count", () => {
+  assert.deepEqual(unresolvedImportLimitations([]), [], "nothing to say when every import resolved");
+  const many = Array.from({ length: UNRESOLVED_IMPORTS_SHOWN + 7 }, (_, index) => ({ path: "src/a.ts", line: index + 1, specifier: `./m${index}.js` }));
+  const lines = unresolvedImportLimitations(many);
+  assert.equal(lines.length, 1 + UNRESOLVED_IMPORTS_SHOWN + 1);
+  assert.equal(lines[0], `${UNRESOLVED_IMPORTS_SHOWN + 7} relative import(s) name no file in the repository; no relation was recorded for them.`);
+  assert.equal(lines[1], "Unresolved relative import src/a.ts:1: './m0.js'");
+  assert.equal(lines.at(-1), "+7 more unresolved relative import(s) not itemized.");
+});
+
+// CLA-578 review round 1.
+
+test("Cargo [workspace] exclude also filters the crates/* fallback (no members, or members that normalize to none)", () => {
+  for (const workspace of ['[workspace]\nexclude = ["crates/scratch"]\n', '[workspace]\nmembers = ["."]\nexclude = ["crates/scratch"]\n']) {
+    withRepo({
+      "package.json": JSON.stringify({ name: "mixed" }),
+      "Cargo.toml": workspace,
+      "crates/engine/Cargo.toml": '[package]\nname = "engine"\n',
+      "crates/engine/src/lib.rs": "pub fn run() {}\n",
+      "crates/scratch/Cargo.toml": '[package]\nname = "scratch"\n',
+      "crates/scratch/src/lib.rs": "pub fn scratch() {}\n",
+    }, dir => {
+      assert.deepEqual(discoverRepository(dir).units.filter(unit => unit.kind === "rust").map(unit => unit.dir), ["crates/engine"], workspace);
+    });
+  }
+});
+
+test("deepest root wins across Rust crates and JS members: a JS member nested in a crate owns its files", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "mixed", workspaces: ["engine/web", "engine/examples/*"] }),
+    "tsconfig.json": "{}",
+    "Cargo.toml": '[workspace]\nmembers = ["engine"]\n',
+    "engine/Cargo.toml": '[package]\nname = "engine"\n',
+    "engine/src/lib.rs": "pub fn run() {}\n",
+    "engine/web/package.json": JSON.stringify({ name: "@m/web" }),
+    "engine/web/src/index.ts": "export const web = 1;\n",
+    "engine/examples/demo/package.json": JSON.stringify({ name: "@m/demo" }),
+    "engine/examples/demo/main.ts": "export const demo = 1;\n",
+  }, dir => {
+    const discovery = discoverRepository(dir);
+    assert.equal(discovery.unitByFile.get("engine/web/src/index.ts"), "engine/web");
+    assert.equal(discovery.unitByFile.get("engine/src/lib.rs"), "engine");
+    assert.ok(discovery.units.some(unit => unit.kind === "member" && unit.dir === "engine/web"), "the nested web member keeps its unit");
+    assert.equal(discovery.unitByFile.has("engine/examples/demo/main.ts"), false, "a winning fixture member is still skipped, not handed to the crate");
+  });
+});
+
+test("an import of an existing tracked file is never unresolved: single-package root and tooling bucket", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "demo" }),
+    "tsconfig.json": "{}",
+    "src/index.ts": "import './app.css';\nimport logo from './logo.svg';\nimport data from '../data/seed.json';\nimport './gone.css';\nexport const all = [logo, data];\n",
+    "src/app.css": "body {}\n",
+    "src/logo.svg": "<svg/>\n",
+    "data/seed.json": "{}\n",
+  }, dir => {
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    assert.deepEqual(scanRepository(dir, { analysisMode: "quick" }).analysis.limitations, [
+      "1 relative import(s) name no file in the repository; no relation was recorded for them.",
+      "Unresolved relative import src/index.ts:4: './gone.css'",
+    ], "the root unit key is a slug, not a dir: tracked assets must still count as existing");
+  });
+  withRepo({
+    "pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n",
+    "package.json": JSON.stringify({ name: "mono" }),
+    "tsconfig.json": "{}",
+    "packages/a/package.json": JSON.stringify({ name: "@m/a" }),
+    "packages/a/index.ts": "export const a = 1;\n",
+    "scripts/build.mjs": "import config from './config.json' with { type: 'json' };\nimport legacy from './legacy.min.js';\nexport default [config, legacy];\n",
+    "scripts/config.json": "{}\n",
+    "scripts/legacy.min.js": "1;\n",
+  }, dir => {
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    const limitations = scanRepository(dir, { analysisMode: "quick" }).analysis.limitations ?? [];
+    assert.ok(!limitations.some(line => line.includes("relative import")), `tooling imports of tracked JSON / a skipped .js are not unresolved: ${limitations.join(" | ")}`);
+  });
+});
+
+test("same dir as both a JS member and a Rust crate: one Rust unit that keeps the npm name and manifest facts", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "mono", workspaces: ["engine", "app"] }),
+    "tsconfig.json": "{}",
+    "Cargo.toml": '[workspace]\nmembers = ["engine"]\n',
+    "engine/package.json": JSON.stringify({ name: "@m/engine", exports: "./src/index.ts", bin: "./src/cli.ts", dependencies: { pg: "^8.0.0" } }),
+    "engine/Cargo.toml": '[package]\nname = "engine"\n',
+    "engine/src/lib.rs": "pub fn run() {}\n",
+    "engine/src/index.ts": "import pg from 'pg';\nexport const e = 1;\nexport const pool = pg;\n",
+    "engine/src/cli.ts": "export function main() {}\n",
+    "app/package.json": JSON.stringify({ name: "@m/app" }),
+    "app/main.ts": "import { e } from '@m/engine';\nexport const a = e;\n",
+  }, dir => {
+    const discovery = discoverRepository(dir);
+    assert.deepEqual(discovery.units.filter(unit => unit.dir === "engine"), [
+      { kind: "rust", dir: "engine", name: "engine", evidencePath: "engine", packageName: "@m/engine", packageManifest: "engine/package.json" },
+    ], "exactly one unit owns the dir");
+    assert.equal(discovery.unitByPackageName.get("@m/engine"), "engine");
+    assert.equal(discovery.unitByFile.get("engine/src/index.ts"), "engine");
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    const { snapshot } = scanRepository(dir, { analysisMode: "quick" });
+    assert.deepEqual(snapshot.entities.filter(entity => entity.kind === "container").map(entity => entity.id).sort(), ["container:app", "container:engine"]);
+    assert.ok(snapshot.relations.some(relation => relation.from === "container:app" && relation.to === "container:engine"), "an import of the npm name resolves to the merged unit");
+    // The merged unit keeps engine/package.json's npm facts (CLA-578 round 3).
+    assert.ok(snapshot.entities.some(entity => entity.id === "external:pg"), "runtime dependency pg becomes an external system");
+    assert.ok(snapshot.relations.some(relation => relation.from === "container:engine" && relation.to === "external:pg"));
+    const exposureOf = (id: string) => snapshot.entities.find(entity => entity.id === id)?.exposure?.map(item => item.kind) ?? [];
+    assert.ok(exposureOf("code:engine-src-index-ts:e").includes("publicApi"), "exports marks the public API");
+    assert.ok(exposureOf("component:engine-src-cli-ts").includes("entryPoint"), "bin marks the entry point");
+  });
+});
+
+// CLA-578 round QA (real-repo scans).
+
+test("relative imports into node_modules (committed or missing) are never reported as unresolved", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "setup" }),
+    "e2e/setup.js": "const example = require('./node_modules/example');\nimport('./node_modules/example');\nimport('./node_modules/missing');\nmodule.exports = example;\n",
+    "e2e/node_modules/example/index.js": "module.exports = 1;\n",
+  }, dir => {
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    assert.equal(scanRepository(dir, { analysisMode: "quick" }).analysis.limitations, undefined, "package-manager locations are not modelled, so never reported");
+  });
+});
+
+test("Cargo virtual workspace without JS members: no empty root container; a root slug equal to a crate dir gets its own key", () => {
+  const crates = {
+    "Cargo.toml": '[workspace]\nmembers = ["tokio", "benches", "examples", "harness"]\n',
+    "tokio/Cargo.toml": '[package]\nname = "tokio"\n',
+    "tokio/src/lib.rs": "pub fn run() {}\n",
+    "benches/Cargo.toml": '[package]\nname = "benches"\n',
+    "benches/spawn.rs": "fn main() {}\n",
+    "examples/Cargo.toml": '[package]\nname = "examples"\n',
+    "examples/src/hello.rs": "fn main() {}\n",
+    "harness/Cargo.toml": '[package]\nname = "harness"\n',
+    "harness/tests/it.rs": "fn it() {}\n",
+  };
+  withRepo(crates, dir => {
+    const discovery = discoverRepository(dir);
+    assert.equal(discovery.summary.singlePackage, true);
+    assert.deepEqual(discovery.units.map(unit => `${unit.kind}:${unit.dir}`), ["rust:tokio"], "no empty root; benches/harness own no scanned file; examples is a fixture member");
+    assert.deepEqual(discovery.summary.skippedMembers, ["examples"]);
+    assert.equal(discovery.summary.rustCrates, 1);
+    assert.equal(discovery.unitByFile.has("examples/src/hello.rs"), false, "a fixture crate's files are dropped, not re-homed to the root");
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    const containers = scanRepository(dir, { analysisMode: "quick" }).snapshot.entities.filter(entity => entity.kind === "container");
+    assert.deepEqual(containers.map(entity => entity.id), ["container:tokio"]);
+  });
+  withRepo({ "package.json": JSON.stringify({ name: "tokio" }), "scripts/gen.ts": "export const gen = 1;\n", ...crates }, dir => {
+    const discovery = discoverRepository(dir);
+    assert.equal(discovery.unitByFile.get("tokio/src/lib.rs"), "tokio");
+    assert.equal(discovery.unitByFile.get("scripts/gen.ts"), "\0tokio", "a root slug equal to a crate dir gets its own key");
+    assert.deepEqual(discovery.units.map(unit => `${unit.kind}:${unit.name}`).sort(), ["root:tokio", "rust:tokio"]);
+  });
+  // A tooling-only root package.json (name, scripts, devDependencies) declares nothing
+  // the root unit carries: still no empty root, and no duplicate `tokio` container.
+  withRepo({ "package.json": JSON.stringify({ name: "tokio", private: true, scripts: { fmt: "dprint fmt" }, devDependencies: { dprint: "^0.47.0" } }), ...crates }, dir => {
+    assert.deepEqual(discoverRepository(dir).units.map(unit => `${unit.kind}:${unit.dir}`), ["rust:tokio"]);
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    const containers = scanRepository(dir, { analysisMode: "quick" }).snapshot.entities.filter(entity => entity.kind === "container");
+    assert.deepEqual(containers.map(entity => `${entity.id} ${entity.name}`), ["container:tokio tokio"]);
+  });
+  // Runtime dependencies are root-unit facts: the source-empty root is kept, on its own key.
+  withRepo({ "package.json": JSON.stringify({ name: "tokio", dependencies: { pg: "^8.0.0" } }), ...crates }, dir => {
+    const root = discoverRepository(dir).units.find(unit => unit.kind === "root");
+    assert.equal(root?.dir, "\0tokio");
+    assert.equal(root?.packageManifest, "package.json");
+  });
+  withRepo({ "package.json": JSON.stringify({ name: "tokio" }), ...crates }, dir => {
+    assert.deepEqual(discoverRepository(dir, { includeAllMembers: true }).summary.skippedMembers, [], "--include-members also un-skips Cargo fixture members");
+  });
+});
+
+// CLA-578 round 5.
+
+test("a root package.json keeps its exports/bin facts when all source lives in a Cargo crate", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "engine-app", exports: "./engine/src/index.ts", bin: "./engine/src/cli.ts" }),
+    "tsconfig.json": "{}",
+    "Cargo.toml": '[workspace]\nmembers = ["engine"]\n',
+    "engine/Cargo.toml": '[package]\nname = "engine"\n',
+    "engine/src/lib.rs": "pub fn run() {}\n",
+    "engine/src/index.ts": "export const api = 1;\n",
+    "engine/src/cli.ts": "export function main() {}\n",
+  }, dir => {
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    const { snapshot } = scanRepository(dir, { analysisMode: "quick" });
+    const exposureOf = (id: string) => snapshot.entities.find(entity => entity.id === id)?.exposure?.map(item => item.kind) ?? [];
+    assert.ok(exposureOf("code:engine-src-index-ts:api").includes("publicApi"), "root exports marks the public API");
+    assert.ok(exposureOf("component:engine-src-cli-ts").includes("entryPoint"), "root bin marks the entry point");
+  });
+});
+
+test("node_modules targets are never unresolved: a checkout with untracked installed packages and the committed tree agree", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "setup" }),
+    "tsconfig.json": "{}",
+    "src/setup.ts": "import a from './node_modules/installed';\nimport b from '../node_modules/absent/lib.js';\nimport c from './gone';\nexport default [a, b, c];\n",
+  }, dir => {
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    // Installed after the commit: on disk in the checkout, never in the committed tree.
+    mkdirSync(join(dir, "src/node_modules/installed"), { recursive: true });
+    writeFileSync(join(dir, "src/node_modules/installed/index.js"), "module.exports = 1;\n");
+    const expected = [
+      "1 relative import(s) name no file in the repository; no relation was recorded for them.",
+      "Unresolved relative import src/setup.ts:3: './gone'",
+    ];
+    const committed = scanRepository(dir, { analysisMode: "quick" }).analysis.limitations;
+    const checkout = buildScanArtifacts({ discovery: discoverRepository(dir), pin: pinRepository(dir), readFile: path => readFileSync(join(dir, path), "utf8"), repositorySlug: "setup", systemName: "setup" }).analysis.limitations;
+    assert.deepEqual(committed, expected);
+    assert.deepEqual(checkout, expected);
+  });
+});
+
+// CLA-578 Opus review round 1.
+
+test("cargoManifestPathDependencies reads path deps from every dependency table and form", () => {
+  const manifest = [
+    "[package]",
+    'name = "app"',
+    'path = "not-a-dependency"',
+    "[dependencies]",
+    'core = { path = "crates/core" } # inline table',
+    'serde = "1"',
+    "[dev-dependencies]",
+    "fixtures = { path = 'crates/fixtures', optional = true }",
+    "[build-dependencies.gen]",
+    'path = "tools/gen"',
+    '[target.\'cfg(unix)\'.dependencies]',
+    'sys = { version = "1", path = "crates/sys" }',
+    "[workspace.dependencies]",
+    'shared = { path = "crates/shared" }',
+    "[[bin]]",
+    'path = "src/bin/x.rs"',
+  ].join("\n");
+  // `[workspace.dependencies]` paths are not the manifest's own dependencies.
+  assert.deepEqual(cargoManifestPathDependencies(manifest), ["crates/core", "crates/fixtures", "tools/gen", "crates/sys"]);
+  assert.equal(cargoPackageName('[package]\nname = "rustc_ast" # crate\nversion = "0.1.0"\n'), "rustc_ast");
+  assert.equal(cargoPackageName('[workspace]\nmembers = []\n'), undefined);
+});
+
+test("Cargo implicit members: in-repo path dependencies (transitive, all tables) are crates, minus exclude", () => {
+  const files = {
+    "Cargo.toml": '[package]\nname = "app"\n\n[workspace]\nmembers = ["xtask"]\nexclude = ["vendor/skip"]\n\n[dependencies]\ncore = { path = "crates/core" }\nskip = { path = "vendor/skip" }\n',
+    "src/main.rs": "fn main() {}\n",
+    "crates/core/Cargo.toml": '[package]\nname = "core"\n\n[dependencies.util]\npath = "../util"\n\n[dev-dependencies]\nescape = { path = "../../../outside" }\n',
+    "crates/core/src/lib.rs": "pub fn core() {}\n",
+    "crates/util/Cargo.toml": '[package]\nname = "util"\n',
+    "crates/util/src/lib.rs": "pub fn util() {}\n",
+    "vendor/skip/Cargo.toml": '[package]\nname = "skip"\n',
+    "vendor/skip/src/lib.rs": "pub fn skip() {}\n",
+    "xtask/Cargo.toml": '[package]\nname = "xtask"\n',
+    "xtask/src/main.rs": "fn main() {}\n",
+  };
+  const check = (discovery: ReturnType<typeof discoverRepository>): void => {
+    assert.deepEqual(discovery.units.filter(unit => unit.kind === "rust").map(unit => unit.dir), ["crates/core", "crates/util", "xtask"]);
+    assert.equal(discovery.unitByFile.get("crates/core/src/lib.rs"), "crates/core", "not swallowed by the root");
+    assert.notEqual(discovery.unitByFile.get("vendor/skip/src/lib.rs"), "vendor/skip", "an excluded path dependency is not a crate");
+  };
+  withRepo(files, dir => check(discoverRepository(dir)));
+  withTree(files, dir => check(discoverExtractedTree(dir)));
+});
+
+test("`**` matches zero or more segments: the pnpm-docs negation `!**/test/**` excludes test members at any depth", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "mono", workspaces: ["packages/**", "fixtures", "!**/test/**", "!**/fixtures"] }),
+    "packages/a/package.json": JSON.stringify({ name: "@m/a" }),
+    "packages/a/src/i.ts": "export const a = 1;\n",
+    "packages/test/package.json": JSON.stringify({ name: "@m/test" }),
+    "packages/test/src/i.ts": "export const t = 1;\n",
+    "packages/a/test/package.json": JSON.stringify({ name: "@m/a-test" }),
+    "packages/a/test/i.ts": "export const at = 1;\n",
+    "fixtures/package.json": JSON.stringify({ name: "@m/fixtures" }),
+    "fixtures/i.ts": "export const f = 1;\n",
+  }, dir => {
+    const discovery = discoverRepository(dir);
+    assert.deepEqual(memberDirs(dir), ["packages/a"]);
+    assert.deepEqual(discovery.summary.skippedMembers, [], "negated dirs are not members at all (not merely skipped fixtures)");
+  });
+});
+
+test("committed node_modules is excluded on both providers (git listing and tarball walk agree)", () => {
+  const files = {
+    "package.json": JSON.stringify({ name: "act", workspaces: ["packages/**"] }),
+    "tsconfig.json": "{}",
+    "src/index.ts": "export const x = 1;\n",
+    "node_modules/dep/index.js": "module.exports = 1;\n",
+    "node_modules/dep/package.json": JSON.stringify({ name: "dep" }),
+    "packages/a/package.json": JSON.stringify({ name: "@m/a" }),
+    "packages/a/index.ts": "export const a = 1;\n",
+    "packages/a/node_modules/inner/package.json": JSON.stringify({ name: "inner" }),
+    "packages/a/node_modules/inner/index.ts": "export const inner = 1;\n",
+  };
+  const shape = (discovery: ReturnType<typeof discoverRepository>) => ({ sourceFiles: discovery.sourceFiles, units: discovery.units.map(unit => unit.dir) });
+  let git: ReturnType<typeof shape> | undefined;
+  withRepo(files, dir => { git = shape(discoverRepository(dir)); });
+  withTree(files, dir => assert.deepEqual(shape(discoverExtractedTree(dir)), git));
+  assert.deepEqual(git!.sourceFiles, ["packages/a/index.ts", "src/index.ts"]);
+  assert.ok(!git!.units.some(unit => unit.includes("node_modules")), "an installed package is never a workspace member");
+});
+
+test("a source-empty root keeps main/module/types only when they name a tracked file", () => {
+  const crates = {
+    "Cargo.toml": '[workspace]\nmembers = ["crates/*"]\n',
+    "crates/a/Cargo.toml": '[package]\nname = "a"\n',
+    "crates/a/src/lib.rs": "pub fn a() {}\n",
+  };
+  // npm init's default: "main": "index.js" with no index.js — tooling only.
+  withRepo({ "package.json": JSON.stringify({ name: "tools", version: "1.0.0", main: "index.js", scripts: { prepare: "husky" }, devDependencies: { husky: "^9.0.0" } }), ...crates }, dir => {
+    assert.deepEqual(discoverRepository(dir).units.map(unit => `${unit.kind}:${unit.dir}`), ["rust:crates/a"]);
+  });
+  withRepo({ "package.json": JSON.stringify({ name: "tools", main: "./index.ts" }), "index.ts": "export const a = 1;\n", ...crates }, dir => {
+    assert.ok(discoverRepository(dir).units.some(unit => unit.kind === "root"), "a main naming a source file keeps the root");
+  });
+});
+
+test("a crate container is named by its Cargo [package] name, else its dir", () => {
+  withRepo({
+    "Cargo.toml": '[workspace]\nmembers = ["compiler/rustc_ast", "tools/*"]\n',
+    "compiler/rustc_ast/Cargo.toml": '[package]\nname = "rustc_ast"\n',
+    "compiler/rustc_ast/src/lib.rs": "pub fn ast() {}\n",
+    "tools/x/Cargo.toml": '[package]\nname.workspace = true\n',
+    "tools/x/src/main.rs": "fn main() {}\n",
+  }, dir => {
+    assert.deepEqual(discoverRepository(dir).units.map(unit => [unit.dir, unit.name]), [["compiler/rustc_ast", "rustc_ast"], ["tools/x", "tools/x"]]);
+  });
+});
+
+test("unresolved-import lines neutralize control characters and cap repository text", () => {
+  const long = `./${"a".repeat(LIMITATION_TEXT_MAX_CHARS + 50)}`;
+  const lines = unresolvedImportLimitations([
+    { path: "src/a.ts", line: 1, specifier: "./esc\u001b[31mRED" },
+    { path: "src/a.ts", line: 2, specifier: long },
+  ]);
+  assert.equal(lines[1], "Unresolved relative import src/a.ts:1: './esc�[31mRED'");
+  assert.ok(!lines.join("").includes("\u001b"), "no raw ESC byte reaches the artifact or terminal");
+  assert.equal(lines[2], `Unresolved relative import src/a.ts:2: '${long.slice(0, LIMITATION_TEXT_MAX_CHARS)}…'`);
+});
+
+// CLA-578 final round.
+
+test("a source-empty root keeps a main the extraction resolver maps to a source file, and its publicApi", () => {
+  const crate = {
+    "tsconfig.json": "{}",
+    "Cargo.toml": '[workspace]\nmembers = ["engine"]\n',
+    "engine/Cargo.toml": '[package]\nname = "engine"\n',
+    "engine/src/lib.rs": "pub fn run() {}\n",
+    "engine/index.ts": "export const api = 1;\n",
+  };
+  for (const main of ["./engine/index.js", "engine/index"]) {
+    withRepo({ "package.json": JSON.stringify({ name: "engine-app", main }), ...crate }, dir => {
+      assert.ok(discoverRepository(dir).units.some(unit => unit.kind === "root"), `main ${main} keeps the root`);
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+      const { snapshot } = scanRepository(dir, { analysisMode: "quick" });
+      const exposure = snapshot.entities.find(entity => entity.id === "code:engine-index-ts:api")?.exposure?.map(item => item.kind) ?? [];
+      assert.ok(exposure.includes("publicApi"), `main ${main} marks the public API`);
+    });
+  }
+  // npm init's dangling default is still pruned.
+  withRepo({ "package.json": JSON.stringify({ name: "engine-app", main: "index.js" }), ...crate }, dir => {
+    assert.ok(!discoverRepository(dir).units.some(unit => unit.kind === "root"), "a dangling main is no entry surface");
+  });
+});
+
+test("Cargo [workspace.dependencies] path entries are crates only when a reachable crate inherits them", () => {
+  const files = {
+    "Cargo.toml": [
+      "[workspace]", 'members = ["app"]',
+      "[workspace.dependencies]",
+      'inline = { path = "crates/inline" }', 'dotted = { path = "crates/dotted" }', 'sub = { path = "crates/sub" }',
+      'unused = { path = "crates/unused" }',
+    ].join("\n"),
+    "app/Cargo.toml": '[package]\nname = "app"\n\n[dependencies]\ninline = { workspace = true, features = ["x"] }\ndotted.workspace = true\n\n[dev-dependencies.sub]\nworkspace = true\n',
+    "app/src/main.rs": "fn main() {}\n",
+    ...Object.fromEntries(["inline", "dotted", "sub", "unused"].flatMap(name => [
+      [`crates/${name}/Cargo.toml`, `[package]\nname = "${name}"\n`], [`crates/${name}/src/lib.rs`, "pub fn f() {}\n"],
+    ])),
+  };
+  const check = (discovery: ReturnType<typeof discoverRepository>): void => {
+    assert.deepEqual(discovery.units.filter(unit => unit.kind === "rust").map(unit => unit.dir), ["app", "crates/dotted", "crates/inline", "crates/sub"]);
+  };
+  withRepo(files, dir => check(discoverRepository(dir)));
+  withTree(files, dir => check(discoverExtractedTree(dir)));
+});
+
+test("Cargo dependency parsing matches the exact path key: typed-path = \"0.9\" is not a path", () => {
+  const manifest = '[dependencies]\ntyped-path = "0.9"\nlib = { typed-path = "x", version = "1" }\ncore = { version = "1", path = "crates/core" }\n';
+  assert.deepEqual(cargoManifestPathDependencies(manifest), ["crates/core"]);
+  assert.deepEqual(cargoManifestDependencies(manifest).map(dependency => [dependency.name, dependency.path ?? null]), [["typed-path", null], ["lib", null], ["core", "crates/core"]]);
+});
+
+test("consecutive `**` segments collapse: packages/**/** and !**/**/test match like packages/** and !**/test", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "mono", workspaces: ["packages/**/**", "!**/**/test"] }),
+    "packages/package.json": JSON.stringify({ name: "@m/self" }),
+    "packages/self.ts": "export const s = 1;\n",
+    "packages/a/package.json": JSON.stringify({ name: "@m/a" }),
+    "packages/a/i.ts": "export const a = 1;\n",
+    "packages/test/package.json": JSON.stringify({ name: "@m/test" }),
+    "packages/test/i.ts": "export const t = 1;\n",
+  }, dir => {
+    assert.deepEqual(memberDirs(dir), ["packages", "packages/a"]);
+  });
+});
+
+test("displayText caps by code point and strips bidi override/isolate characters", () => {
+  const emoji = "😀".repeat(LIMITATION_TEXT_MAX_CHARS + 5);
+  const capped = displayText(emoji);
+  assert.equal(Array.from(capped).length, LIMITATION_TEXT_MAX_CHARS + 1, "200 code points + the ellipsis");
+  assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(capped), "no lone high surrogate");
+  assert.equal(displayText("./a\u202Etxt.ts\u2066\u2069\u202A"), "./atxt.ts");
+});
+
+test("Cargo literal-quoted subsection names inherit workspace dependencies: [dependencies.'core']", () => {
+  const files = {
+    "Cargo.toml": '[workspace]\nmembers = ["app"]\n[workspace.dependencies]\ncore = { path = "crates/core" }\nutil = { path = "crates/util" }\n',
+    "app/Cargo.toml": "[package]\nname = \"app\"\n\n[dependencies.'core']\nworkspace = true\n\n[dependencies.\"util\"]\nworkspace = true\n",
+    "app/src/main.rs": "fn main() {}\n",
+    "crates/core/Cargo.toml": '[package]\nname = "core"\n', "crates/core/src/lib.rs": "pub fn f() {}\n",
+    "crates/util/Cargo.toml": '[package]\nname = "util"\n', "crates/util/src/lib.rs": "pub fn f() {}\n",
+  };
+  assert.deepEqual(cargoManifestDependencies(files["app/Cargo.toml"]).map(dependency => [dependency.name, dependency.inherited]), [["core", true], ["util", true]]);
+  withRepo(files, dir => assert.deepEqual(discoverRepository(dir).units.filter(unit => unit.kind === "rust").map(unit => unit.dir), ["app", "crates/core", "crates/util"]));
+});
+
+test("cargoManifestDependencies reads compact inline tables: {path = …} and {workspace = true}", () => {
+  const manifest = '[dependencies]\ncore = {path = "../core"}\nshared = {workspace = true}\nlib = {typed-path = "x"}\n[workspace.dependencies]\nshared = {path = "crates/shared"}\n';
+  assert.deepEqual(cargoManifestDependencies(manifest).map(dependency => [dependency.scope, dependency.name, dependency.path ?? null, dependency.inherited]), [
+    ["own", "core", "../core", false],
+    ["own", "shared", null, true],
+    ["own", "lib", null, false],
+    ["workspace", "shared", "crates/shared", false],
+  ]);
 });

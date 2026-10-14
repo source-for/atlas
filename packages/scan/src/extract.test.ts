@@ -99,8 +99,8 @@ function syntheticDiscovery(): Discovery {
   return {
     sourceFiles: ["pkg/a/src/index.ts", "pkg/b/src/main.ts"],
     units: [
-      { kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" },
-      { kind: "member", dir: "pkg/b", name: "@acme/b", packageName: "@acme/b", evidencePath: "pkg/b" },
+      { kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" },
+      { kind: "member", dir: "pkg/b", name: "@acme/b", packageName: "@acme/b", evidencePath: "pkg/b", packageManifest: "pkg/b/package.json" },
     ],
     unitByFile: new Map([["pkg/a/src/index.ts", "pkg/a"], ["pkg/b/src/main.ts", "pkg/b"]]),
     unitByPackageName: new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"]]),
@@ -168,8 +168,8 @@ test("extractArchitecture derives edges from dynamic import('…') the static pa
   const discovery: Discovery = {
     sourceFiles: ["pkg/a/src/index.ts", "pkg/b/src/main.ts", "pkg/b/src/panel.ts"],
     units: [
-      { kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" },
-      { kind: "member", dir: "pkg/b", name: "@acme/b", packageName: "@acme/b", evidencePath: "pkg/b" },
+      { kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" },
+      { kind: "member", dir: "pkg/b", name: "@acme/b", packageName: "@acme/b", evidencePath: "pkg/b", packageManifest: "pkg/b/package.json" },
     ],
     unitByFile: new Map([
       ["pkg/a/src/index.ts", "pkg/a"], ["pkg/b/src/main.ts", "pkg/b"], ["pkg/b/src/panel.ts", "pkg/b"],
@@ -264,7 +264,7 @@ test("codeSurface 'public' keeps only exported declarations as code entities; de
 function symbolDiscovery(): Discovery {
   return {
     sourceFiles: ["pkg/a/src/a.ts", "pkg/a/src/b.ts"],
-    units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" }],
+    units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" }],
     unitByFile: new Map([["pkg/a/src/a.ts", "pkg/a"], ["pkg/a/src/b.ts", "pkg/a"]]),
     unitByPackageName: new Map([["@acme/a", "pkg/a"]]),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
@@ -361,7 +361,7 @@ test("symbol pass resolves default, namespace and re-export aliases while respec
   };
   const discovery: Discovery = {
     sourceFiles: ["pkg/a/src/a.ts", "pkg/a/src/barrel.ts", "pkg/a/src/cycle.ts", "pkg/a/src/b.ts"],
-    units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" }],
+    units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" }],
     unitByFile: new Map([["pkg/a/src/a.ts", "pkg/a"], ["pkg/a/src/barrel.ts", "pkg/a"], ["pkg/a/src/cycle.ts", "pkg/a"], ["pkg/a/src/b.ts", "pkg/a"]]),
     unitByPackageName: new Map([["@acme/a", "pkg/a"]]),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
@@ -422,7 +422,7 @@ test("symbol resolution keeps outer calls through block consts, but respects fun
   const paths = Object.keys(files).filter(path => path.endsWith(".ts"));
   const discovery: Discovery = {
     sourceFiles: paths,
-    units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" }],
+    units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" }],
     unitByFile: new Map(paths.map(path => [path, "pkg/a"])),
     unitByPackageName: new Map([["@acme/a", "pkg/a"]]),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
@@ -443,7 +443,7 @@ test("manifest exposure distinguishes module exports, public API re-exports, and
     "pkg/a/src/cli.ts": "export function run() {}\n",
   };
   const paths = ["pkg/a/src/internal.ts", "pkg/a/src/index.ts", "pkg/a/src/cli.ts"];
-  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" }], unitByFile: new Map(paths.map(path => [path, "pkg/a"])), unitByPackageName: new Map([["@acme/a", "pkg/a"]]), summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" }], unitByFile: new Map(paths.map(path => [path, "pkg/a"])), unitByPackageName: new Map([["@acme/a", "pkg/a"]]), summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
   const extraction = extractArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
   assert.deepEqual(validateArchitectureExtraction(extraction), []);
   const byId = new Map(extraction.entities.map(entity => [entity.id, entity]));
@@ -473,8 +473,8 @@ test("a relative import escaping the discovered set maps to the owning unit as a
   const discovery: Discovery = {
     sourceFiles: ["apps/web/src/adapter.ts"],
     units: [
-      { kind: "member", dir: "apps/web", name: "@acme/web", packageName: "@acme/web", evidencePath: "apps/web" },
-      { kind: "rust", dir: "crates/engine-wasm", name: "engine-wasm", evidencePath: "crates/engine-wasm" },
+      { kind: "member", dir: "apps/web", name: "@acme/web", packageName: "@acme/web", evidencePath: "apps/web", packageManifest: "apps/web/package.json" },
+      { kind: "rust", dir: "crates/engine-wasm", name: "engine-wasm", evidencePath: "crates/engine-wasm", packageManifest: undefined },
     ],
     unitByFile: new Map([["apps/web/src/adapter.ts", "apps/web"]]),
     unitByPackageName: new Map([["@acme/web", "apps/web"]]),
@@ -518,7 +518,9 @@ test("cargoPathDependencies reads inline tables, subsections, and target-scoped 
     "[dev-dependencies]",
     'test-util = { path = "../test-util" }',
   ].join("\n");
-  assert.deepEqual(cargoPathDependencies(manifest).map(dep => [dep.name, dep.path]), [
+  // `serde.workspace = true` is returned as inherited (its path lives in the root manifest).
+  assert.deepEqual(cargoPathDependencies(manifest).filter(dep => dep.inherited).map(dep => [dep.name, dep.path]), [["serde", ""]]);
+  assert.deepEqual(cargoPathDependencies(manifest).filter(dep => !dep.inherited).map(dep => [dep.name, dep.path]), [
     ["engine-core", "../engine-core"],
     ["protocol", "../protocol"],
     ["bindgen-helper", "../bindgen-helper"],
@@ -529,8 +531,8 @@ test("Cargo path dependencies become container edges between crate units", () =>
   const discovery: Discovery = {
     sourceFiles: [],
     units: [
-      { kind: "rust", dir: "crates/engine-wasm", name: "engine-wasm", evidencePath: "crates/engine-wasm" },
-      { kind: "rust", dir: "crates/engine-core", name: "engine-core", evidencePath: "crates/engine-core" },
+      { kind: "rust", dir: "crates/engine-wasm", name: "engine-wasm", evidencePath: "crates/engine-wasm", packageManifest: undefined },
+      { kind: "rust", dir: "crates/engine-core", name: "engine-core", evidencePath: "crates/engine-core", packageManifest: undefined },
     ],
     unitByFile: new Map(),
     unitByPackageName: new Map(),
@@ -570,9 +572,9 @@ test("observed language tags land on system, containers, and file components (CL
   const discovery: Discovery = {
     sourceFiles: ["pkg/app/src/a.ts", "pkg/app/src/widget.tsx", "scripts/build.mjs", "crates/engine/src/lib.rs"],
     units: [
-      { kind: "member", dir: "pkg/app", name: "@acme/app", packageName: "@acme/app", evidencePath: "pkg/app" },
-      { kind: "tooling", dir: "tooling", name: "Build tooling", evidencePath: "scripts" },
-      { kind: "rust", dir: "crates/engine", name: "engine", evidencePath: "crates/engine" },
+      { kind: "member", dir: "pkg/app", name: "@acme/app", packageName: "@acme/app", evidencePath: "pkg/app", packageManifest: "pkg/app/package.json" },
+      { kind: "tooling", dir: "tooling", name: "Build tooling", evidencePath: "scripts", packageManifest: undefined },
+      { kind: "rust", dir: "crates/engine", name: "engine", evidencePath: "crates/engine", packageManifest: undefined },
     ],
     unitByFile: new Map([
       ["pkg/app/src/a.ts", "pkg/app"],
@@ -872,7 +874,7 @@ test("duplicates overlay writes edges onto existing snapshot ids only", () => {
 function exposureFixture(manifest: object, sources: Record<string, string>, root = false) {
   const dir = root ? "synthetic-root" : "pkg/a";
   const paths = Object.keys(sources);
-  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: root ? "root" : "member", dir, name: "a", packageName: "a", evidencePath: root ? "package.json" : dir }], unitByFile: new Map(paths.map(path => [path, dir])), unitByPackageName: new Map([["a", dir]]), summary: { singlePackage: root, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: root ? "root" : "member", dir, name: "a", packageName: "a", packageManifest: root ? "package.json" : `${dir}/package.json`, evidencePath: root ? "package.json" : dir }], unitByFile: new Map(paths.map(path => [path, dir])), unitByPackageName: new Map([["a", dir]]), summary: { singlePackage: root, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
   return extractArchitecture({ discovery, readFile: path => path === (root ? "package.json" : "pkg/a/package.json") ? JSON.stringify(manifest) : sources[path]!, systemName: "Acme", systemSlug: "acme" });
 }
 test("export-star-only package entrypoints expose reachable public declarations", () => {
@@ -897,4 +899,191 @@ test("switch lexical declarations shadow outer calls across every case", () => {
   const result = exposureFixture({}, { "pkg/a/src/index.ts": "function target() {}\nfunction run(n: number) { switch(n) { case 0: target(); break; case 1: let target = () => {}; target(); } }\nfunction outside() { target(); }" });
   assert.equal(result.relations.some(r => r.from.endsWith(":run") && r.to.endsWith(":target")), false);
   assert.ok(result.relations.some(r => r.from.endsWith(":outside") && r.to.endsWith(":target") && r.kind === "calls"));
+});
+
+// CLA-578: a relative import that resolves to no file and no unit is reported, never silent.
+test("unresolved relative imports are recorded with path, line and specifier: sorted, deduplicated", () => {
+  const files: Record<string, string> = {
+    "pkg/b/src/z.ts": "import { gone } from './missing.js';\nexport const z = gone;\n",
+    "pkg/a/src/index.ts": [
+      "import { ok } from './ok.js';",
+      "import data from '../../../generated/data.json';",
+      "import { gone } from './missing.js';",
+      "import { gone as again } from './missing.js';",
+      "import { gone as same } from './missing.js'; import type { T } from './missing.js';",
+      "import { b } from '../../b/src/z.js';",
+      "import asset from './logo.svg';",
+      "import './gone.css';",
+      "import legacy from './legacy.js';",
+      "export const all = [ok, data, gone, again, same, b, asset, legacy];",
+    ].join("\n"),
+    "pkg/a/src/ok.ts": "export const ok = 1;\n",
+  };
+  const paths = ["pkg/a/src/index.ts", "pkg/a/src/ok.ts", "pkg/b/src/z.ts"];
+  const units = [
+    { kind: "member" as const, dir: "pkg/a", name: "a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" },
+    { kind: "member" as const, dir: "pkg/b", name: "b", evidencePath: "pkg/b", packageManifest: "pkg/b/package.json" },
+  ];
+  // Tracked but not source: an asset and a `.js` the TS-repo rule skipped.
+  const trackedFiles = new Set([...paths, "pkg/a/src/logo.svg", "pkg/a/src/legacy.js"]);
+  const discovery: Discovery = { sourceFiles: paths, units, unitByFile: new Map(paths.map(path => [path, path.slice(0, 5)])), unitByPackageName: new Map(), trackedFiles, summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const collect = (order: string[]) => collectExtractedArchitecture({ discovery: { ...discovery, sourceFiles: order }, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
+  const collected = collect(paths);
+  assert.deepEqual(collected.unresolvedRelativeImports, [
+    { path: "pkg/a/src/index.ts", line: 2, specifier: "../../../generated/data.json" },
+    { path: "pkg/a/src/index.ts", line: 3, specifier: "./missing.js" },
+    { path: "pkg/a/src/index.ts", line: 4, specifier: "./missing.js" },
+    { path: "pkg/a/src/index.ts", line: 5, specifier: "./missing.js" },
+    { path: "pkg/a/src/index.ts", line: 8, specifier: "./gone.css" },
+    { path: "pkg/b/src/z.ts", line: 1, specifier: "./missing.js" },
+  ], "resolved files and tracked non-source files (logo.svg, legacy.js) are not reported; a missing asset is; one entry per (path, line, specifier)");
+  assert.deepEqual(collect([...paths].reverse()).unresolvedRelativeImports, collected.unresolvedRelativeImports, "independent of discovery order");
+});
+
+// CLA-578 round 2: bundler `?query` / `#fragment` suffixes name the same file.
+test("queried relative imports resolve by their path: existing files record an edge or stay quiet; missing ones are reported verbatim", () => {
+  const files: Record<string, string> = {
+    "pkg/a/src/index.ts": [
+      "import Worker from './worker.ts?worker';",
+      "import url from './logo.svg?url';",
+      "import text from './text.txt?raw';",
+      "import gone from './gone.svg?url';",
+      "import frag from './frag.css#section';",
+      "export const all = [Worker, url, text, gone, frag];",
+    ].join("\n"),
+    "pkg/a/src/worker.ts": "export const work = 1;\n",
+  };
+  const paths = ["pkg/a/src/index.ts", "pkg/a/src/worker.ts"];
+  const trackedFiles = new Set([...paths, "pkg/a/src/logo.svg", "pkg/a/src/text.txt", "pkg/a/src/frag.css"]);
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "member", dir: "pkg/a", name: "a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" }], unitByFile: new Map(paths.map(path => [path, "pkg/a"])), unitByPackageName: new Map(), trackedFiles, summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const collected = collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
+  assert.deepEqual(collected.unresolvedRelativeImports, [
+    { path: "pkg/a/src/index.ts", line: 4, specifier: "./gone.svg?url" },
+  ], "existing ?url/?raw/#fragment targets are not reported; a missing one keeps its original specifier");
+  assert.ok(collected.extraction.relations.some(relation => relation.from === "component:pkg-a-src-index-ts" && relation.to === "component:pkg-a-src-worker-ts"), "./worker.ts?worker records the file-level edge");
+});
+
+// CLA-578 round QA.
+test("declaration files count as existing import targets: ./types/x -> x.d.ts, ./gen.js -> gen.d.ts, .d.mts", () => {
+  const files: Record<string, string> = {
+    "pkg/a/src/index.ts": "import type { A } from '../types/anymatch';\nimport type { G } from './gen.js';\nimport type { M } from './esm';\nimport type { N } from './nope';\nexport type All = [A, G, M, N];\n",
+  };
+  const paths = ["pkg/a/src/index.ts"];
+  const trackedFiles = new Set([...paths, "pkg/a/types/anymatch.d.ts", "pkg/a/src/gen.d.ts", "pkg/a/src/esm.d.mts"]);
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "member", dir: "pkg/a", name: "a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" }], unitByFile: new Map(paths.map(path => [path, "pkg/a"])), unitByPackageName: new Map(), trackedFiles, summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const collected = collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
+  assert.deepEqual(collected.unresolvedRelativeImports, [{ path: "pkg/a/src/index.ts", line: 4, specifier: "./nope" }]);
+});
+
+test("extensionless relative imports resolve to .js/.jsx/.cjs modules and JS directory indexes", () => {
+  const files: Record<string, string> = {
+    "e2e/esm/dynamicImport.js": "export * from './index';\nexport { V } from './view';\nexport { c } from './common';\nexport { u } from './util';\n",
+    "e2e/esm/index.js": "export const i = 1;\n",
+    "e2e/esm/view.jsx": "export const V = 1;\n",
+    "e2e/esm/common.cjs": "exports.c = 1;\n",
+    "e2e/esm/util/index.js": "export const u = 1;\n",
+  };
+  const paths = Object.keys(files).sort();
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "root", dir: "esm", name: "esm", evidencePath: "esm", packageManifest: undefined }], unitByFile: new Map(paths.map(path => [path, "esm"])), unitByPackageName: new Map(), summary: { singlePackage: true, includedJs: true, skippedJsFiles: 0, skippedMembers: [] } };
+  const { extraction } = collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
+  const targets = extraction.relations.filter(relation => relation.from === "component:e2e-esm-dynamic-import-js").map(relation => relation.to).sort();
+  assert.deepEqual(targets, ["component:e2e-esm-common-cjs", "component:e2e-esm-index-js", "component:e2e-esm-util-index-js", "component:e2e-esm-view-jsx"]);
+});
+
+test("NodeNext and directory resolution: ./b.mjs -> b.mts, ./c.cjs -> c.cts, '..' -> root index.ts; a directory target is never unresolved", () => {
+  const files: Record<string, string> = {
+    "index.ts": "export const root = 1;\n",
+    "src/a.ts": "import { b } from './b.mjs';\nimport { c } from './c.cjs';\nimport { root } from '..';\nimport q from './lib';\nimport gone from './gone.mjs';\nexport const all = [b, c, root, q, gone];\n",
+    "src/b.mts": "export const b = 1;\n",
+    "src/c.cts": "export const c = 1;\n",
+  };
+  const paths = Object.keys(files).sort();
+  const trackedFiles = new Set([...paths, "src/lib/package.json", "src/lib/main.ts"]);
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "root", dir: "r", name: "r", evidencePath: "package.json", packageManifest: undefined }], unitByFile: new Map(paths.map(path => [path, "r"])), unitByPackageName: new Map(), trackedFiles, summary: { singlePackage: true, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const collected = collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
+  const targets = collected.extraction.relations.filter(relation => relation.from === "component:src-a-ts").map(relation => relation.to).sort();
+  assert.deepEqual(targets, ["component:index-ts", "component:src-b-mts", "component:src-c-cts"]);
+  assert.deepEqual(collected.unresolvedRelativeImports, [{ path: "src/a.ts", line: 5, specifier: "./gone.mjs" }], "'..' and the ./lib directory are not misses; a missing .mjs still is");
+});
+
+// CLA-578 final round.
+test("a directory target counts only as a package: ./components with Button.tsx and no index is unresolved", () => {
+  const files: Record<string, string> = {
+    "src/a.ts": "import c from './components';\nimport lib from './lib';\nimport root from '..';\nexport const all = [c, lib, root];\n",
+    "src/components/Button.tsx": "export const Button = 1;\n",
+  };
+  const paths = Object.keys(files).sort();
+  const run = (extra: string[]) => {
+    const trackedFiles = new Set([...paths, "src/lib/package.json", "src/lib/main.ts", ...extra]);
+    const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "root", dir: "r", name: "r", evidencePath: "package.json", packageManifest: undefined }], unitByFile: new Map(paths.map(path => [path, "r"])), unitByPackageName: new Map(), trackedFiles, summary: { singlePackage: true, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+    return collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" }).unresolvedRelativeImports.map(item => item.specifier);
+  };
+  assert.deepEqual(run([]), ["./components", ".."], "a plain folder and a manifest-less root are misses; a package dir is not");
+  assert.deepEqual(run(["package.json"]), ["./components"], "the root counts once it has a package.json");
+});
+
+test("NodeNext: ./b.mjs prefers b.mts over a same-stem b.ts, ./c.cjs prefers c.cts over c.ts", () => {
+  const files: Record<string, string> = {
+    "src/a.ts": "import { b } from './b.mjs';\nimport { c } from './c.cjs';\nimport { d } from './d.js';\nexport const all = [b, c, d];\n",
+    "src/b.ts": "export const b = 0;\n",
+    "src/b.mts": "export const b = 1;\n",
+    "src/c.ts": "export const c = 0;\n",
+    "src/c.cts": "export const c = 1;\n",
+    "src/d.ts": "export const d = 1;\n",
+    "src/d.mts": "export const d = 0;\n",
+  };
+  const paths = Object.keys(files).sort();
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "root", dir: "r", name: "r", evidencePath: "package.json", packageManifest: undefined }], unitByFile: new Map(paths.map(path => [path, "r"])), unitByPackageName: new Map(), summary: { singlePackage: true, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const { extraction } = collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
+  const targets = extraction.relations.filter(relation => relation.from === "component:src-a-ts").map(relation => relation.to).sort();
+  assert.deepEqual(targets, ["component:src-b-mts", "component:src-c-cts", "component:src-d-ts"]);
+});
+
+// CLA-578 last small round.
+test("inherited Cargo workspace dependencies become crate edges like literal path deps", () => {
+  const dirs = ["app", "crates/shared", "crates/util", "crates/sub", "crates/unused"];
+  const discovery: Discovery = {
+    sourceFiles: [],
+    units: dirs.map(dir => ({ kind: "rust" as const, dir, name: dir, evidencePath: dir, packageManifest: undefined })),
+    unitByFile: new Map(),
+    unitByPackageName: new Map(),
+    summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
+  };
+  const files: Record<string, string> = {
+    "README.md": "# Acme",
+    "Cargo.toml": '[workspace]\nmembers = ["app"]\n\n[workspace.dependencies]\nshared = { path = "crates/shared" }\nutil = { version = "1", path = "crates/util" }\nsub = { path = "crates/sub" }\nunused = { path = "crates/unused" }\n',
+    "app/Cargo.toml": "[dependencies]\nshared.workspace = true\nutil = { workspace = true, features = [\"x\"] }\n\n[dependencies.'sub']\nworkspace = true\n",
+    ...Object.fromEntries(dirs.slice(1).map(dir => [`${dir}/Cargo.toml`, "[dependencies]\n"])),
+  };
+  const extraction = extractArchitecture({
+    discovery,
+    readFile: path => { const text = files[path]; if (text === undefined) throw new Error(`missing ${path}`); return text; },
+    systemName: "Acme",
+    systemSlug: "acme",
+  });
+  const edges = extraction.relations.filter(relation => relation.from === "container:app")
+    .map(relation => [relation.to, relation.evidence[0]!.source.path, relation.evidence[0]!.source.startLine]).sort();
+  assert.deepEqual(edges, [
+    ["container:crates-shared", "app/Cargo.toml", 2],
+    ["container:crates-sub", "app/Cargo.toml", 6],
+    ["container:crates-util", "app/Cargo.toml", 3],
+  ]);
+});
+
+test("a '..' import to a manifest-less root with index.d.ts is not reported", () => {
+  const files: Record<string, string> = { "src/a.ts": "import type { T } from '..';\nimport type { U } from '../gone';\nexport type All = [T, U];\n" };
+  const paths = Object.keys(files);
+  const trackedFiles = new Set([...paths, "index.d.ts"]);
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "root", dir: "r", name: "r", evidencePath: "r", packageManifest: undefined }], unitByFile: new Map(paths.map(path => [path, "r"])), unitByPackageName: new Map(), trackedFiles, summary: { singlePackage: true, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const collected = collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
+  assert.deepEqual(collected.unresolvedRelativeImports.map(item => item.specifier), ["../gone"]);
+});
+
+test("cargoPathDependencies reads compact inline tables: {path = …} and {workspace = true}, never typed-path", () => {
+  const manifest = '[dependencies]\ncore = {path = "../core"}\nshared = {workspace = true}\nlib = {typed-path = "x"}\nother = {version = "1",path = "../other"}\n';
+  assert.deepEqual(cargoPathDependencies(manifest).map(dep => [dep.name, dep.path, dep.inherited ?? false]), [
+    ["core", "../core", false],
+    ["shared", "", true],
+    ["other", "../other", false],
+  ]);
 });

@@ -30,9 +30,9 @@ function discovery(): Discovery {
   return {
     sourceFiles: ["pkg/a/src/index.ts", "pkg/a/src/util.ts", "pkg/b/src/main.ts", "pkg/c/src/config.ts"],
     units: [
-      { kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" },
-      { kind: "member", dir: "pkg/b", name: "@acme/b", packageName: "@acme/b", evidencePath: "pkg/b" },
-      { kind: "member", dir: "pkg/c", name: "@acme/c", packageName: "@acme/c", evidencePath: "pkg/c" },
+      { kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" },
+      { kind: "member", dir: "pkg/b", name: "@acme/b", packageName: "@acme/b", evidencePath: "pkg/b", packageManifest: "pkg/b/package.json" },
+      { kind: "member", dir: "pkg/c", name: "@acme/c", packageName: "@acme/c", evidencePath: "pkg/c", packageManifest: "pkg/c/package.json" },
     ],
     unitByFile: new Map([
       ["pkg/a/src/index.ts", "pkg/a"], ["pkg/a/src/util.ts", "pkg/a"],
@@ -249,7 +249,7 @@ test("collapsing edges unions their evidence; dropped self-loops are counted in 
   };
   const localDiscovery: Discovery = {
     sourceFiles: ["m/src/a.ts", "m/src/b.ts", "m/src/c.ts"],
-    units: [{ kind: "member", dir: "m", name: "@m/m", packageName: "@m/m", evidencePath: "m" }],
+    units: [{ kind: "member", dir: "m", name: "@m/m", packageName: "@m/m", evidencePath: "m", packageManifest: "m/package.json" }],
     unitByFile: new Map([["m/src/a.ts", "m"], ["m/src/b.ts", "m"], ["m/src/c.ts", "m"]]),
     unitByPackageName: new Map([["@m/m", "m"]]),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },

@@ -132,8 +132,8 @@ const sourceFilesText: Record<string, string> = {
 
 function syntheticDiscovery(): Discovery {
   const units: SourceUnit[] = [
-    { kind: "member", dir: "pkg/app", name: "@acme/app", packageName: "@acme/app", evidencePath: "pkg/app" },
-    { kind: "member", dir: "pkg/lib", name: "@acme/lib", packageName: "@acme/lib", evidencePath: "pkg/lib" },
+    { kind: "member", dir: "pkg/app", name: "@acme/app", packageName: "@acme/app", evidencePath: "pkg/app", packageManifest: "pkg/app/package.json" },
+    { kind: "member", dir: "pkg/lib", name: "@acme/lib", packageName: "@acme/lib", evidencePath: "pkg/lib", packageManifest: "pkg/lib/package.json" },
   ];
   return {
     sourceFiles: ["pkg/app/src/a.ts", "pkg/app/src/b.ts", "pkg/lib/src/l.ts"],
@@ -223,7 +223,7 @@ test("selection keeps only the top-N service-boundary packages by (import count 
   };
   const discovery: Discovery = {
     sourceFiles: ["m/src/index.ts"],
-    units: [{ kind: "member", dir: "m", name: "@m/m", packageName: "@m/m", evidencePath: "m" }],
+    units: [{ kind: "member", dir: "m", name: "@m/m", packageName: "@m/m", evidencePath: "m", packageManifest: "m/package.json" }],
     unitByFile: new Map([["m/src/index.ts", "m"]]),
     unitByPackageName: new Map([["@m/m", "m"]]),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },

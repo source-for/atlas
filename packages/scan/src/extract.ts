@@ -548,9 +548,15 @@ function normalizeRepoPath(baseDir: string, relative: string): string {
 function relativeCandidates(base: string): string[] {
   const out: string[] = [];
   const add = (candidate: string): void => { if (!out.includes(candidate)) out.push(candidate); };
+  // `'..'` up to the repository root normalizes to "": its index is `index.ts`, not `/index.ts`.
+  const index = base ? `${base}/index` : "index";
   const extMatch = /\.(js|jsx|mjs|cjs|ts|tsx)$/.exec(base);
   if (extMatch) {
     const stem = base.slice(0, base.length - extMatch[0].length);
+    // NodeNext: `./b.mjs` is the emitted name of `b.mts`, `./c.cjs` of `c.cts`; the
+    // module-format twin wins over a same-stem `b.ts` / `c.ts`.
+    if (extMatch[1] === "mjs") { add(`${stem}.mts`); add(base); }
+    if (extMatch[1] === "cjs") { add(`${stem}.cts`); add(base); }
     add(`${stem}.ts`);
     add(`${stem}.tsx`);
     add(`${stem}.mjs`);
@@ -559,8 +565,16 @@ function relativeCandidates(base: string): string[] {
     add(`${base}.ts`);
     add(`${base}.tsx`);
     add(`${base}.mjs`);
-    add(`${base}/index.ts`);
-    add(`${base}/index.tsx`);
+    add(`${index}.ts`);
+    add(`${index}.tsx`);
+    // Extensionless imports of JS modules (`export * from './index'` -> index.js),
+    // tried after every TS candidate so an existing TS resolution never changes.
+    add(`${base}.js`);
+    add(`${base}.jsx`);
+    add(`${base}.cjs`);
+    add(`${index}.js`);
+    add(`${index}.jsx`);
+    add(`${index}.mjs`);
   }
   return out;
 }
@@ -597,6 +611,10 @@ export interface CargoPathDependency {
   path: string;
   /** 1-based line of the declaration (evidence anchor). */
   line: number;
+  /** `workspace = true`: the path comes from the root's `[workspace.dependencies]`. */
+  inherited?: true;
+  /** Declared in `[workspace.dependencies]` (a path relative to the root, not a dependency of this crate). */
+  workspace?: true;
 }
 
 /**
@@ -604,13 +622,16 @@ export interface CargoPathDependency {
  * for otherwise-opaque Rust crates (R1 parses no .rs, but the workspace wiring is
  * right there in Cargo.toml). Covers `[dependencies]` and target-scoped
  * `[target.….dependencies]` sections — inline-table form and `[dependencies.name]`
- * subsections — and ignores dev/build dependency sections.
+ * subsections — and ignores dev/build dependency sections. A `workspace = true`
+ * declaration (inline, dotted `name.workspace = true`, or in a subsection) is returned
+ * with `inherited` and an empty path; `[workspace.dependencies]` entries carry `workspace`.
  */
 export function cargoPathDependencies(manifestText: string): CargoPathDependency[] {
   const dependencies: CargoPathDependency[] = [];
   const lines = manifestText.split(/\r?\n/);
   let inDependencySection = false;
   let subsectionName: string | undefined;
+  let workspaceTable = false;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
     const header = /^\s*\[(.+)\]\s*$/.exec(line);
@@ -619,18 +640,24 @@ export function cargoPathDependencies(manifestText: string): CargoPathDependency
       const isDependencies = /(^|\.)dependencies(\.|$)/.test(section)
         && !/dev-dependencies|build-dependencies/.test(section);
       inDependencySection = isDependencies;
-      const subsection = /(?:^|\.)dependencies\.([A-Za-z0-9_-]+)$/.exec(section);
-      subsectionName = isDependencies && subsection ? subsection[1] : undefined;
+      workspaceTable = /^\s*workspace\./.test(section);
+      const subsection = /(?:^|\.)dependencies\.("[^"]+"|'[^']+'|[A-Za-z0-9_-]+)\s*$/.exec(section);
+      subsectionName = isDependencies && subsection ? subsection[1]!.replace(/^["']|["']$/g, "") : undefined;
       continue;
     }
     if (!inDependencySection) continue;
+    const scope = workspaceTable ? { workspace: true as const } : {};
     if (subsectionName) {
       const pathValue = /^\s*path\s*=\s*"([^"]+)"/.exec(line);
-      if (pathValue) dependencies.push({ name: subsectionName, path: pathValue[1]!, line: index + 1 });
+      if (pathValue) dependencies.push({ name: subsectionName, path: pathValue[1]!, line: index + 1, ...scope });
+      else if (/^\s*workspace\s*=\s*true\b/.test(line)) dependencies.push({ name: subsectionName, path: "", line: index + 1, inherited: true, ...scope });
       continue;
     }
-    const inline = /^\s*([A-Za-z0-9_-]+)\s*=\s*\{[^}]*\bpath\s*=\s*"([^"]+)"/.exec(line);
-    if (inline) dependencies.push({ name: inline[1]!, path: inline[2]!, line: index + 1 });
+    // The key follows `{` directly or a `,`/space inside the table (never `typed-path`).
+    const inline = /^\s*([A-Za-z0-9_-]+)\s*=\s*\{(?:[^}]*[,\s])?path\s*=\s*"([^"]+)"/.exec(line);
+    if (inline) { dependencies.push({ name: inline[1]!, path: inline[2]!, line: index + 1, ...scope }); continue; }
+    const inherited = /^\s*([A-Za-z0-9_-]+)\s*(?:=\s*\{(?:[^}]*[,\s])?|\.\s*)workspace\s*=\s*true\b/.exec(line);
+    if (inherited) dependencies.push({ name: inherited[1]!, path: "", line: index + 1, inherited: true, ...scope });
   }
   return dependencies;
 }
@@ -873,13 +900,12 @@ interface ExternalEmitInput {
   addRelation: (fromKey: string, toKey: string, desiredId: string, naturalKey: string, evidence: ArchitectureExtractionEvidence) => void;
 }
 
-/** package.json manifests that declare runtime deps: the root plus every workspace member. */
+/** package.json manifests that declare runtime deps: the root plus every unit's own manifest. */
 function dependencyManifestPaths(discovery: Discovery): string[] {
-  const memberManifests = discovery.units
-    .filter(unit => unit.kind === "member")
-    .map(unit => `${unit.dir}/package.json`)
+  const unitManifests = discovery.units
+    .flatMap(unit => unit.packageManifest && unit.packageManifest !== "package.json" ? [unit.packageManifest] : [])
     .sort();
-  return ["package.json", ...memberManifests];
+  return ["package.json", ...unitManifests];
 }
 
 /**
@@ -1048,10 +1074,89 @@ function attachObservedLanguageTags(
  */
 export interface ExtractedArchitecture {
   extraction: ArchitectureExtraction;
+  /**
+   * Relative imports that recorded no relation and name no file in the repository
+   * listing (see {@link UnresolvedRelativeImport}). Sorted by path, line, specifier; deduplicated. Scan-time
+   * evidence of a gap (rendered into `analysis.limitations`), never extraction input.
+   */
+  unresolvedRelativeImports: readonly UnresolvedRelativeImport[];
   /** Entity id → McCabe cyclomatic. Only function-like `kind: "code"` entities. */
   cyclomaticById: ReadonlyMap<string, number>;
   /** Clone pairs between existing function-like code ids. Never invents ids. */
   clonePairs: readonly ClonePair[];
+}
+
+/**
+ * The path part of a relative module specifier: a bundler `?query` (`./logo.svg?url`,
+ * `./worker.ts?worker`) or `#fragment` names the same file, so it is dropped before
+ * file/unit resolution. Used for the file-level import edge only — the symbol pass
+ * keeps the raw specifier, since a `?raw`/`?worker` import's bindings are not the
+ * target module's exports.
+ */
+export function relativeSpecifierPath(specifier: string): string {
+  return specifier.replace(/[?#].*$/, "");
+}
+
+// What a module specifier can name once its extension is dropped: TS sources and
+// declaration files (TypeScript resolves `./types/x` to `x.d.ts`), JS, and JSON.
+const IMPORT_TARGET_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".d.ts", ".d.mts", ".d.cts", ".js", ".jsx", ".mjs", ".cjs", ".json"] as const;
+
+/**
+ * Whether a relative specifier names a file that exists in the repository: the path
+ * itself, or its stem (a `.js`-family extension dropped, so `./x.js` also finds
+ * `x.ts` / `x.d.ts`) or the path as a directory index, with any
+ * {@link IMPORT_TARGET_EXTENSIONS} suffix. Any tracked file counts (an asset, JSON, a
+ * declaration file, a `.js` the TS-repo rule skipped): such an import is not broken.
+ * Never reads the disk: the answer depends only on the listing, so a local checkout and
+ * a tarball agree.
+ */
+function isTrackedImportTarget(base: string, trackedFiles: ReadonlySet<string>): boolean {
+  // A directory counts only as a package (its tracked package.json says how it
+  // resolves); a plain folder of files with no index is a miss, the root included.
+  if (trackedFiles.has(base ? `${base}/package.json` : "package.json")) return true;
+  const stem = base.replace(/\.(?:[cm]?[jt]s|[jt]sx)$/, "");
+  const candidates = [
+    base,
+    ...IMPORT_TARGET_EXTENSIONS.map(extension => `${stem}${extension}`),
+    // The root's index is `index.d.ts`, not `/index.d.ts` (as in relativeCandidates).
+    ...IMPORT_TARGET_EXTENSIONS.map(extension => `${base ? `${base}/` : ""}index${extension}`),
+  ];
+  return candidates.some(candidate => trackedFiles.has(candidate));
+}
+
+/**
+ * A target inside a `node_modules` directory points into a package-manager location
+ * whose contents the scanner does not model (installed or committed, it is never
+ * listed), so such an import is never reported as unresolved — on every provider and
+ * whatever happens to be installed.
+ */
+function isPackageManagerPath(base: string): boolean {
+  return /(^|\/)node_modules(\/|$)/.test(base);
+}
+
+/**
+ * A relative import that recorded no relation and names no file in the repository
+ * listing (see `isTrackedImportTarget`).
+ */
+export interface UnresolvedRelativeImport {
+  path: string;
+  /** 1-based line of the import. */
+  line: number;
+  specifier: string;
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** Sorted (path, line, specifier) and deduplicated — independent of discovery order. */
+function canonicalUnresolvedImports(imports: readonly UnresolvedRelativeImport[]): UnresolvedRelativeImport[] {
+  const sorted = [...imports].sort((left, right) =>
+    compareText(left.path, right.path) || left.line - right.line || compareText(left.specifier, right.specifier));
+  return sorted.filter((item, index) => {
+    const previous = sorted[index - 1];
+    return !previous || previous.path !== item.path || previous.line !== item.line || previous.specifier !== item.specifier;
+  });
 }
 
 export function extractArchitecture(input: ExtractInput): ArchitectureExtraction {
@@ -1175,6 +1280,8 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
   const fileScans: FileScan[] = [];
 
   const unitDirs = discovery.units.map(unit => unit.dir);
+  const unresolvedRelativeImports: UnresolvedRelativeImport[] = [];
+  const trackedFiles: ReadonlySet<string> = discovery.trackedFiles ?? fileSet;
 
   for (const file of discovery.sourceFiles) {
     const unitDir = discovery.unitByFile.get(file)!;
@@ -1241,15 +1348,21 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
         source: { path: file, startLine: dependency.startLine, endLine: dependency.endLine },
       };
       if (dependency.specifier.startsWith(".")) {
-        const target = resolveFile(file, dependency.specifier);
+        const specifierPath = relativeSpecifierPath(dependency.specifier);
+        const target = resolveFile(file, specifierPath);
         if (target && target !== file) {
           addRelation(file, target, typedId("relation", file, target), `comp:${file}->${target}`, evidence);
         } else if (!target) {
           // A relative import escaping the discovered set (e.g. the generated WASM
           // pkg) still names its owning unit — keep the container-level fact.
-          const targetUnit = resolveRelativeUnitImport(file, dependency.specifier, unitDirs);
+          const targetUnit = resolveRelativeUnitImport(file, specifierPath, unitDirs);
+          const targetPath = normalizeRepoPath(file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : "", specifierPath);
           if (targetUnit && targetUnit !== unitDir) {
             addRelation(unitDir, targetUnit, typedId("relation", unitDir, targetUnit), `unit:${unitDir}->${targetUnit}`, evidence);
+          } else if (!isPackageManagerPath(targetPath) && !isTrackedImportTarget(targetPath, trackedFiles)) {
+            // No relation and no such file in the repository: the edge is lost, so say
+            // so (never silent). An existing asset/JSON/skipped file is not a gap.
+            unresolvedRelativeImports.push({ path: file, line: dependency.startLine, specifier: dependency.specifier });
           }
         }
       } else {
@@ -1330,8 +1443,9 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
     if (value && typeof value === "object") return Object.values(value as Record<string, unknown>).flatMap(stringsIn);
     return [];
   };
-  for (const unit of discovery.units.filter(unit => unit.kind === "member" || unit.kind === "root")) {
-    const manifestPath = unit.kind === "root" ? "package.json" : `${unit.dir}/package.json`;
+  for (const unit of discovery.units) {
+    const manifestPath = unit.packageManifest;
+    if (!manifestPath) continue;
     let manifest: Record<string, unknown>;
     try { manifest = JSON.parse(readFile(manifestPath)) as Record<string, unknown>; } catch { continue; }
     const publicPaths = Object.hasOwn(manifest, "exports") ? stringsIn(manifest.exports) : [...stringsIn(manifest.main), ...stringsIn(manifest.types)];
@@ -1440,14 +1554,24 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
   }
 
   // Rust crate wiring is an observed fact in Cargo.toml — `path = "…"`
-  // dependencies become container edges, so a crate is never a mystery island.
+  // dependencies become container edges, so a crate is never a mystery island. An
+  // inherited `foo = { workspace = true }` takes the root `[workspace.dependencies]`
+  // path (relative to the root).
+  let rootManifest = "";
+  try { if (discovery.units.some(unit => unit.kind === "rust")) rootManifest = readFile("Cargo.toml") ?? ""; } catch { /* no root manifest */ }
+  const workspacePaths = new Map(cargoPathDependencies(rootManifest).flatMap(dependency => dependency.workspace && !dependency.inherited ? [[dependency.name, dependency.path] as const] : []));
   for (const unit of discovery.units) {
     if (unit.kind !== "rust") continue;
     const manifestPath = `${unit.dir}/Cargo.toml`;
     let manifestText: string;
     try { manifestText = readFile(manifestPath); } catch { continue; }
     for (const dependency of cargoPathDependencies(manifestText)) {
-      const targetDir = resolveRelativeUnitImport(`${unit.dir}/Cargo.toml`, dependency.path, unitDirs);
+      if (dependency.workspace) continue;
+      const inheritedPath = dependency.inherited ? workspacePaths.get(dependency.name) : undefined;
+      if (dependency.inherited && inheritedPath === undefined) continue;
+      const targetDir = inheritedPath !== undefined
+        ? resolveRelativeUnitImport("Cargo.toml", inheritedPath, unitDirs)
+        : resolveRelativeUnitImport(`${unit.dir}/Cargo.toml`, dependency.path, unitDirs);
       if (!targetDir || targetDir === unit.dir) continue;
       addRelation(
         unit.dir,
@@ -1513,6 +1637,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
     },
     cyclomaticById,
     clonePairs: clonePairsFromBuckets(cloneBuckets),
+    unresolvedRelativeImports: canonicalUnresolvedImports(unresolvedRelativeImports),
   };
 }
 

@@ -209,6 +209,13 @@ function membershipWarningLines(diagnostics: ScanArtifacts["membership"]["diagno
   return diagnostics.length > 5 ? `${shown}  ... ${diagnostics.length - 5} more membership warning(s) (see membership-report.json)\n` : shown;
 }
 
+/** What a repo without JS workspace members became: a root container and/or Rust crate containers. */
+function singlePackageModeNote(snapshot: ScanArtifacts["snapshot"], rustCrates: number): string {
+  if (rustCrates === 0) return "  single-package repo (no workspace) -> one root container\n";
+  const hasRoot = snapshot.entities.filter(entity => entity.kind === "container").length > rustCrates;
+  return `  no JS workspace members -> ${hasRoot ? "one root container + " : ""}${rustCrates} Rust crate container(s)\n`;
+}
+
 function summaryLines(artifacts: ScanArtifacts): string {
   const { snapshot, pin, enrichmentReport, discoverySummary } = artifacts;
   const enrichedNote = enrichmentReport
@@ -220,10 +227,7 @@ function summaryLines(artifacts: ScanArtifacts): string {
       : `  system-scope: rejected (${enrichmentReport.systemScope.reasons.length} reason(s), see enrichment-report.json)\n`)
     : "";
   // Never hide what was left out — surface the redaction/omission decisions.
-  const modeNote = discoverySummary.singlePackage ? "  single-package repo (no workspace) -> one root container\n" : "";
-  const jsNote = discoverySummary.skippedJsFiles > 0
-    ? `  skipped ${discoverySummary.skippedJsFiles} .js file(s) (TypeScript repo; use a pure-JS repo to include them)\n`
-    : "";
+  const modeNote = discoverySummary.singlePackage ? singlePackageModeNote(snapshot, discoverySummary.rustCrates ?? 0) : "";
   const membersNote = discoverySummary.skippedMembers.length > 0
     ? `  skipped ${discoverySummary.skippedMembers.length} fixture/example member(s): ${discoverySummary.skippedMembers.slice(0, 5).join(", ")}${discoverySummary.skippedMembers.length > 5 ? " ..." : ""} (--include-members to scan)\n`
     : "";
@@ -245,7 +249,7 @@ function summaryLines(artifacts: ScanArtifacts): string {
     : `  component map: REJECTED; retained original file graph (see component-map-report.json)\n${mapping.reasons.map(reason => `    ${reason}\n`).join('')}`;
   return `okie-scan: ${snapshot.entities.length} entities, ${snapshot.relations.length} relations\n` +
     `  commit ${pin.commitSha}\n  tree   ${pin.treeHash}\n` +
-    modeNote + jsNote + membersNote + limitationsNote + aliasNote + coverageNote + flowNote + enrichedNote + systemScopeNote + mappingNote;
+    modeNote + membersNote + limitationsNote + aliasNote + coverageNote + flowNote + enrichedNote + systemScopeNote + mappingNote;
 }
 
 /** Rewrites <scanRoot>/index.json to index every per-repo scan slot deterministically. */

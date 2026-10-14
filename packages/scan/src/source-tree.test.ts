@@ -143,13 +143,13 @@ test("in-root links are kept and honoured; escaping/dangling/looping ones remove
 
 test("an in-root linked tsconfig.json is honoured on both paths; an escaping one is not", () => {
   // The link target is NOT itself a root tsconfig name, so only following the link can make this a TS repo.
-  const files = { "package.json": '{"name":"plain-js"}\n', "config/tsconfig.shared.json": "{}\n", "lib/index.js": "module.exports = 1;\n" };
+  const files = { "package.json": '{"name":"plain-js"}\n', "config/tsconfig.shared.json": "{}\n", "lib/index.js": "module.exports = 1;\n", "lib/bundle.min.js": "1;\n" };
   for (const [target, honoured] of [["config/tsconfig.shared.json", true], ["../outside/package.json", false]] as const) {
     withCommittedRepo(files, { "tsconfig.json": target }, (repo, base) => {
       const check = (discovery: Discovery): void => {
-        // A root tsconfig makes this a TypeScript repo: `.js` is skipped (and counted).
+        // A root tsconfig makes this a TypeScript repo: minified `.js` is skipped (and counted).
         assert.equal(discovery.summary.includedJs, !honoured, target);
-        assert.deepEqual(discovery.sourceFiles, honoured ? [] : ["lib/index.js"], target);
+        assert.deepEqual(discovery.sourceFiles, honoured ? ["lib/index.js"] : ["lib/bundle.min.js", "lib/index.js"], target);
       };
       committedDiscovery(repo, check);
       tarballDiscovery(repo, base, check);
