@@ -653,9 +653,10 @@ export function cargoPathDependencies(manifestText: string): CargoPathDependency
       else if (/^\s*workspace\s*=\s*true\b/.test(line)) dependencies.push({ name: subsectionName, path: "", line: index + 1, inherited: true, ...scope });
       continue;
     }
-    const inline = /^\s*([A-Za-z0-9_-]+)\s*=\s*\{[^}]*(?:^|[{,\s])path\s*=\s*"([^"]+)"/.exec(line);
+    // The key follows `{` directly or a `,`/space inside the table (never `typed-path`).
+    const inline = /^\s*([A-Za-z0-9_-]+)\s*=\s*\{(?:[^}]*[,\s])?path\s*=\s*"([^"]+)"/.exec(line);
     if (inline) { dependencies.push({ name: inline[1]!, path: inline[2]!, line: index + 1, ...scope }); continue; }
-    const inherited = /^\s*([A-Za-z0-9_-]+)\s*(?:=\s*\{[^}]*(?:^|[{,\s])|\.\s*)workspace\s*=\s*true\b/.exec(line);
+    const inherited = /^\s*([A-Za-z0-9_-]+)\s*(?:=\s*\{(?:[^}]*[,\s])?|\.\s*)workspace\s*=\s*true\b/.exec(line);
     if (inherited) dependencies.push({ name: inherited[1]!, path: "", line: index + 1, inherited: true, ...scope });
   }
   return dependencies;

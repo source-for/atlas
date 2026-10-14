@@ -1078,3 +1078,12 @@ test("a '..' import to a manifest-less root with index.d.ts is not reported", ()
   const collected = collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
   assert.deepEqual(collected.unresolvedRelativeImports.map(item => item.specifier), ["../gone"]);
 });
+
+test("cargoPathDependencies reads compact inline tables: {path = …} and {workspace = true}, never typed-path", () => {
+  const manifest = '[dependencies]\ncore = {path = "../core"}\nshared = {workspace = true}\nlib = {typed-path = "x"}\nother = {version = "1",path = "../other"}\n';
+  assert.deepEqual(cargoPathDependencies(manifest).map(dep => [dep.name, dep.path, dep.inherited ?? false]), [
+    ["core", "../core", false],
+    ["shared", "", true],
+    ["other", "../other", false],
+  ]);
+});

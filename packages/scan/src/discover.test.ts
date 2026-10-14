@@ -859,3 +859,13 @@ test("Cargo literal-quoted subsection names inherit workspace dependencies: [dep
   assert.deepEqual(cargoManifestDependencies(files["app/Cargo.toml"]).map(dependency => [dependency.name, dependency.inherited]), [["core", true], ["util", true]]);
   withRepo(files, dir => assert.deepEqual(discoverRepository(dir).units.filter(unit => unit.kind === "rust").map(unit => unit.dir), ["app", "crates/core", "crates/util"]));
 });
+
+test("cargoManifestDependencies reads compact inline tables: {path = …} and {workspace = true}", () => {
+  const manifest = '[dependencies]\ncore = {path = "../core"}\nshared = {workspace = true}\nlib = {typed-path = "x"}\n[workspace.dependencies]\nshared = {path = "crates/shared"}\n';
+  assert.deepEqual(cargoManifestDependencies(manifest).map(dependency => [dependency.scope, dependency.name, dependency.path ?? null, dependency.inherited]), [
+    ["own", "core", "../core", false],
+    ["own", "shared", null, true],
+    ["own", "lib", null, false],
+    ["workspace", "shared", "crates/shared", false],
+  ]);
+});
