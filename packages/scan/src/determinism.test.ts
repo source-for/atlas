@@ -92,7 +92,7 @@ test("CLA-299: every id in Okie's own scan is within the 192-character limit (bo
   // script reading `dist/`) that no scanned source file backs. Lines are not pinned.
   const [jsLine, unresolvedHeader, ...unresolved] = artifacts.analysis.limitations ?? [];
   assert.equal(jsLine, "1 .js file(s) in this TypeScript repository were not scanned: 1 under a test/fixture/vendor directory.");
-  assert.equal(unresolvedHeader, "2 relative import(s) did not resolve to a scanned source file; no relation was recorded for them.");
+  assert.equal(unresolvedHeader, "2 relative import(s) name no file in the repository; no relation was recorded for them.");
   assert.equal(unresolved.length, 2);
   assert.match(unresolved[0]!, /^Unresolved relative import apps\/web\/src\/renderer\/stressFixture\.ts:\d+: '\.\.\/\.\.\/\.\.\/\.\.\/fixtures\/renderer\/stress-5000\.json'$/);
   assert.match(unresolved[1]!, /^Unresolved relative import packages\/scene-compiler\/scripts\/generate-golden-source-excerpts\.mjs:\d+: '\.\.\/dist\/golden-source-excerpts\.js'$/);

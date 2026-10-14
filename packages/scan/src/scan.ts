@@ -401,8 +401,8 @@ export function discoveryLimitations(summary: DiscoverySummary): string[] {
 export const UNRESOLVED_IMPORTS_SHOWN = 20;
 
 /**
- * Relative imports the syntax extraction could not resolve to a scanned file and so
- * recorded no relation for — their dependency edge is missing from the atlas: a header line, then one
+ * Relative imports that recorded no relation and name no file in the repository
+ * listing — their dependency edge is missing from the atlas: a header line, then one
  * `path:line: 'specifier'` line each (already sorted and deduplicated), capped at
  * {@link UNRESOLVED_IMPORTS_SHOWN} with a "+N more" line so a broken repo stays
  * bounded. Scan-level (not per-adapter) because extraction — not an analyzer —
@@ -413,7 +413,7 @@ export function unresolvedImportLimitations(imports: readonly UnresolvedRelative
   const shown = imports.slice(0, UNRESOLVED_IMPORTS_SHOWN).map(item => `Unresolved relative import ${item.path}:${item.line}: '${item.specifier}'`);
   const hidden = imports.length - shown.length;
   return [
-    `${imports.length} relative import(s) did not resolve to a scanned source file; no relation was recorded for them.`,
+    `${imports.length} relative import(s) name no file in the repository; no relation was recorded for them.`,
     ...shown,
     ...(hidden > 0 ? [`+${hidden} more unresolved relative import(s) not itemized.`] : []),
   ];

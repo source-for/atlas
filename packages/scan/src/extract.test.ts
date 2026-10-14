@@ -911,7 +911,9 @@ test("unresolved relative imports are recorded with path, line and specifier: so
       "import { gone as same } from './missing.js'; import type { T } from './missing.js';",
       "import { b } from '../../b/src/z.js';",
       "import asset from './logo.svg';",
-      "export const all = [ok, data, gone, again, same, b, asset];",
+      "import './gone.css';",
+      "import legacy from './legacy.js';",
+      "export const all = [ok, data, gone, again, same, b, asset, legacy];",
     ].join("\n"),
     "pkg/a/src/ok.ts": "export const ok = 1;\n",
   };
@@ -920,7 +922,9 @@ test("unresolved relative imports are recorded with path, line and specifier: so
     { kind: "member" as const, dir: "pkg/a", name: "a", evidencePath: "pkg/a" },
     { kind: "member" as const, dir: "pkg/b", name: "b", evidencePath: "pkg/b" },
   ];
-  const discovery: Discovery = { sourceFiles: paths, units, unitByFile: new Map(paths.map(path => [path, path.slice(0, 5)])), unitByPackageName: new Map(), summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  // Tracked but not source: an asset and a `.js` the TS-repo rule skipped.
+  const trackedFiles = new Set([...paths, "pkg/a/src/logo.svg", "pkg/a/src/legacy.js"]);
+  const discovery: Discovery = { sourceFiles: paths, units, unitByFile: new Map(paths.map(path => [path, path.slice(0, 5)])), unitByPackageName: new Map(), trackedFiles, summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
   const collect = (order: string[]) => collectExtractedArchitecture({ discovery: { ...discovery, sourceFiles: order }, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
   const collected = collect(paths);
   assert.deepEqual(collected.unresolvedRelativeImports, [
@@ -928,7 +932,8 @@ test("unresolved relative imports are recorded with path, line and specifier: so
     { path: "pkg/a/src/index.ts", line: 3, specifier: "./missing.js" },
     { path: "pkg/a/src/index.ts", line: 4, specifier: "./missing.js" },
     { path: "pkg/a/src/index.ts", line: 5, specifier: "./missing.js" },
+    { path: "pkg/a/src/index.ts", line: 8, specifier: "./gone.css" },
     { path: "pkg/b/src/z.ts", line: 1, specifier: "./missing.js" },
-  ], "resolved files and in-unit assets (./logo.svg lands in pkg/a) are not reported; one entry per (path, line, specifier)");
+  ], "resolved files and tracked non-source files (logo.svg, legacy.js) are not reported; a missing asset is; one entry per (path, line, specifier)");
   assert.deepEqual(collect([...paths].reverse()).unresolvedRelativeImports, collected.unresolvedRelativeImports, "independent of discovery order");
 });

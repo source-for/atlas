@@ -430,7 +430,7 @@ test("a quick scan lists unresolved relative imports in analysis.limitations (fi
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
     const artifacts = scanRepository(dir, { analysisMode: "quick" });
     assert.deepEqual(artifacts.analysis.limitations, [
-      "1 relative import(s) did not resolve to a scanned source file; no relation was recorded for them.",
+      "1 relative import(s) name no file in the repository; no relation was recorded for them.",
       "Unresolved relative import src/index.ts:2: './gone.js'",
     ]);
   });
@@ -441,7 +441,75 @@ test("unresolved-import limitations are capped with a +N more count", () => {
   const many = Array.from({ length: UNRESOLVED_IMPORTS_SHOWN + 7 }, (_, index) => ({ path: "src/a.ts", line: index + 1, specifier: `./m${index}.js` }));
   const lines = unresolvedImportLimitations(many);
   assert.equal(lines.length, 1 + UNRESOLVED_IMPORTS_SHOWN + 1);
-  assert.equal(lines[0], `${UNRESOLVED_IMPORTS_SHOWN + 7} relative import(s) did not resolve to a scanned source file; no relation was recorded for them.`);
+  assert.equal(lines[0], `${UNRESOLVED_IMPORTS_SHOWN + 7} relative import(s) name no file in the repository; no relation was recorded for them.`);
   assert.equal(lines[1], "Unresolved relative import src/a.ts:1: './m0.js'");
   assert.equal(lines.at(-1), "+7 more unresolved relative import(s) not itemized.");
+});
+
+// CLA-578 review round 1.
+
+test("Cargo [workspace] exclude also filters the crates/* fallback (no members, or members that normalize to none)", () => {
+  for (const workspace of ['[workspace]\nexclude = ["crates/scratch"]\n', '[workspace]\nmembers = ["."]\nexclude = ["crates/scratch"]\n']) {
+    withRepo({
+      "package.json": JSON.stringify({ name: "mixed" }),
+      "Cargo.toml": workspace,
+      "crates/engine/Cargo.toml": '[package]\nname = "engine"\n',
+      "crates/engine/src/lib.rs": "pub fn run() {}\n",
+      "crates/scratch/Cargo.toml": '[package]\nname = "scratch"\n',
+      "crates/scratch/src/lib.rs": "pub fn scratch() {}\n",
+    }, dir => {
+      assert.deepEqual(discoverRepository(dir).units.filter(unit => unit.kind === "rust").map(unit => unit.dir), ["crates/engine"], workspace);
+    });
+  }
+});
+
+test("deepest root wins across Rust crates and JS members: a JS member nested in a crate owns its files", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "mixed", workspaces: ["engine/web", "engine/examples/*"] }),
+    "tsconfig.json": "{}",
+    "Cargo.toml": '[workspace]\nmembers = ["engine"]\n',
+    "engine/Cargo.toml": '[package]\nname = "engine"\n',
+    "engine/src/lib.rs": "pub fn run() {}\n",
+    "engine/web/package.json": JSON.stringify({ name: "@m/web" }),
+    "engine/web/src/index.ts": "export const web = 1;\n",
+    "engine/examples/demo/package.json": JSON.stringify({ name: "@m/demo" }),
+    "engine/examples/demo/main.ts": "export const demo = 1;\n",
+  }, dir => {
+    const discovery = discoverRepository(dir);
+    assert.equal(discovery.unitByFile.get("engine/web/src/index.ts"), "engine/web");
+    assert.equal(discovery.unitByFile.get("engine/src/lib.rs"), "engine");
+    assert.ok(discovery.units.some(unit => unit.kind === "member" && unit.dir === "engine/web"), "the nested web member keeps its unit");
+    assert.equal(discovery.unitByFile.has("engine/examples/demo/main.ts"), false, "a winning fixture member is still skipped, not handed to the crate");
+  });
+});
+
+test("an import of an existing tracked file is never unresolved: single-package root and tooling bucket", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "demo" }),
+    "tsconfig.json": "{}",
+    "src/index.ts": "import './app.css';\nimport logo from './logo.svg';\nimport data from '../data/seed.json';\nimport './gone.css';\nexport const all = [logo, data];\n",
+    "src/app.css": "body {}\n",
+    "src/logo.svg": "<svg/>\n",
+    "data/seed.json": "{}\n",
+  }, dir => {
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    assert.deepEqual(scanRepository(dir, { analysisMode: "quick" }).analysis.limitations, [
+      "1 relative import(s) name no file in the repository; no relation was recorded for them.",
+      "Unresolved relative import src/index.ts:4: './gone.css'",
+    ], "the root unit key is a slug, not a dir: tracked assets must still count as existing");
+  });
+  withRepo({
+    "pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n",
+    "package.json": JSON.stringify({ name: "mono" }),
+    "tsconfig.json": "{}",
+    "packages/a/package.json": JSON.stringify({ name: "@m/a" }),
+    "packages/a/index.ts": "export const a = 1;\n",
+    "scripts/build.mjs": "import config from './config.json' with { type: 'json' };\nimport legacy from './legacy.min.js';\nexport default [config, legacy];\n",
+    "scripts/config.json": "{}\n",
+    "scripts/legacy.min.js": "1;\n",
+  }, dir => {
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    const limitations = scanRepository(dir, { analysisMode: "quick" }).analysis.limitations ?? [];
+    assert.ok(!limitations.some(line => line.includes("relative import")), `tooling imports of tracked JSON / a skipped .js are not unresolved: ${limitations.join(" | ")}`);
+  });
 });

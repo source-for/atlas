@@ -1049,8 +1049,8 @@ function attachObservedLanguageTags(
 export interface ExtractedArchitecture {
   extraction: ArchitectureExtraction;
   /**
-   * Relative imports that resolved to no scanned source file and recorded no relation
-   * (see {@link UnresolvedRelativeImport}). Sorted by path, line, specifier; deduplicated. Scan-time
+   * Relative imports that recorded no relation and name no file in the repository
+   * listing (see {@link UnresolvedRelativeImport}). Sorted by path, line, specifier; deduplicated. Scan-time
    * evidence of a gap (rendered into `analysis.limitations`), never extraction input.
    */
   unresolvedRelativeImports: readonly UnresolvedRelativeImport[];
@@ -1060,20 +1060,25 @@ export interface ExtractedArchitecture {
   clonePairs: readonly ClonePair[];
 }
 
+const IMPORT_TARGET_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"] as const;
+
 /**
- * Whether a relative specifier names a source module (no extension, or a JS/TS one)
- * rather than an asset. A same-unit asset import (`./app.css`, `./logo.svg`) is
- * expected not to resolve to a scanned file; a same-unit `./missing.js` is a gap.
+ * Whether a relative specifier names a file that exists in the repository listing:
+ * the path itself, a `.js`-family specifier's TS counterpart, the path plus an
+ * extension, or a directory index. Any tracked file counts (an asset, JSON, a `.js`
+ * the TS-repo rule skipped) — such an import is not a broken one.
  */
-function isSourceModuleSpecifier(specifier: string): boolean {
-  const last = specifier.slice(specifier.lastIndexOf("/") + 1);
-  if (last === "." || last === ".." || !last.includes(".")) return true;
-  return /\.(?:[cm]?[jt]s|[jt]sx)$/.test(last);
+function isTrackedImportTarget(fromFile: string, specifier: string, trackedFiles: ReadonlySet<string>): boolean {
+  const baseDir = fromFile.includes("/") ? fromFile.slice(0, fromFile.lastIndexOf("/")) : "";
+  const base = normalizeRepoPath(baseDir, specifier);
+  if (trackedFiles.has(base)) return true;
+  if (relativeCandidates(base).some(candidate => trackedFiles.has(candidate))) return true;
+  return IMPORT_TARGET_EXTENSIONS.some(extension => trackedFiles.has(`${base}${extension}`) || trackedFiles.has(`${base}/index${extension}`));
 }
 
 /**
- * A relative import that resolved to no discovered file and so recorded no relation:
- * its target is outside every unit, or is a source module of its own unit.
+ * A relative import that recorded no relation and names no file in the repository
+ * listing (see `isTrackedImportTarget`).
  */
 export interface UnresolvedRelativeImport {
   path: string;
@@ -1218,6 +1223,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
 
   const unitDirs = discovery.units.map(unit => unit.dir);
   const unresolvedRelativeImports: UnresolvedRelativeImport[] = [];
+  const trackedFiles: ReadonlySet<string> = discovery.trackedFiles ?? fileSet;
 
   for (const file of discovery.sourceFiles) {
     const unitDir = discovery.unitByFile.get(file)!;
@@ -1293,9 +1299,9 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
           const targetUnit = resolveRelativeUnitImport(file, dependency.specifier, unitDirs);
           if (targetUnit && targetUnit !== unitDir) {
             addRelation(unitDir, targetUnit, typedId("relation", unitDir, targetUnit), `unit:${unitDir}->${targetUnit}`, evidence);
-          } else if (!targetUnit || isSourceModuleSpecifier(dependency.specifier)) {
-            // The edge is lost, so say so (never silent): the target is outside every
-            // unit, or names a source module of its own unit that was not discovered.
+          } else if (!isTrackedImportTarget(file, dependency.specifier, trackedFiles)) {
+            // No relation and no such file in the repository: the edge is lost, so say
+            // so (never silent). An existing asset/JSON/skipped file is not a gap.
             unresolvedRelativeImports.push({ path: file, line: dependency.startLine, specifier: dependency.specifier });
           }
         }

@@ -114,6 +114,12 @@ export interface Discovery {
   /** workspace package name -> owning unit dir. */
   unitByPackageName: Map<string, string>;
   summary: DiscoverySummary;
+  /**
+   * Every listed repository file (source or not: assets, JSON, skipped `.js`), so an
+   * import of an existing file is never reported as unresolved. Absent on hand-built
+   * discoveries, where `sourceFiles` stands in.
+   */
+  trackedFiles?: ReadonlySet<string>;
 }
 
 export interface DiscoverOptions {
@@ -355,8 +361,8 @@ export function cargoWorkspaceMembers(manifestText: string): { members: string[]
  * Rust crate directories. With a root `Cargo.toml` `[workspace] members` list, a crate
  * is a directory matched by a member glob (or path), not under an `exclude` path, that
  * has a tracked `Cargo.toml`. Without declared members, the conventional
- * `crates/<name>/Cargo.toml` layout is used (unchanged behaviour). The root itself
- * (`.`) is never a crate unit.
+ * `crates/<name>/Cargo.toml` layout is used (unchanged behaviour), still minus any
+ * declared `exclude`. The root itself (`.`) is never a crate unit.
  */
 function rustCrateDirectories(sourceRoot: string, allFiles: readonly string[]): string[] {
   const manifestDirs = allFiles
@@ -365,13 +371,13 @@ function rustCrateDirectories(sourceRoot: string, allFiles: readonly string[]): 
   const manifest = readRepositoryFile(sourceRoot, "Cargo.toml");
   const declared = manifest === undefined ? { members: [], exclude: [] } : cargoWorkspaceMembers(manifest);
   const members = declared.members.map(normalizeWorkspacePattern).filter(pattern => pattern && pattern !== ".");
-  if (members.length === 0) return manifestDirs.filter(dir => /^crates\/[^/]+$/.test(dir)).sort(compareText);
   const excluded = declared.exclude.map(normalizeWorkspacePattern).filter(Boolean);
   const isExcluded = (dir: string): boolean =>
     excluded.some(pattern => dir === pattern || dir.startsWith(`${pattern}/`) || workspaceGlobToRegExp(pattern).test(dir));
-  return manifestDirs
-    .filter(dir => members.some(pattern => workspaceGlobToRegExp(pattern).test(dir)) && !isExcluded(dir))
-    .sort(compareText);
+  const isMember = members.length === 0
+    ? (dir: string): boolean => /^crates\/[^/]+$/.test(dir)
+    : (dir: string): boolean => members.some(pattern => workspaceGlobToRegExp(pattern).test(dir));
+  return manifestDirs.filter(dir => isMember(dir) && !isExcluded(dir)).sort(compareText);
 }
 
 function compareText(left: string, right: string): number {
@@ -564,12 +570,14 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
   } else {
     const nonMemberFiles = new Set<string>();
     for (const file of sourceCandidates) {
+      // Deepest root wins across Rust crates and JS members together (a JS member
+      // nested in a crate owns its files); the same directory as both goes to Rust.
       const rustCrate = rustCrateOf(file);
-      if (rustCrate) {
+      const member = memberOf(file);
+      if (rustCrate && (!member || rustCrate.length >= member.length)) {
         unitByFile.set(file, rustCrate);
         continue;
       }
-      const member = memberOf(file);
       if (member && skippedMemberSet.has(member)) continue; // fixture/example member — dropped
       if (member) unitByFile.set(file, member);
       else { unitByFile.set(file, TOOLING_UNIT_KEY); nonMemberFiles.add(file); }
@@ -600,6 +608,7 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
     units,
     unitByFile,
     unitByPackageName,
+    trackedFiles,
     summary: {
       singlePackage,
       includedJs,
