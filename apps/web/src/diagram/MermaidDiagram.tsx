@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { MermaidConfig } from 'mermaid';
+import { mermaidReleased, releaseMermaid, whenMermaidReleased } from './mermaidLoadGate';
 
 const MAX_MERMAID_SOURCE_LENGTH = 40_000;
 const MAX_MERMAID_SVG_LENGTH = 2_000_000;
@@ -312,6 +313,22 @@ export function MermaidDiagram({ source, title, compact = false, fallbackNote }:
   const dialogRef = useRef<HTMLDialogElement>(null);
   const expandedHostRef = useRef<HTMLDivElement>(null);
   const expandButtonRef = useRef<HTMLButtonElement>(null);
+  const sectionRef = useRef<HTMLElement>(null);
+  const [released, setReleased] = useState(mermaidReleased);
+
+  // Held until the first map frame (mermaidLoadGate), unless the reader can already see this diagram.
+  useEffect(() => {
+    if (released) return;
+    if (mermaidReleased()) { setReleased(true); return; }
+    const stop = whenMermaidReleased(() => setReleased(true));
+    const section = sectionRef.current;
+    if (!section || typeof IntersectionObserver === 'undefined') { releaseMermaid(); return stop; }
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) releaseMermaid();
+    });
+    observer.observe(section);
+    return () => { stop(); observer.disconnect(); };
+  }, [released]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -341,6 +358,7 @@ export function MermaidDiagram({ source, title, compact = false, fallbackNote }:
     host.replaceChildren();
     setExpanded(false);
     setState('loading');
+    if (!released) return;
 
     void (async () => {
       try {
@@ -367,9 +385,9 @@ export function MermaidDiagram({ source, title, compact = false, fallbackNote }:
         host.replaceChildren();
       }
     };
-  }, [retry, source]);
+  }, [released, retry, source]);
 
-  return <section aria-labelledby={headingId} className={`semantic-mermaid-diagram${compact ? ' is-compact' : ''}`} data-mermaid-compact={compact ? 'true' : undefined}>
+  return <section aria-labelledby={headingId} className={`semantic-mermaid-diagram${compact ? ' is-compact' : ''}`} data-mermaid-compact={compact ? 'true' : undefined} ref={sectionRef}>
     <header>
       <div><span>Rendered view</span><h2 id={headingId}>{title}</h2></div>
       <small>Strict · deterministic SVG</small>

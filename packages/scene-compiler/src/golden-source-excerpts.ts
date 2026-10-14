@@ -651,27 +651,27 @@ export const GOLDEN_SOURCE_EXCERPTS = {
     "path": "apps/web/src/App.tsx",
     "symbol": "App",
     "language": "tsx",
-    "startLine": 1561,
-    "endLine": 1566,
-    "highlightLine": 1561,
+    "startLine": 1562,
+    "endLine": 1567,
+    "highlightLine": 1562,
     "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
     "lines": [
       "export function App() {",
+      "  // Inline diagrams mount (and run their effects) before App's own effects: hold Mermaid from this first render.",
+      "  useState(() => { holdMermaidUntilFirstFrame(); return true; });",
       "  const query = useMemo(() => readDemoQuery(window.location.search), []);",
       "  const draftPreviewContext = getDraftPreviewContext();",
-      "  const initialCameraExplicit = useMemo(() => {",
-      "    const params = new URLSearchParams(window.location.search);",
-      "    return params.has('cx') || params.has('cy') || params.has('z');"
+      "  const initialCameraExplicit = useMemo(() => {"
     ],
-    "text": "export function App() {\n  const query = useMemo(() => readDemoQuery(window.location.search), []);\n  const draftPreviewContext = getDraftPreviewContext();\n  const initialCameraExplicit = useMemo(() => {\n    const params = new URLSearchParams(window.location.search);\n    return params.has('cx') || params.has('cy') || params.has('z');"
+    "text": "export function App() {\n  // Inline diagrams mount (and run their effects) before App's own effects: hold Mermaid from this first render.\n  useState(() => { holdMermaidUntilFirstFrame(); return true; });\n  const query = useMemo(() => readDemoQuery(window.location.search), []);\n  const draftPreviewContext = getDraftPreviewContext();\n  const initialCameraExplicit = useMemo(() => {"
   },
   "code:web-shell:canvas-viewport": {
     "path": "apps/web/src/App.tsx",
     "symbol": "CanvasViewport",
     "language": "tsx",
-    "startLine": 7020,
-    "endLine": 7025,
-    "highlightLine": 7020,
+    "startLine": 7031,
+    "endLine": 7036,
+    "highlightLine": 7031,
     "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
     "lines": [
       "          <CanvasViewport",
