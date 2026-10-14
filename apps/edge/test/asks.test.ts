@@ -1,4 +1,4 @@
-import { env as testEnv, type D1Migration } from 'cloudflare:test';
+import { env as testEnv, runInDurableObject, type D1Migration } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import {
   ASK_ACTIONS, ASK_ORIGINS, askUsageRequest, DAILY_ASKS, DEFAULT_LOCAL_PORT, GRANT_TTL_MS, grantSql, newGrantToken,
@@ -10,7 +10,7 @@ import { USER_DAILY_ASKS } from '../src/budget';
 import type { EdgeEnv } from '../src/env';
 import { budgetGuard } from '../src/guards';
 import { jsonText } from '../src/http';
-import { OPERATOR_ASK_USAGE_PATH } from '../src/operator';
+import { MAX_GRANT_LIFETIME_MS, OPERATOR_ASK_USAGE_PATH } from '../src/operator';
 import { edgeEnv, edgeFetch } from './helpers';
 
 const KEY = 'asks-test-signing-key-0123456789abcdef-01234';
@@ -227,9 +227,14 @@ describe('operator Ask usage route (CLA-539)', () => {
     expect(await first.json()).toMatchObject({ result: 'ok', requestsBefore: 2, requests: 0 });
     await expectMiss(await call(live, reset(a), at), 'grant used twice');
     expect(await counts()).toEqual([0, 1]);
-    // Expired and spent rows are gone; nothing of this test's is left behind.
-    await call(newGrantToken(), reset(a), new Date(at.getTime() + GRANT_TTL_MS));
-    expect((await db().prepare('SELECT COUNT(*) AS count FROM operator_grants WHERE created_at = ?1').bind(at.toISOString()).first<{ count: number }>())?.count).toBe(0);
+    // Expired rows are swept when a grant is accepted, never by a refused request.
+    const later = new Date(at.getTime() + 10 * 60 * 1000);
+    const left = async () => (await db().prepare('SELECT COUNT(*) AS count FROM operator_grants WHERE created_at = ?1').bind(at.toISOString()).first<{ count: number }>())?.count;
+    await expectMiss(await call(newGrantToken(), reset(a), later), 'unknown token, later');
+    await expectMiss(await call(short, show(a), later), 'expired token, later');
+    expect(await left()).toBeGreaterThan(0);
+    expect((await call(await grant('ask-show', a, later), show(a), later)).status).toBe(200);
+    expect(await left()).toBe(0);
   }, 20_000);
 
   it('says so when the account does not exist, changes nothing, and still spends the grant', async () => {
@@ -260,44 +265,159 @@ describe('operator Ask usage route (CLA-539)', () => {
     }
   });
 
-  it('an Ask in flight during a reset settles afterwards, answered or unanswered, without corrupting the counts', async () => {
+  it('a token that is no live grant costs one primary-key read and no write', async () => {
+    const at = new Date('2037-01-11T12:00:00Z');
+    const id = '539060';
+    await addUser(id);
+    const real = db();
+    const seen: string[] = [];
+    const watched = {
+      prepare(sql: string) { seen.push(sql); return real.prepare(sql); },
+      batch(statements: D1PreparedStatement[]) { seen.push('batch'); return real.batch(statements); },
+      exec(sql: string) { seen.push(`exec ${sql}`); return real.exec(sql); },
+    } as unknown as D1Database;
+    const body = { action: 'ask-show', accountId: id };
+    const expired = await grant('ask-show', id, at, 1000);
+    const far = await grant('ask-show', id, at, MAX_GRANT_LIFETIME_MS + 1);
+    const rows = async () => (await real.prepare('SELECT COUNT(*) AS count FROM operator_grants WHERE created_at = ?1').bind(at.toISOString()).first<{ count: number }>())?.count;
+    const tokens: Array<[string, string, Date]> = [['unknown', newGrantToken(), at], ['expired', expired, new Date(at.getTime() + 1000)], ['too far ahead', far, at]];
+    for (const [label, token, when] of tokens) {
+      seen.length = 0;
+      await expectMiss(await call(token, body, when, { env: { USERS_DB: watched } }), label);
+      expect(seen, label).toEqual(['SELECT expires_at FROM operator_grants WHERE token_hash = ?1']);
+    }
+    // Neither refused grant was removed by being presented.
+    expect(await rows()).toBe(2);
+    // The read uses the primary key, not a scan.
+    const plan = (await real.prepare('EXPLAIN QUERY PLAN SELECT expires_at FROM operator_grants WHERE token_hash = ?1').bind('x').all<{ detail: string }>()).results.map(row => row.detail).join(' ');
+    expect(plan).toMatch(/SEARCH operator_grants USING (?:COVERING )?INDEX sqlite_autoindex_operator_grants_1 \(token_hash=\?\)/);
+    // An accepted grant: the read, the taking delete, the sweep, then the account lookup.
+    seen.length = 0;
+    expect((await call(await grant('ask-show', id, at), body, at, { env: { USERS_DB: watched } })).status).toBe(200);
+    expect(seen.map(sql => sql.split(' ')[0])).toEqual(['SELECT', 'DELETE', 'DELETE', 'SELECT']);
+  });
+
+  it('two requests racing with one token: exactly one is answered', async () => {
+    const at = new Date('2037-01-12T12:00:00Z');
+    const day = dayOf(at);
+    const id = '539070';
+    await addUser(id);
+    for (let i = 0; i < 3; i += 1) await admitFor(id, day);
+    for (let round = 0; round < 5; round += 1) {
+      const token = await grant('ask-show', id, at);
+      const responses = await Promise.all([0, 1, 2].map(() => call(token, { action: 'ask-show', accountId: id }, at)));
+      expect(responses.map(response => response.status).sort(), `round ${round}`).toEqual([200, 404, 404]);
+      for (const response of responses) if (response.status === 404) await expectMiss(response, `round ${round} loser`);
+    }
+  }, 20_000);
+
+  it('accepts a grant only while it expires within five minutes of the Worker\'s clock, in the script\'s exact timestamp shape', async () => {
+    const at = new Date('2037-01-13T12:00:00Z');
+    const id = '539080';
+    await addUser(id);
+    const body = { action: 'ask-show', accountId: id };
+    expect(MAX_GRANT_LIFETIME_MS).toBe(5 * 60 * 1000);
+    expect(GRANT_TTL_MS).toBeLessThan(MAX_GRANT_LIFETIME_MS);
+    // Exactly five minutes ahead is the last accepted expiry.
+    expect((await call(await grant('ask-show', id, at, MAX_GRANT_LIFETIME_MS), body, at)).status).toBe(200);
+    // Further out is refused, twice (it is left in place, not taken), until its own last five minutes.
+    for (const ttl of [MAX_GRANT_LIFETIME_MS + 1, 60 * 60 * 1000, 10 * 365 * 24 * 60 * 60 * 1000]) {
+      const far = await grant('ask-show', id, at, ttl);
+      await expectMiss(await call(far, body, at), `expires ${ttl} ms ahead`);
+      await expectMiss(await call(far, body, at), `expires ${ttl} ms ahead, again`);
+      await expectMiss(await call(far, body, new Date(at.getTime() + ttl - MAX_GRANT_LIFETIME_MS - 1)), `expires ${ttl} ms ahead, just outside the window`);
+      await expectMiss(await call(far, body, new Date(at.getTime() + ttl)), `expires ${ttl} ms ahead, at expiry`);
+    }
+    // An expires_at in any other shape is never live, whatever it would compare as.
+    const insert = db().prepare(`INSERT INTO operator_grants (token_hash, action, account_id, expires_at, created_at) VALUES (?1, 'ask-show', ?2, ?3, ?4)`);
+    for (const expiresAt of ['2037-01-13T12:01:00Z', '2037-01-13 12:01:00.000', '2037-01-13T12:01:00.000+00:00', '2037-01-13T12:01:00.000Z ', '2037-01-13T12:01:00.000Zz', '2037-01-13T12:01', '9', '']) {
+      const token = newGrantToken();
+      await insert.bind(await sha256Hex(token), id, expiresAt, at.toISOString()).run();
+      await expectMiss(await call(token, body, at), `expires_at ${JSON.stringify(expiresAt)}`);
+    }
+  }, 20_000);
+
+  const clearedMarks = (day: string) => runInDurableObject(budget(), (_budget, state) => state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM ask_reset_cleared WHERE day = ?', day).one().count);
+  const resetVia = async (id: string, at: Date) => (await call(await grant('ask-reset', id, at), { action: 'ask-reset', accountId: id }, at)).json();
+
+  it('an Ask in flight at a reset settles afterwards without giving an Ask back', async () => {
     const at = new Date('2037-01-09T12:00:00Z');
     const day = dayOf(at);
     const id = '539050';
     await addUser(id);
     const ids = [];
-    for (let i = 0; i < 4; i += 1) ids.push((await admitFor(id, day)).reservationId);
-    await budget().settle(ids[3]!, 0.002);
-    expect(await budget().usage(day)).toMatchObject({ requests: { ask: 4 }, openReservations: 3 });
+    for (let i = 0; i < 3; i += 1) ids.push((await admitFor(id, day)).reservationId);
+    await budget().settle(ids[2]!, 0.002);
 
-    const response = await call(await grant('ask-reset', id, at), { action: 'ask-reset', accountId: id }, at);
-    expect(await response.json()).toEqual({ result: 'ok', action: 'ask-reset', accountId: id, day, requests: 0, refunds: 0, openAdmissions: 3, requestsBefore: 4 });
-    // The reset touched neither the bucket nor the dollars.
+    // Show still counts the two in flight after the reset.
+    expect(await resetVia(id, at)).toEqual({ result: 'ok', action: 'ask-reset', accountId: id, day, requests: 0, refunds: 0, openAdmissions: 2, requestsBefore: 3 });
     const afterReset = await budget().usage(day);
-    expect(afterReset).toMatchObject({ requests: { ask: 4 }, openReservations: 3 });
-    expect(afterReset.reservedDollars).toBeCloseTo(0.03, 9);
+    expect(afterReset).toMatchObject({ requests: { ask: 3 }, openReservations: 2 });
+    expect(afterReset.reservedDollars).toBeCloseTo(0.02, 9);
     expect(afterReset.spentDollars).toBeCloseTo(0.002, 9);
+    expect(await clearedMarks(day)).toBe(2);
 
-    // Answered: nothing to give back.
-    await budget().settle(ids[0]!, 0.004);
-    expect(await budget().accountUsage(day, id)).toEqual({ day, requests: 0, refunds: 0, openAdmissions: 2 });
-    // Unanswered with no count left: the count stays at 0 (never below), the refund is still recorded.
-    await budget().settle(ids[1]!, undefined, true);
-    expect(await budget().accountUsage(day, id)).toEqual({ day, requests: 0, refunds: 1, openAdmissions: 1 });
-    // Unanswered after a new Ask was counted: that one Ask comes back, as for any unanswered reply.
-    const fresh = (await admitFor(id, day)).reservationId;
-    expect((await budget().accountUsage(day, id)).requests).toBe(1);
-    await budget().settle(ids[2]!, 0, true);
-    expect(await budget().accountUsage(day, id)).toEqual({ day, requests: 0, refunds: 2, openAdmissions: 1 });
-    await budget().settle(fresh, 0.001);
+    // Unanswered: admission closed, dollars settled at the kept estimate, no Ask returned and no refund recorded.
+    await budget().settle(ids[0]!, undefined, true);
+    expect(await budget().accountUsage(day, id)).toEqual({ day, requests: 0, refunds: 0, openAdmissions: 1 });
+    // Answered: closes as usual.
+    await budget().settle(ids[1]!, 0.004);
+    expect(await budget().accountUsage(day, id)).toEqual({ day, requests: 0, refunds: 0, openAdmissions: 0 });
+    // Settling one again changes nothing.
+    await budget().settle(ids[0]!, 0, true);
 
     const settled = await budget().usage(day);
-    expect(settled.requests.ask).toBe(5);
+    expect(settled.requests.ask).toBe(3);
     expect(settled.openReservations).toBe(0);
     expect(settled.reservedDollars).toBe(0);
-    // 0.002 + 0.004 + the kept 0.01 estimate + 0 + 0.001.
-    expect(settled.spentDollars).toBeCloseTo(0.017, 9);
-    expect(await budget().accountUsage(day, id)).toEqual({ day, requests: 0, refunds: 2, openAdmissions: 0 });
+    expect(settled.spentDollars).toBeCloseTo(0.002 + 0.01 + 0.004, 9);
+    expect(await clearedMarks(day)).toBe(0);
+  });
+
+  it('an Ask in flight at a reset cannot refund an Ask counted after it', async () => {
+    const at = new Date('2037-01-14T12:00:00Z');
+    const day = dayOf(at);
+    const id = '539051';
+    await addUser(id);
+    const a = (await admitFor(id, day)).reservationId;
+    expect(await resetVia(id, at)).toMatchObject({ requestsBefore: 1, requests: 0, openAdmissions: 1 });
+    const b = (await admitFor(id, day)).reservationId;
+    await budget().settle(b, 0.001);
+    await budget().settle(a, 0, true);
+    expect(await budget().accountUsage(day, id)).toEqual({ day, requests: 1, refunds: 0, openAdmissions: 0 });
+    // B used one of the five: four more, not five.
+    const more = [];
+    for (let i = 0; i < 5; i += 1) more.push((await budget().admit({ bucket: 'ask', accountId: id, day, maxRequests: 1000, dollars: { estimate: 0.01, max: 100 } })).ok);
+    expect(more).toEqual([true, true, true, true, false]);
+    expect((await budget().usage(day)).requests.ask).toBe(6);
+  });
+
+  it('after a reset, new Asks and other accounts\' Asks in flight are still refunded as usual', async () => {
+    const at = new Date('2037-01-15T12:00:00Z');
+    const day = dayOf(at);
+    const id = '539052';
+    const other = '539053';
+    await addUser(id);
+    const before = (await admitFor(id, day)).reservationId;
+    const theirs = (await admitFor(other, day)).reservationId;
+    const otherDay = (await admitFor(id, '2037-01-16')).reservationId;
+    await resetVia(id, at);
+    // Only this account's admission for this day was marked.
+    expect(await clearedMarks(day)).toBe(1);
+    expect(await clearedMarks('2037-01-16')).toBe(0);
+
+    const fresh = (await admitFor(id, day)).reservationId;
+    const second = (await admitFor(id, day)).reservationId;
+    await budget().settle(fresh, 0, true);
+    expect(await budget().accountUsage(day, id)).toEqual({ day, requests: 1, refunds: 1, openAdmissions: 2 });
+    await budget().settle(before, 0, true);
+    expect(await budget().accountUsage(day, id)).toEqual({ day, requests: 1, refunds: 1, openAdmissions: 1 });
+    await budget().settle(second, 0.001);
+
+    await budget().settle(theirs, 0, true);
+    expect(await budget().accountUsage(day, other)).toEqual({ day, requests: 0, refunds: 1, openAdmissions: 0 });
+    await budget().settle(otherDay, 0, true);
+    expect(await budget().accountUsage('2037-01-16', id)).toEqual({ day: '2037-01-16', requests: 0, refunds: 1, openAdmissions: 0 });
   });
 
   it('has its table from the migration applied to the test database', async () => {

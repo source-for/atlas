@@ -444,11 +444,14 @@ pnpm --silent --filter @okie/edge asks:reset production --github-id 123456   # c
 
 - **What reset clears:** that account's count for today, nothing else. Its refund count, Asks still in flight, the
   shared daily Ask bucket (`ASK_DAILY_MAX_REQUESTS`) and the dollar ledger stay as they are, so a reset cannot lift
-  the global caps. An Ask in flight during the reset settles normally afterwards.
+  the global caps. An Ask in flight during the reset still finishes and its cost is still recorded, but if it ends
+  without an answer it gives no Ask back and is not counted as a refund: the reset already returned it. Asks made
+  after the reset are refunded as usual.
 - **Credentials:** `wrangler login`, as for the commands above. Each run writes a one-time grant into `USERS_DB`
   (`operator_grants`, only a hash of a random token) with `wrangler d1 execute --remote`, then sends the token to
   `POST /api/operator/ask-usage`. The grant is for that one action and account, is deleted when the Worker accepts
-  it, and expires after about two minutes. Without a live grant the route answers like any unknown `/api` path.
+  it, and expires after about two minutes (the Worker refuses any grant expiring more than five minutes ahead).
+  Without a live grant the route answers like any unknown `/api` path.
 - **Staging** is behind Cloudflare Access: set `STAGING_ACCESS_CLIENT_ID` / `STAGING_ACCESS_CLIENT_SECRET` (the
   `atlas-staging-smoke` token, environment or repo-root `.env`) as for `smoke:staging`.
 - The account must exist in `users`; an unknown GitHub id is reported and exits non-zero. A 404 means the grant was
