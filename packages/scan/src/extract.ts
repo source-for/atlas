@@ -112,6 +112,57 @@ function hasExportModifier(statement: ts.Statement): boolean {
     : false;
 }
 
+type NamedTopLevelDeclaration =
+  | ts.FunctionDeclaration | ts.ClassDeclaration | ts.InterfaceDeclaration | ts.TypeAliasDeclaration
+  | ts.EnumDeclaration | ts.ModuleDeclaration | ts.VariableDeclaration;
+
+const ANONYMOUS_DECLARATION_LABEL: ReadonlyArray<[(node: ts.Node) => boolean, string]> = [
+  [ts.isFunctionDeclaration, "function"],
+  [ts.isClassDeclaration, "class"],
+  [ts.isInterfaceDeclaration, "interface"],
+  [ts.isTypeAliasDeclaration, "type"],
+  [ts.isEnumDeclaration, "enum"],
+  [ts.isModuleDeclaration, "namespace"],
+  [ts.isVariableDeclaration, "variable"],
+];
+
+/**
+ * The name a top-level declaration is extracted under. Usually its identifier; but on
+ * a syntax error the parser recovers with a MISSING identifier whose text is `""`
+ * (`export default interface {}` — babel's parser fixtures — or `enum {}`), and a blank
+ * name fails the extraction gate. Such a declaration takes a deterministic fallback:
+ * `default` when it is the module's default export (the name importers bind), else
+ * `anonymous <kind>`. Only the source text decides it, so it is stable across scans.
+ */
+export function declarationName(declaration: NamedTopLevelDeclaration): string {
+  const text = declaration.name && ts.isIdentifier(declaration.name) ? declaration.name.text : "";
+  if (text.trim()) return text;
+  const statement = ts.isVariableDeclaration(declaration) ? declaration.parent.parent : declaration;
+  const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) ?? [] : [];
+  if (modifiers.some(modifier => modifier.kind === ts.SyntaxKind.DefaultKeyword)) return "default";
+  const label = ANONYMOUS_DECLARATION_LABEL.find(([is]) => is(declaration))?.[1] ?? "declaration";
+  return `anonymous ${label}`;
+}
+
+/**
+ * An entity's display name, within the extraction gate's limits. IDs are not derived
+ * from this: they come from the full path/symbol (bounded with a hash by
+ * `boundStableId`, made unique by `resolveCollisions`) before any name is shortened,
+ * and `sourceRefs.symbol` keeps the full identifier. A blank name (defensive: the
+ * TypeScript walk already names recovered declarations, see {@link declarationName})
+ * becomes `unnamed <kind>`; one over `maxNameCharacters` code points is cut with an
+ * ellipsis — a component (a path) keeps its distinctive tail, anything else its head.
+ */
+export function entityDisplayName(kind: string, name: string): string {
+  if (!name.trim()) return `unnamed ${kind}`;
+  const codePoints = Array.from(name);
+  const limit = ARCHITECTURE_EXTRACTION_LIMITS.maxNameCharacters;
+  if (codePoints.length <= limit) return name;
+  return kind === "component"
+    ? `…${codePoints.slice(codePoints.length - (limit - 1)).join("")}`
+    : `${codePoints.slice(0, limit - 1).join("")}…`;
+}
+
 /**
  * Every top-level named declaration — exported OR not. Non-exported top-level
  * symbols matter: e.g. `CanvasViewport` in App.tsx is a local function yet a
@@ -134,15 +185,15 @@ export function topLevelDeclarations(sourceFile: ts.SourceFile): TopLevelDeclara
   };
   for (const statement of sourceFile.statements) {
     const direct = hasExportModifier(statement);
-    if (ts.isFunctionDeclaration(statement) && statement.name) push(statement.name.text, statement, direct);
-    else if (ts.isClassDeclaration(statement) && statement.name) push(statement.name.text, statement, direct);
-    else if (ts.isInterfaceDeclaration(statement)) push(statement.name.text, statement, direct);
-    else if (ts.isTypeAliasDeclaration(statement)) push(statement.name.text, statement, direct);
-    else if (ts.isEnumDeclaration(statement)) push(statement.name.text, statement, direct);
-    else if (ts.isModuleDeclaration(statement) && ts.isIdentifier(statement.name)) push(statement.name.text, statement, direct);
+    if (ts.isFunctionDeclaration(statement) && statement.name) push(declarationName(statement), statement, direct);
+    else if (ts.isClassDeclaration(statement) && statement.name) push(declarationName(statement), statement, direct);
+    else if (ts.isInterfaceDeclaration(statement)) push(declarationName(statement), statement, direct);
+    else if (ts.isTypeAliasDeclaration(statement)) push(declarationName(statement), statement, direct);
+    else if (ts.isEnumDeclaration(statement)) push(declarationName(statement), statement, direct);
+    else if (ts.isModuleDeclaration(statement) && ts.isIdentifier(statement.name)) push(declarationName(statement), statement, direct);
     else if (ts.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
-        if (ts.isIdentifier(declaration.name)) push(declaration.name.text, declaration, direct);
+        if (ts.isIdentifier(declaration.name)) push(declarationName(declaration), declaration, direct);
       }
     }
   }
@@ -1250,13 +1301,13 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
       const exported = modifiers.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword);
       const isDefault = modifiers.some(modifier => modifier.kind === ts.SyntaxKind.DefaultKeyword);
       if (exported && (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name) {
-        bindings.set(isDefault ? "default" : statement.name.text, { localName: statement.name.text });
+        bindings.set(isDefault ? "default" : declarationName(statement), { localName: declarationName(statement) });
       } else if (exported && ts.isVariableStatement(statement)) {
         for (const declaration of statement.declarationList.declarations) {
-          if (ts.isIdentifier(declaration.name)) bindings.set(declaration.name.text, { localName: declaration.name.text });
+          if (ts.isIdentifier(declaration.name)) bindings.set(declarationName(declaration), { localName: declarationName(declaration) });
         }
       } else if (exported && (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement) || ts.isEnumDeclaration(statement))) {
-        bindings.set(statement.name.text, { localName: statement.name.text });
+        bindings.set(declarationName(statement), { localName: declarationName(statement) });
       } else if (ts.isExportAssignment(statement) && ts.isIdentifier(statement.expression)) {
         bindings.set("default", { localName: statement.expression.text });
       } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
@@ -1596,7 +1647,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
     id: entityIds[index]!,
     kind: descriptor.kind,
     ...(descriptor.parentKey !== undefined ? { parentId: idByKey.get(descriptor.parentKey)! } : {}),
-    name: descriptor.name,
+    name: entityDisplayName(descriptor.kind, descriptor.name),
     ...(descriptor.technology?.length ? { technology: [...descriptor.technology] } : {}),
     ...(descriptor.exposure?.length ? { exposure: descriptor.exposure.filter((entry, index, entries) =>
       entries.findIndex(candidate => candidate.kind === entry.kind

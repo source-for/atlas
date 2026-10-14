@@ -139,6 +139,11 @@ Discovery generalizes beyond Okie's own layout (validated against third-party cl
   root container is kept without source of its own only when the root `package.json` declares
   `exports`/`main`/`types`/`module`/`bin` or runtime `dependencies` (a Cargo virtual workspace or a
   tooling-only manifest yields no empty root).
+- **Declarations without a name** — a syntax error the parser recovers from with a missing
+  identifier (`export default interface {}`, `enum {}` in babel's parser fixtures) — become code
+  entities named `default` (a default export) or `anonymous <kind>`, never a blank name. A name
+  over the gate's 160 characters is shortened for display with an ellipsis (a file-component keeps
+  its path tail); ids still derive from the full path/symbol and `sourceRefs.symbol` is never cut.
 - **Single-package repos** (no workspace members) become **one root container**, named and
   evidenced from the root `package.json` (falling back to the directory name). The synthetic
   `tooling` container only appears when non-member scripts sit beside real workspace members.
