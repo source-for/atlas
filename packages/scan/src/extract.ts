@@ -14,6 +14,7 @@ import type { Discovery } from "./discover.js";
 import type { AnalysisLocation, LanguageAnalysis } from "./language-analysis.js";
 import { pathSlug, resolveCollisions, slug, typedId, unboundedTypedId } from "./ids.js";
 import { rustTopLevelItems } from "./extract-rust.js";
+import { stripTomlComment } from "./dependency-facts.js";
 
 /** Max import sites retained as evidence on one aggregated relation. */
 const MAX_EVIDENCE_PER_RELATION = 24;
@@ -672,6 +673,11 @@ export interface CargoPathDependency {
 export interface CargoSourcedDependency {
   /** The package name Cargo resolves (`package = "…"` when renamed, else the key). */
   name: string;
+  /**
+   * The declaration key (`renamed` in `renamed = { package = "core", … }`) — what a
+   * member's `renamed = { workspace = true }` inherits by; equals `name` unless renamed.
+   */
+  key: string;
   /** 1-based line of the declaration (evidence anchor). */
   line: number;
   /**
@@ -700,13 +706,14 @@ function cargoDependencySource(fields: { git?: string; registry?: string }): str
  */
 function cargoDependencyDeclarations(manifestText: string): CargoDeclaration[] {
   const dependencies: CargoDeclaration[] = [];
-  const lines = manifestText.split(/\r?\n/);
+  // Comments are stripped first (quote-aware), so `[dependencies] # note` is a header.
+  const lines = manifestText.split(/\r?\n/).map(stripTomlComment);
   let inDependencySection = false;
   let workspaceTable = false;
   let subsection: { name: string; line: number; located: boolean; fields: { git?: string; registry?: string; package?: string } } | undefined;
   const closeSubsection = (): void => {
     if (subsection && !subsection.located) {
-      dependencies.push({ sourced: true, name: subsection.fields.package ?? subsection.name, line: subsection.line, source: cargoDependencySource(subsection.fields), ...(workspaceTable ? { workspace: true as const } : {}) });
+      dependencies.push({ sourced: true, name: subsection.fields.package ?? subsection.name, key: subsection.name, line: subsection.line, source: cargoDependencySource(subsection.fields), ...(workspaceTable ? { workspace: true as const } : {}) });
     }
     subsection = undefined;
   };
@@ -740,7 +747,7 @@ function cargoDependencyDeclarations(manifestText: string): CargoDeclaration[] {
     const inherited = /^\s*([A-Za-z0-9_-]+)\s*(?:=\s*\{(?:[^}]*[,\s])?|\.\s*)workspace\s*=\s*true\b/.exec(line);
     if (inherited) { dependencies.push({ name: inherited[1]!, path: "", line: index + 1, inherited: true, ...scope }); continue; }
     const version = /^\s*([A-Za-z0-9_-]+)\s*=\s*"[^"]*"/.exec(line);
-    if (version) { dependencies.push({ sourced: true, name: version[1]!, line: index + 1, source: "crates-io", ...scope }); continue; }
+    if (version) { dependencies.push({ sourced: true, name: version[1]!, key: version[1]!, line: index + 1, source: "crates-io", ...scope }); continue; }
     const table = /^\s*([A-Za-z0-9_-]+)\s*=\s*(\{.*)$/.exec(line);
     if (table) {
       const fields = {
@@ -748,7 +755,7 @@ function cargoDependencyDeclarations(manifestText: string): CargoDeclaration[] {
         ...(CARGO_INLINE_STRING("registry").exec(table[2]!) ? { registry: CARGO_INLINE_STRING("registry").exec(table[2]!)![1]! } : {}),
       };
       const renamed = CARGO_INLINE_STRING("package").exec(table[2]!)?.[1];
-      dependencies.push({ sourced: true, name: renamed ?? table[1]!, line: index + 1, source: cargoDependencySource(fields), ...scope });
+      dependencies.push({ sourced: true, name: renamed ?? table[1]!, key: table[1]!, line: index + 1, source: cargoDependencySource(fields), ...scope });
     }
   }
   closeSubsection();
@@ -797,26 +804,45 @@ export interface CargoPatchPath {
  */
 export function cargoPatchPaths(manifestText: string): CargoPatchPath[] {
   const patches: CargoPatchPath[] = [];
-  const lines = manifestText.split(/\r?\n/);
+  // Comments are stripped first (quote-aware): `[patch.crates-io] # local` is a header,
+  // and a `#` inside a quoted key or value is kept.
+  const lines = manifestText.split(/\r?\n/).map(stripTomlComment);
+  const unquote = (text: string): string => text.replace(/^["']|["']$/g, "");
   let table: { source: string; name?: string } | undefined;
+  // `[patch.<source>.<key>]`: `path` and `package` may come in any order.
+  let subsection: { source: string; key: string; path?: string; line?: number; package?: string } | undefined;
+  const closeSubsection = (): void => {
+    if (subsection?.path !== undefined) {
+      patches.push({ source: subsection.source, name: subsection.package ?? subsection.key, path: subsection.path, line: subsection.line! });
+    }
+    subsection = undefined;
+  };
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
-    const header = /^\s*\[([^\[\]]+)\]\s*$/.exec(line);
-    if (header) {
-      const parts = /^\s*patch\s*\.\s*("[^"]+"|'[^']+'|[A-Za-z0-9_-]+)\s*(?:\.\s*("[^"]+"|'[^']+'|[A-Za-z0-9_-]+)\s*)?$/.exec(header[1]!);
-      const unquote = (text: string): string => text.replace(/^["']|["']$/g, "");
+    if (/^\s*\[/.test(line)) {
+      // Every header — array tables included — ends the current patch table.
+      closeSubsection();
+      const header = /^\s*\[([^\[\]]+)\]\s*$/.exec(line);
+      const parts = header && /^\s*patch\s*\.\s*("[^"]+"|'[^']+'|[A-Za-z0-9_-]+)\s*(?:\.\s*("[^"]+"|'[^']+'|[A-Za-z0-9_-]+)\s*)?$/.exec(header[1]!);
       table = parts ? { source: unquote(parts[1]!), ...(parts[2] !== undefined ? { name: unquote(parts[2]) } : {}) } : undefined;
+      if (table?.name !== undefined) subsection = { source: table.source, key: table.name };
       continue;
     }
     if (!table) continue;
-    if (table.name !== undefined) {
-      const pathValue = /^\s*path\s*=\s*"([^"]+)"/.exec(line);
-      if (pathValue) patches.push({ source: table.source, name: table.name, path: pathValue[1]!, line: index + 1 });
+    if (subsection) {
+      const field = /^\s*(path|package)\s*=\s*"([^"]+)"/.exec(line);
+      if (field?.[1] === "path") { subsection.path = field[2]!; subsection.line = index + 1; }
+      else if (field?.[1] === "package") subsection.package = field[2]!;
       continue;
     }
-    const inline = /^\s*("[^"]+"|[A-Za-z0-9_-]+)\s*=\s*\{(?:[^}]*[,\s])?path\s*=\s*"([^"]+)"/.exec(line);
-    if (inline) patches.push({ source: table.source, name: inline[1]!.replace(/^"|"$/g, ""), path: inline[2]!, line: index + 1 });
+    const inline = /^\s*("[^"]+"|[A-Za-z0-9_-]+)\s*=\s*(\{.*)$/.exec(line);
+    const path = inline && CARGO_INLINE_STRING("path").exec(inline[2]!)?.[1];
+    if (!inline || path === undefined || path === null) continue;
+    // `alias = { package = "core", path = "core" }` patches package `core`.
+    const renamed = CARGO_INLINE_STRING("package").exec(inline[2]!)?.[1];
+    patches.push({ source: table.source, name: renamed ?? unquote(inline[1]!), path, line: index + 1 });
   }
+  closeSubsection();
   return patches;
 }
 
@@ -830,8 +856,14 @@ export function cargoPatchTargetDir(patch: CargoPatchPath, crateDirs: ReadonlySe
   return target !== undefined && crateDirs.has(target) ? target : undefined;
 }
 
-/** A root-relative path as a repository path; undefined when it leaves the root. */
+/**
+ * A root-relative path as a repository path; undefined when it leaves the root. An
+ * absolute path (`/core`, `\\server\\share`, `C:\\core`, `C:/core`, `~/core`) is
+ * outside by definition — checked BEFORE empty segments are dropped, or `/core` would
+ * normalise to the in-repo `core`.
+ */
 function repositoryPathOf(path: string): string | undefined {
+  if (/^[\\/~]/.test(path) || /^[A-Za-z]:/.test(path)) return undefined;
   const stack: string[] = [];
   for (const part of path.split("/")) {
     if (part === "" || part === ".") continue;
@@ -1776,7 +1808,9 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
     const targetDir = cargoPatchTargetDir(patch, crateDirs);
     return targetDir ? [{ ...patch, targetDir }] : [];
   });
-  const workspaceSources = new Map(cargoSourcedDependencies(rootManifest).flatMap(dependency => dependency.workspace ? [[dependency.name, dependency] as const] : []));
+  // Inheritance is by declaration KEY (`renamed = { workspace = true }`); the patch then
+  // matches the entry's resolved package name (`package = "core"`).
+  const workspaceSources = new Map(cargoSourcedDependencies(rootManifest).flatMap(dependency => dependency.workspace ? [[dependency.key, dependency] as const] : []));
   const patchTargetOf = (name: string, source: string): (CargoPatchPath & { targetDir: string }) | undefined =>
     patchTargets.find(patch => patch.name === name && cargoPatchApplies(patch.source, source));
   for (const unit of discovery.units) {

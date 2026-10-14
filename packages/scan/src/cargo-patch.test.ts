@@ -122,12 +122,12 @@ test("cargoSourcedDependencies: registry/git declarations with their [patch] sou
     'builder = "1"',
   ].join("\n");
   assert.deepEqual(cargoSourcedDependencies(manifest), [
-    { name: "plain", line: 2, source: "crates-io" },
-    { name: "table", line: 3, source: "crates-io" },
-    { name: "real-name", line: 4, source: "crates-io" },
-    { name: "private", line: 5, source: "corp" },
-    { name: "gitdep", line: 6, source: "https://github.com/acme/gitdep" },
-    { name: "sub", line: 10, source: "crates-io" },
+    { name: "plain", key: "plain", line: 2, source: "crates-io" },
+    { name: "table", key: "table", line: 3, source: "crates-io" },
+    { name: "real-name", key: "renamed", line: 4, source: "crates-io" },
+    { name: "private", key: "private", line: 5, source: "corp" },
+    { name: "gitdep", key: "gitdep", line: 6, source: "https://github.com/acme/gitdep" },
+    { name: "sub", key: "sub", line: 10, source: "crates-io" },
   ]);
   assert.deepEqual(cargoPathDependencies(manifest).map(dependency => [dependency.name, dependency.path, dependency.line]), [
     ["local", "../local", 7],
@@ -187,4 +187,119 @@ test("a crate without [patch] keeps registry dependencies on a same-named member
     assert.deepEqual(crateEdges(artifacts), []);
     assert.ok(!(artifacts.analysis.limitations ?? []).some(line => line.startsWith("Cargo [patch]")));
   } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+// CLA-587 review round 1 (Codex): four ways a valid [patch] override was dropped or
+// mis-resolved. Each runs in quick and full mode on a two-crate workspace.
+
+/** Runs a quick and a full scan (hermetic fake rust-analyzer) twice each; asserts byte-stability. */
+function scanBothModes(files: Record<string, string>, check: (mode: "quick" | "full", artifacts: ScanArtifacts) => void): void {
+  const repo = committedRepo(files);
+  const bin = mkdtempSync(join(tmpdir(), "okie-cargo-patch-bin-"));
+  writeFileSync(join(bin, "rust-analyzer"), "#!/bin/sh\necho 'fake rust-analyzer: no index' >&2\nexit 1\n");
+  chmodSync(join(bin, "rust-analyzer"), 0o755);
+  const savedPath = process.env.PATH;
+  try {
+    process.env.PATH = `${bin}:${savedPath ?? ""}`;
+    for (const mode of ["quick", "full"] as const) {
+      const first = scanRepository(repo, { analysisMode: mode });
+      check(mode, first);
+      const second = scanRepository(repo, { analysisMode: mode });
+      assert.equal(JSON.stringify(second.extraction), JSON.stringify(first.extraction), `${mode}: extraction byte-stable`);
+      assert.equal(JSON.stringify(second.analysis), JSON.stringify(first.analysis), `${mode}: analysis byte-stable`);
+    }
+  } finally {
+    process.env.PATH = savedPath;
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(bin, { recursive: true, force: true });
+  }
+}
+
+const TWO_CRATES = (root: string, appDependencies: string): Record<string, string> => ({
+  "Cargo.toml": root,
+  "core/Cargo.toml": '[package]\nname = "core"\nversion = "1.0.0"\n',
+  "core/src/lib.rs": "pub fn core() {}\n",
+  "app/Cargo.toml": `[package]\nname = "app"\nversion = "0.1.0"\n\n[dependencies]\n${appDependencies}`,
+  "app/src/lib.rs": "pub fn app() {}\n",
+});
+const patchLimitations = (artifacts: ScanArtifacts): string[] =>
+  (artifacts.analysis.limitations ?? []).filter(line => line.startsWith("Cargo [patch]"));
+
+test("cargoPatchPaths: a renamed patch entry patches its `package`, inline or subsection, in any field order", () => {
+  assert.deepEqual(cargoPatchPaths([
+    "[patch.crates-io]",
+    'core_alias = { package = "core", path = "core" }',
+    'util_alias = { path = "util", package = "util" }',
+    "[patch.crates-io.net_alias]",
+    'path = "net"',
+    'package = "net"',
+    "[patch.crates-io.plain]",
+    'path = "plain"',
+  ].join("\n")).map(patch => [patch.name, patch.path, patch.line]), [
+    ["core", "core", 2],
+    ["util", "util", 3],
+    ["net", "net", 5],
+    ["plain", "plain", 8],
+  ]);
+});
+
+test("round 1: a renamed [patch] entry (`alias = { package = \"core\", path = \"core\" }`) is an edge to core (quick + full)", () => {
+  scanBothModes(TWO_CRATES('[workspace]\nmembers = ["core", "app"]\n\n[patch.crates-io]\ncore_alias = { package = "core", path = "core" }\n', 'core = "1"\n'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], mode);
+    assert.deepEqual(patchLimitations(artifacts), [], mode);
+  });
+});
+
+test("round 1: workspace inheritance looks up the declaration key, the patch matches the resolved package (quick + full)", () => {
+  const root = [
+    "[workspace]",
+    'members = ["core", "app"]',
+    "",
+    "[workspace.dependencies]",
+    'renamed = { package = "core", version = "1" }',
+    "",
+    "[patch.crates-io]",
+    'core = { path = "core" }',
+    "",
+  ].join("\n");
+  scanBothModes(TWO_CRATES(root, "renamed = { workspace = true }\n"), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:8"], mode);
+  });
+});
+
+test("round 1: an absolute [patch] path never resolves to the same-named member; it is reported outside (quick + full)", () => {
+  scanBothModes(TWO_CRATES('[workspace]\nmembers = ["core", "app"]\n\n[patch.crates-io]\ncore = { path = "/core" }\n', 'core = "1"\n'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], mode);
+    assert.deepEqual(patchLimitations(artifacts), [
+      "Cargo [patch] path resolves outside the repository; not followed, no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = '/core' }",
+    ], mode);
+  });
+  for (const absolute of ["/core", "C:/core", "\\\\server\\core", "~/core"]) {
+    assert.deepEqual(unfollowedCargoPatches(`[patch.crates-io]\ncore = { path = ${JSON.stringify(absolute)} }\n`, new Set(["core"])).map(patch => patch.reason),
+      ["outside-repository"], absolute);
+  }
+});
+
+test("cargoPatchPaths: comments after headers are ignored, `#` in quotes is kept, any later header ends the patch table", () => {
+  assert.deepEqual(cargoPatchPaths([
+    "[patch.crates-io] # local overrides",
+    'core = { path = "core" } # the in-repo crate',
+    '"we#ird" = { path = "dir#1" }',
+    "[workspace.metadata] # not a patch table",
+    'other = { path = "other" }',
+    "[patch.crates-io]",
+    'util = { path = "util" }',
+    "[[bin]]",
+    'fake = { path = "fake" }',
+  ].join("\n")).map(patch => [patch.name, patch.path]), [
+    ["core", "core"],
+    ["we#ird", "dir#1"],
+    ["util", "util"],
+  ]);
+});
+
+test("round 1: a comment after the [patch.crates-io] header keeps its overrides (quick + full)", () => {
+  scanBothModes(TWO_CRATES('[workspace]\nmembers = ["core", "app"]\n\n[patch.crates-io] # local override\ncore = { path = "core" }\n', 'core = "1"\n'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], mode);
+  });
 });
