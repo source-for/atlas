@@ -450,7 +450,8 @@ pnpm --silent --filter @okie/edge asks:reset production --github-id 123456   # c
 - **Credentials:** `wrangler login`, as for the commands above. Each run writes a one-time grant into `USERS_DB`
   (`operator_grants`, only a hash of a random token) with `wrangler d1 execute --remote`, then sends the token to
   `POST /api/operator/ask-usage`. The grant is for that one action and account, is deleted when the Worker accepts
-  it, and expires after about two minutes (the Worker refuses any grant expiring more than five minutes ahead).
+  it, and expires after about two minutes (the Worker refuses any grant expiring more than five minutes ahead,
+  written to live longer than five minutes, or with a timestamp that is not a real UTC time in the script's shape).
   Without a live grant the route answers like any unknown `/api` path.
 - **Staging** is behind Cloudflare Access: set `STAGING_ACCESS_CLIENT_ID` / `STAGING_ACCESS_CLIENT_SECRET` (the
   `atlas-staging-smoke` token, environment or repo-root `.env`) as for `smoke:staging`.

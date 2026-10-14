@@ -284,12 +284,12 @@ describe('operator Ask usage route (CLA-539)', () => {
     for (const [label, token, when] of tokens) {
       seen.length = 0;
       await expectMiss(await call(token, body, when, { env: { USERS_DB: watched } }), label);
-      expect(seen, label).toEqual(['SELECT expires_at FROM operator_grants WHERE token_hash = ?1']);
+      expect(seen, label).toEqual(['SELECT expires_at, created_at FROM operator_grants WHERE token_hash = ?1']);
     }
     // Neither refused grant was removed by being presented.
     expect(await rows()).toBe(2);
     // The read uses the primary key, not a scan.
-    const plan = (await real.prepare('EXPLAIN QUERY PLAN SELECT expires_at FROM operator_grants WHERE token_hash = ?1').bind('x').all<{ detail: string }>()).results.map(row => row.detail).join(' ');
+    const plan = (await real.prepare('EXPLAIN QUERY PLAN SELECT expires_at, created_at FROM operator_grants WHERE token_hash = ?1').bind('x').all<{ detail: string }>()).results.map(row => row.detail).join(' ');
     expect(plan).toMatch(/SEARCH operator_grants USING (?:COVERING )?INDEX sqlite_autoindex_operator_grants_1 \(token_hash=\?\)/);
     // An accepted grant: the read, the taking delete, the sweep, then the account lookup.
     seen.length = 0;
@@ -320,12 +320,14 @@ describe('operator Ask usage route (CLA-539)', () => {
     expect(GRANT_TTL_MS).toBeLessThan(MAX_GRANT_LIFETIME_MS);
     // Exactly five minutes ahead is the last accepted expiry.
     expect((await call(await grant('ask-show', id, at, MAX_GRANT_LIFETIME_MS), body, at)).status).toBe(200);
-    // Further out is refused, twice (it is left in place, not taken), until its own last five minutes.
+    // Further out is refused, twice (it is left in place, not taken), and stays refused in its own last five
+    // minutes: it was written to live longer than a grant may.
     for (const ttl of [MAX_GRANT_LIFETIME_MS + 1, 60 * 60 * 1000, 10 * 365 * 24 * 60 * 60 * 1000]) {
       const far = await grant('ask-show', id, at, ttl);
       await expectMiss(await call(far, body, at), `expires ${ttl} ms ahead`);
       await expectMiss(await call(far, body, at), `expires ${ttl} ms ahead, again`);
       await expectMiss(await call(far, body, new Date(at.getTime() + ttl - MAX_GRANT_LIFETIME_MS - 1)), `expires ${ttl} ms ahead, just outside the window`);
+      await expectMiss(await call(far, body, new Date(at.getTime() + ttl - 1000)), `expires ${ttl} ms ahead, in its last second`);
       await expectMiss(await call(far, body, new Date(at.getTime() + ttl)), `expires ${ttl} ms ahead, at expiry`);
     }
     // An expires_at in any other shape is never live, whatever it would compare as.
@@ -335,6 +337,48 @@ describe('operator Ask usage route (CLA-539)', () => {
       await insert.bind(await sha256Hex(token), id, expiresAt, at.toISOString()).run();
       await expectMiss(await call(token, body, at), `expires_at ${JSON.stringify(expiresAt)}`);
     }
+  }, 20_000);
+
+  it('accepts a grant only when both its timestamps are real UTC instants and it was written to live at most five minutes', async () => {
+    const id = '539090';
+    await addUser(id);
+    const body = { action: 'ask-show', accountId: id };
+    const insert = db().prepare(`INSERT INTO operator_grants (token_hash, action, account_id, expires_at, created_at) VALUES (?1, 'ask-show', ?2, ?3, ?4)`);
+    const written = async (expiresAt: string, createdAt: string) => {
+      const token = newGrantToken();
+      await insert.bind(await sha256Hex(token), id, expiresAt, createdAt).run();
+      return token;
+    };
+    // The reviewer's case: February 30 sorts between now and five minutes ahead, but is no date.
+    const feb = new Date('2039-02-28T23:58:00.000Z');
+    await expectMiss(await call(await written('2039-02-30T12:00:00.000Z', feb.toISOString()), body, feb), 'expires_at February 30');
+    for (const bad of ['2039-02-29T00:00:30.000Z', '2039-02-28T24:00:00.000Z', '2039-02-28T23:59:60.000Z', '2039-13-01T00:00:00.000Z']) {
+      await expectMiss(await call(await written(bad, feb.toISOString()), body, feb), `expires_at ${bad}`);
+    }
+    // The control: the same moment written properly is accepted.
+    expect((await call(await written('2039-03-01T00:00:00.000Z', feb.toISOString()), body, feb)).status).toBe(200);
+
+    // A non-canonical created_at refuses an otherwise live grant.
+    const at = new Date('2037-01-14T12:00:00.000Z');
+    const expiresAt = new Date(at.getTime() + GRANT_TTL_MS).toISOString();
+    for (const createdAt of ['2037-02-30T12:00:00.000Z', '2037-01-14T11:59:60.000Z', '2037-01-14T12:00:00Z', '2037-01-14 12:00:00.000', 'now', '']) {
+      await expectMiss(await call(await written(expiresAt, createdAt), body, at), `created_at ${JSON.stringify(createdAt)}`);
+    }
+    // created_at must be before expires_at, by at most five minutes.
+    await expectMiss(await call(await written(expiresAt, expiresAt), body, at), 'created at its expiry');
+    await expectMiss(await call(await written(expiresAt, new Date(at.getTime() + GRANT_TTL_MS + 1000).toISOString()), body, at), 'created after its expiry');
+    await expectMiss(await call(await written(expiresAt, new Date(at.getTime() + GRANT_TTL_MS - MAX_GRANT_LIFETIME_MS - 1).toISOString()), body, at), 'written to live 5 min + 1 ms');
+    expect((await call(await written(expiresAt, new Date(at.getTime() + GRANT_TTL_MS - MAX_GRANT_LIFETIME_MS).toISOString()), body, at)).status).toBe(200);
+
+    // Written today with tomorrow's expiry: refused today, and refused tomorrow in its last five minutes too.
+    const tomorrow = new Date(at.getTime() + 24 * 60 * 60 * 1000);
+    const late = await written(tomorrow.toISOString(), at.toISOString());
+    await expectMiss(await call(late, body, at), 'tomorrow\'s grant today');
+    for (const before of [MAX_GRANT_LIFETIME_MS, GRANT_TTL_MS, 1000, 1]) {
+      await expectMiss(await call(late, body, new Date(tomorrow.getTime() - before)), `tomorrow's grant ${before} ms before it expires`);
+    }
+    // Still there (refused, never taken), so nothing else could have used it.
+    expect(await db().prepare('SELECT COUNT(*) AS count FROM operator_grants WHERE expires_at = ?1').bind(tomorrow.toISOString()).first('count')).toBe(1);
   }, 20_000);
 
   const clearedMarks = (day: string) => runInDurableObject(budget(), (_budget, state) => state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM ask_reset_cleared WHERE day = ?', day).one().count);

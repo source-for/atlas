@@ -7,11 +7,13 @@ import { jsonResponse, notFoundJson } from './http';
  * Durable Object, for `scripts/asks.mjs`.
  *
  * The credential is a one-time grant: the script writes `operator_grants(token_hash, action, account_id,
- * expires_at)` into USERS_DB through `wrangler d1 execute` (the operator's `wrangler login` session), then sends
- * the token as `Authorization: Bearer <64 hex>` with a JSON body `{ action, accountId }`. The grant is deleted as
- * it is read, so it works once, and the body must name the grant's own action and account. A grant is live only
- * while its `expires_at` (the exact ISO shape the script writes) is after now and at most five minutes ahead of
- * the Worker's clock; one written further out is refused and left to expire.
+ * expires_at, created_at)` into USERS_DB through `wrangler d1 execute` (the operator's `wrangler login` session),
+ * then sends the token as `Authorization: Bearer <64 hex>` with a JSON body `{ action, accountId }`. The grant is
+ * deleted as it is read, so it works once, and the body must name the grant's own action and account. A grant is
+ * live only while both its timestamps are real UTC instants stored exactly as `toISOString()` writes them (the
+ * script's shape; no February 30), its `expires_at` is after now and at most five minutes ahead of the Worker's
+ * clock, and it was written to live more than zero and at most five minutes after its `created_at`. Any other
+ * grant is refused and left to expire (one written with tomorrow's expiry is refused tomorrow too).
  *
  * Everyone else gets the generic `/api/*` miss ({@link notFoundJson}): another method, a missing or malformed
  * token, an unknown, expired or used grant, a body that does not match the grant (the grant is spent anyway),
@@ -28,8 +30,18 @@ const BEARER = /^Bearer ([0-9a-f]{64})$/;
 const ACCOUNT_ID = /^(?:0|[1-9][0-9]*)$/;
 const MAX_BODY_CHARS = 1024;
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-/** The furthest ahead of the Worker's clock a grant may expire (scripts/asks.mjs writes two minutes). */
+/**
+ * The furthest ahead of the Worker's clock a grant may expire, and the longest it may live from its `created_at`
+ * (scripts/asks.mjs writes two minutes).
+ */
 export const MAX_GRANT_LIFETIME_MS = 5 * 60 * 1000;
+
+/** Milliseconds of a real UTC instant stored in the script's exact shape (`toISOString()`), else undefined. */
+function instant(value: unknown): number | undefined {
+  if (typeof value !== 'string' || !ISO.test(value)) return undefined;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) && new Date(ms).toISOString() === value ? ms : undefined;
+}
 
 async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -62,8 +74,12 @@ export async function handleOperatorAskUsage(request: Request, env: EdgeEnv, now
     const latest = new Date(now.getTime() + MAX_GRANT_LIFETIME_MS).toISOString();
     const hash = await sha256Hex(token);
     // Read first: a token that is no live grant must not cause a write.
-    const found = await db.prepare('SELECT expires_at FROM operator_grants WHERE token_hash = ?1').bind(hash).first<{ expires_at: string }>();
-    if (!found || !ISO.test(found.expires_at) || found.expires_at <= at || found.expires_at > latest) return notFoundJson();
+    const found = await db.prepare('SELECT expires_at, created_at FROM operator_grants WHERE token_hash = ?1').bind(hash).first<{ expires_at: unknown; created_at: unknown }>();
+    const expires = found ? instant(found.expires_at) : undefined;
+    const created = found ? instant(found.created_at) : undefined;
+    if (expires === undefined || created === undefined) return notFoundJson();
+    if (expires <= now.getTime() || expires > now.getTime() + MAX_GRANT_LIFETIME_MS) return notFoundJson();
+    if (expires - created <= 0 || expires - created > MAX_GRANT_LIFETIME_MS) return notFoundJson();
     // Taking it is this one statement: of two requests with the same token, one gets the row.
     grant = (await db.prepare('DELETE FROM operator_grants WHERE token_hash = ?1 AND expires_at > ?2 AND expires_at <= ?3 RETURNING action, account_id')
       .bind(hash, at, latest).first<{ action: string; account_id: string }>()) ?? undefined;
