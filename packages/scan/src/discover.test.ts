@@ -545,3 +545,53 @@ test("same dir as both a JS member and a Rust crate: one Rust unit that keeps th
     assert.ok(exposureOf("component:engine-src-cli-ts").includes("entryPoint"), "bin marks the entry point");
   });
 });
+
+// CLA-578 round QA (real-repo scans).
+
+test("a committed node_modules file named by a relative import is not reported as unresolved", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "setup" }),
+    "e2e/setup.js": "const example = require('./node_modules/example');\nimport('./node_modules/example');\nimport('./node_modules/missing');\nmodule.exports = example;\n",
+    "e2e/node_modules/example/index.js": "module.exports = 1;\n",
+  }, dir => {
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    assert.deepEqual(scanRepository(dir, { analysisMode: "quick" }).analysis.limitations, [
+      "1 relative import(s) name no file in the repository; no relation was recorded for them.",
+      "Unresolved relative import e2e/setup.js:3: './node_modules/missing'",
+    ]);
+  });
+});
+
+test("Cargo virtual workspace without JS members: no empty root container, even when its slug equals a crate dir", () => {
+  const crates = {
+    "Cargo.toml": '[workspace]\nmembers = ["tokio", "benches", "examples", "harness"]\n',
+    "tokio/Cargo.toml": '[package]\nname = "tokio"\n',
+    "tokio/src/lib.rs": "pub fn run() {}\n",
+    "benches/Cargo.toml": '[package]\nname = "benches"\n',
+    "benches/spawn.rs": "fn main() {}\n",
+    "examples/Cargo.toml": '[package]\nname = "examples"\n',
+    "examples/src/hello.rs": "fn main() {}\n",
+    "harness/Cargo.toml": '[package]\nname = "harness"\n',
+    "harness/tests/it.rs": "fn it() {}\n",
+  };
+  withRepo({ "package.json": JSON.stringify({ name: "tokio" }), ...crates }, dir => {
+    const discovery = discoverRepository(dir);
+    assert.equal(discovery.summary.singlePackage, true);
+    assert.deepEqual(discovery.units.map(unit => `${unit.kind}:${unit.dir}`), ["rust:tokio"], "no empty root; benches/harness own no scanned file; examples is a fixture member");
+    assert.deepEqual(discovery.summary.skippedMembers, ["examples"]);
+    assert.equal(discovery.summary.rustCrates, 1);
+    assert.equal(discovery.unitByFile.has("examples/src/hello.rs"), false, "a fixture crate's files are dropped, not re-homed to the root");
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    const containers = scanRepository(dir, { analysisMode: "quick" }).snapshot.entities.filter(entity => entity.kind === "container");
+    assert.deepEqual(containers.map(entity => entity.id), ["container:tokio"]);
+  });
+  withRepo({ "package.json": JSON.stringify({ name: "tokio" }), "scripts/gen.ts": "export const gen = 1;\n", ...crates }, dir => {
+    const discovery = discoverRepository(dir);
+    assert.equal(discovery.unitByFile.get("tokio/src/lib.rs"), "tokio");
+    assert.equal(discovery.unitByFile.get("scripts/gen.ts"), "\0tokio", "a root slug equal to a crate dir gets its own key");
+    assert.deepEqual(discovery.units.map(unit => `${unit.kind}:${unit.name}`).sort(), ["root:tokio", "rust:tokio"]);
+  });
+  withRepo({ "package.json": JSON.stringify({ name: "tokio" }), ...crates }, dir => {
+    assert.deepEqual(discoverRepository(dir, { includeAllMembers: true }).summary.skippedMembers, [], "--include-members also un-skips Cargo fixture members");
+  });
+});

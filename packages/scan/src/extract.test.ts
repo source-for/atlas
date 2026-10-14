@@ -960,3 +960,30 @@ test("queried relative imports resolve by their path: existing files record an e
   ], "existing ?url/?raw/#fragment targets are not reported; a missing one keeps its original specifier");
   assert.ok(collected.extraction.relations.some(relation => relation.from === "component:pkg-a-src-index-ts" && relation.to === "component:pkg-a-src-worker-ts"), "./worker.ts?worker records the file-level edge");
 });
+
+// CLA-578 round QA.
+test("declaration files count as existing import targets: ./types/x -> x.d.ts, ./gen.js -> gen.d.ts, .d.mts", () => {
+  const files: Record<string, string> = {
+    "pkg/a/src/index.ts": "import type { A } from '../types/anymatch';\nimport type { G } from './gen.js';\nimport type { M } from './esm';\nimport type { N } from './nope';\nexport type All = [A, G, M, N];\n",
+  };
+  const paths = ["pkg/a/src/index.ts"];
+  const trackedFiles = new Set([...paths, "pkg/a/types/anymatch.d.ts", "pkg/a/src/gen.d.ts", "pkg/a/src/esm.d.mts"]);
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "member", dir: "pkg/a", name: "a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" }], unitByFile: new Map(paths.map(path => [path, "pkg/a"])), unitByPackageName: new Map(), trackedFiles, summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const collected = collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
+  assert.deepEqual(collected.unresolvedRelativeImports, [{ path: "pkg/a/src/index.ts", line: 4, specifier: "./nope" }]);
+});
+
+test("extensionless relative imports resolve to .js/.jsx/.cjs modules and JS directory indexes", () => {
+  const files: Record<string, string> = {
+    "e2e/esm/dynamicImport.js": "export * from './index';\nexport { V } from './view';\nexport { c } from './common';\nexport { u } from './util';\n",
+    "e2e/esm/index.js": "export const i = 1;\n",
+    "e2e/esm/view.jsx": "export const V = 1;\n",
+    "e2e/esm/common.cjs": "exports.c = 1;\n",
+    "e2e/esm/util/index.js": "export const u = 1;\n",
+  };
+  const paths = Object.keys(files).sort();
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "root", dir: "esm", name: "esm", evidencePath: "esm", packageManifest: undefined }], unitByFile: new Map(paths.map(path => [path, "esm"])), unitByPackageName: new Map(), summary: { singlePackage: true, includedJs: true, skippedJsFiles: 0, skippedMembers: [] } };
+  const { extraction } = collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
+  const targets = extraction.relations.filter(relation => relation.from === "component:e2e-esm-dynamic-import-js").map(relation => relation.to).sort();
+  assert.deepEqual(targets, ["component:e2e-esm-common-cjs", "component:e2e-esm-index-js", "component:e2e-esm-util-index-js", "component:e2e-esm-view-jsx"]);
+});

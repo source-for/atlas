@@ -561,6 +561,14 @@ function relativeCandidates(base: string): string[] {
     add(`${base}.mjs`);
     add(`${base}/index.ts`);
     add(`${base}/index.tsx`);
+    // Extensionless imports of JS modules (`export * from './index'` -> index.js),
+    // tried after every TS candidate so an existing TS resolution never changes.
+    add(`${base}.js`);
+    add(`${base}.jsx`);
+    add(`${base}.cjs`);
+    add(`${base}/index.js`);
+    add(`${base}/index.jsx`);
+    add(`${base}/index.mjs`);
   }
   return out;
 }
@@ -1070,20 +1078,33 @@ export function relativeSpecifierPath(specifier: string): string {
   return specifier.replace(/[?#].*$/, "");
 }
 
-const IMPORT_TARGET_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"] as const;
+// What a module specifier can name once its extension is dropped: TS sources and
+// declaration files (TypeScript resolves `./types/x` to `x.d.ts`), JS, and JSON.
+const IMPORT_TARGET_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".d.ts", ".d.mts", ".d.cts", ".js", ".jsx", ".mjs", ".cjs", ".json"] as const;
 
 /**
- * Whether a relative specifier names a file that exists in the repository listing:
- * the path itself, a `.js`-family specifier's TS counterpart, the path plus an
- * extension, or a directory index. Any tracked file counts (an asset, JSON, a `.js`
- * the TS-repo rule skipped) — such an import is not a broken one.
+ * Whether a relative specifier names a file that exists in the repository: the path
+ * itself, or its stem (a `.js`-family extension dropped, so `./x.js` also finds
+ * `x.ts` / `x.d.ts`) or the path as a directory index, with any
+ * {@link IMPORT_TARGET_EXTENSIONS} suffix. Any tracked file counts (an asset, JSON, a
+ * declaration file, a `.js` the TS-repo rule skipped): such an import is not broken.
+ * Paths under `node_modules/` are absent from the tarball listing (never walked), so
+ * a committed one is probed directly through `readFile`.
  */
-function isTrackedImportTarget(fromFile: string, specifier: string, trackedFiles: ReadonlySet<string>): boolean {
+function isTrackedImportTarget(fromFile: string, specifier: string, trackedFiles: ReadonlySet<string>, readFile: (path: string) => string): boolean {
   const baseDir = fromFile.includes("/") ? fromFile.slice(0, fromFile.lastIndexOf("/")) : "";
   const base = normalizeRepoPath(baseDir, specifier);
-  if (trackedFiles.has(base)) return true;
-  if (relativeCandidates(base).some(candidate => trackedFiles.has(candidate))) return true;
-  return IMPORT_TARGET_EXTENSIONS.some(extension => trackedFiles.has(`${base}${extension}`) || trackedFiles.has(`${base}/index${extension}`));
+  const stem = base.replace(/\.(?:[cm]?[jt]s|[jt]sx)$/, "");
+  const candidates = [
+    base,
+    ...IMPORT_TARGET_EXTENSIONS.map(extension => `${stem}${extension}`),
+    ...IMPORT_TARGET_EXTENSIONS.map(extension => `${base}/index${extension}`),
+  ];
+  if (candidates.some(candidate => trackedFiles.has(candidate))) return true;
+  if (!/(^|\/)node_modules\//.test(base)) return false;
+  return candidates.some(candidate => {
+    try { readFile(candidate); return true; } catch { return false; }
+  });
 }
 
 /**
@@ -1310,7 +1331,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
           const targetUnit = resolveRelativeUnitImport(file, specifierPath, unitDirs);
           if (targetUnit && targetUnit !== unitDir) {
             addRelation(unitDir, targetUnit, typedId("relation", unitDir, targetUnit), `unit:${unitDir}->${targetUnit}`, evidence);
-          } else if (!isTrackedImportTarget(file, specifierPath, trackedFiles)) {
+          } else if (!isTrackedImportTarget(file, specifierPath, trackedFiles, readFile)) {
             // No relation and no such file in the repository: the edge is lost, so say
             // so (never silent). An existing asset/JSON/skipped file is not a gap.
             unresolvedRelativeImports.push({ path: file, line: dependency.startLine, specifier: dependency.specifier });

@@ -132,7 +132,11 @@ Discovery generalizes beyond Okie's own layout (validated against third-party cl
   (one or more segments); `?`, `[...]` and `{a,b}` are not supported.
 - **Rust crates** come from the root `Cargo.toml` `[workspace] members` (globs or paths) minus
   `exclude`; a matched directory counts only with a tracked `Cargo.toml`. Without declared
-  members the conventional `crates/<name>/Cargo.toml` layout is used.
+  members the conventional `crates/<name>/Cargo.toml` layout is used (still minus `exclude`).
+  Files belong to the deepest root across crates and JS members (same dir: the crate). A crate
+  with no scanned source file (e.g. only `benches/`/`tests/`) is not a container, and fixture
+  names (`examples`, `e2e`, …) skip Cargo members exactly like JS members. Without JS members the
+  root container appears only when files sit outside every crate (a Cargo virtual workspace has none).
 - **Single-package repos** (no workspace members) become **one root container**, named and
   evidenced from the root `package.json` (falling back to the directory name). The synthetic
   `tooling` container only appears when non-member scripts sit beside real workspace members.

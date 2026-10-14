@@ -73,8 +73,10 @@ export interface DiscoverySummary {
   skippedJsFiles: number;
   /** `skippedJsFiles` split by reason. Present only when `skippedJsFiles` is non-zero. */
   skippedJsByReason?: SkippedJsByReason;
-  /** Workspace members skipped as fixtures/examples/playgrounds/e2e. */
+  /** Workspace members (JS and Cargo) skipped as fixtures/examples/playgrounds/e2e. */
   skippedMembers: string[];
+  /** Rust crate units emitted (crates with at least one scanned source file). Present only when non-zero. */
+  rustCrates?: number;
   /**
    * Pure re-export shims outside every workspace member (e.g. a root Vercel
    * `api/share.ts` that is only `export { default } from '../apps/web/api/share.ts'`)
@@ -552,12 +554,27 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
     if (isWorkspaceMemberDir(dir, patterns)) memberDirs.add(dir);
   }
   const rustCrateDirs = rustCrateDirectories(sourceRoot, allFiles);
+  const rustCrateDirSet = new Set(rustCrateDirs);
   const rustCrateOf = (file: string): string | undefined => mostSpecificRoot(file, rustCrateDirs);
 
   const allMembers = [...memberDirs].sort();
-  const skippedMembers = options.includeAllMembers ? [] : allMembers.filter(dir => FIXTURE_MEMBER_PATTERN.test(dir));
-  const skippedMemberSet = new Set(skippedMembers);
+  // Fixture/example/playground members are skipped the same way whether npm or Cargo
+  // declares them (a Cargo `examples` member is test scaffolding like a JS one).
+  const isFixtureMember = (dir: string): boolean => !options.includeAllMembers && FIXTURE_MEMBER_PATTERN.test(dir);
+  const skippedMemberSet = new Set([...allMembers, ...rustCrateDirs].filter(isFixtureMember));
+  const skippedMembers = [...skippedMemberSet].sort(compareText);
   const memberOf = (file: string): string | undefined => mostSpecificRoot(file, allMembers);
+  /**
+   * The root owning `file` — the deepest of every Rust crate and JS member together
+   * (the same dir as both goes to Rust) — or undefined outside them all. `skipped`
+   * when that root is a fixture member: its files are dropped, never re-homed.
+   */
+  const ownerOf = (file: string): { dir: string; skipped: boolean } | undefined => {
+    const rustCrate = rustCrateOf(file);
+    const member = memberOf(file);
+    const dir = rustCrate && (!member || rustCrate.length >= member.length) ? rustCrate : member;
+    return dir === undefined ? undefined : { dir, skipped: skippedMemberSet.has(dir) };
+  };
 
   const unitByFile = new Map<string, string>();
   const unitByPackageName = new Map<string, string>();
@@ -566,34 +583,37 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
   let reexportAliases: ReexportAlias[] = [];
 
   if (singlePackage) {
-    // Whole repo is one package -> one container derived from the root manifest.
+    // No JS workspace members: files outside every Rust crate form one root container
+    // derived from the root manifest — emitted only when it owns a file (a Cargo
+    // virtual workspace has none). Its key never equals a crate dir (a crate `tokio`
+    // in a repo named tokio): NUL can't be a path byte and `slug` drops it.
     const rootPackage = readPackageName(sourceRoot, "");
     const rootName = rootPackage ?? basename(sourceRoot);
-    const rootKey = slug(rootName);
+    const rootSlug = slug(rootName);
+    const rootKey = rustCrateDirSet.has(rootSlug) ? `\0${rootSlug}` : rootSlug;
     const hasRootManifest = safeRegularFile(sourceRoot, "package.json") !== undefined;
-    for (const file of sourceCandidates) unitByFile.set(file, rustCrateOf(file) ?? rootKey);
-    units.push({
-      kind: "root",
-      dir: rootKey,
-      name: rootName,
-      ...(rootPackage ? { packageName: rootPackage } : {}),
-      packageManifest: hasRootManifest ? "package.json" : undefined,
-      evidencePath: hasRootManifest ? "package.json" : rootKey,
-    });
-    if (rootPackage) unitByPackageName.set(rootPackage, rootKey);
+    for (const file of sourceCandidates) {
+      const owner = ownerOf(file);
+      if (owner?.skipped) continue; // fixture/example crate — dropped
+      unitByFile.set(file, owner?.dir ?? rootKey);
+    }
+    if (sourceCandidates.some(file => unitByFile.get(file) === rootKey)) {
+      units.push({
+        kind: "root",
+        dir: rootKey,
+        name: rootName,
+        ...(rootPackage ? { packageName: rootPackage } : {}),
+        packageManifest: hasRootManifest ? "package.json" : undefined,
+        evidencePath: hasRootManifest ? "package.json" : rootSlug,
+      });
+      if (rootPackage) unitByPackageName.set(rootPackage, rootKey);
+    }
   } else {
     const nonMemberFiles = new Set<string>();
     for (const file of sourceCandidates) {
-      // Deepest root wins across Rust crates and JS members together (a JS member
-      // nested in a crate owns its files); the same directory as both goes to Rust.
-      const rustCrate = rustCrateOf(file);
-      const member = memberOf(file);
-      if (rustCrate && (!member || rustCrate.length >= member.length)) {
-        unitByFile.set(file, rustCrate);
-        continue;
-      }
-      if (member && skippedMemberSet.has(member)) continue; // fixture/example member — dropped
-      if (member) unitByFile.set(file, member);
+      const owner = ownerOf(file);
+      if (owner?.skipped) continue; // fixture/example member — dropped
+      if (owner) unitByFile.set(file, owner.dir);
       else { unitByFile.set(file, TOOLING_UNIT_KEY); nonMemberFiles.add(file); }
     }
     if (options.foldReexportShims !== false) reexportAliases = foldReexportShims(sourceRoot, unitByFile, nonMemberFiles);
@@ -601,7 +621,6 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
     const hasTooling = nonMemberFiles.size > 0;
     // A member whose dir is also a crate dir lost every file to the crate (ties go to
     // Rust): it is merged into the crate's unit below, never a second unit.
-    const rustCrateDirSet = new Set(rustCrateDirs);
     const membersWithSource = allMembers
       .filter(dir => !skippedMemberSet.has(dir) && !rustCrateDirSet.has(dir))
       .filter(dir => sourceCandidates.some(file => unitByFile.get(file) === dir));
@@ -615,10 +634,14 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
     }
   }
 
-  for (const dir of rustCrateDirs) {
+  // Like JS members, a crate is a unit only when it owns a scanned source file (its
+  // `.rs` may all be tests/benches/examples, or belong to a deeper member).
+  const ownedDirs = new Set(unitByFile.values());
+  const rustCratesWithSource = rustCrateDirs.filter(dir => ownedDirs.has(dir));
+  for (const dir of rustCratesWithSource) {
     // Same dir as a (non-skipped) JS member: one Rust unit that also carries the
     // member's npm manifest facts and answers to its npm name.
-    const isJsMember = memberDirs.has(dir) && !skippedMemberSet.has(dir);
+    const isJsMember = memberDirs.has(dir);
     const packageName = isJsMember ? readPackageName(sourceRoot, dir) : undefined;
     units.push({
       kind: "rust",
@@ -644,6 +667,7 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
       skippedJsFiles,
       ...(skippedJsFiles > 0 ? { skippedJsByReason } : {}),
       skippedMembers,
+      ...(rustCratesWithSource.length > 0 ? { rustCrates: rustCratesWithSource.length } : {}),
       ...(reexportAliases.length > 0 ? { reexportAliases } : {}),
       ...(hasSkippedEntries(options.skippedEntries) ? { skippedEntries: { ...options.skippedEntries } } : {}),
       ...(excludedTestDataFiles > 0 ? { excludedTestDataFiles } : {}),
