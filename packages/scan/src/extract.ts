@@ -858,12 +858,13 @@ export function cargoPatchTargetDir(patch: CargoPatchPath, crateDirs: ReadonlySe
 
 /**
  * A root-relative path as a repository path; undefined when it leaves the root. An
- * absolute path (`/core`, `\\server\\share`, `C:\\core`, `C:/core`, `~/core`) is
+ * absolute path (`/core`, `\\server\\share`, `C:\\core`, `C:/core`) is
  * outside by definition — checked BEFORE empty segments are dropped, or `/core` would
  * normalise to the in-repo `core`.
  */
 function repositoryPathOf(path: string): string | undefined {
-  if (/^[\\/~]/.test(path) || /^[A-Za-z]:/.test(path)) return undefined;
+  // Cargo does no shell expansion: `~/core` is the literal in-repo directory `~/core`.
+  if (/^[\\/]/.test(path) || /^[A-Za-z]:/.test(path)) return undefined;
   const stack: string[] = [];
   for (const part of path.split("/")) {
     if (part === "" || part === ".") continue;

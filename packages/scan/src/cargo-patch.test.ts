@@ -274,7 +274,7 @@ test("round 1: an absolute [patch] path never resolves to the same-named member;
       "Cargo [patch] path resolves outside the repository; not followed, no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = '/core' }",
     ], mode);
   });
-  for (const absolute of ["/core", "C:/core", "\\\\server\\core", "~/core"]) {
+  for (const absolute of ["/core", "C:/core", "C:\\core", "\\\\server\\core"]) {
     assert.deepEqual(unfollowedCargoPatches(`[patch.crates-io]\ncore = { path = ${JSON.stringify(absolute)} }\n`, new Set(["core"])).map(patch => patch.reason),
       ["outside-repository"], absolute);
   }
@@ -302,4 +302,21 @@ test("round 1: a comment after the [patch.crates-io] header keeps its overrides 
   scanBothModes(TWO_CRATES('[workspace]\nmembers = ["core", "app"]\n\n[patch.crates-io] # local override\ncore = { path = "core" }\n', 'core = "1"\n'), (mode, artifacts) => {
     assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], mode);
   });
+});
+
+// CLA-587 review round 2 (Codex): Cargo does no shell expansion, so a leading `~` is a
+// literal in-repo directory name, never an absolute path.
+test("round 2: a [patch] path with a leading `~` is a literal in-repo directory (quick + full)", () => {
+  const files = {
+    "Cargo.toml": '[workspace]\nmembers = ["~/core", "app"]\n\n[patch.crates-io]\ncore = { path = "~/core" }\n',
+    "~/core/Cargo.toml": '[package]\nname = "core"\nversion = "1.0.0"\n',
+    "~/core/src/lib.rs": "pub fn core() {}\n",
+    "app/Cargo.toml": '[package]\nname = "app"\nversion = "0.1.0"\n\n[dependencies]\ncore = "1"\n',
+    "app/src/lib.rs": "pub fn app() {}\n",
+  };
+  scanBothModes(files, (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], mode);
+    assert.deepEqual(patchLimitations(artifacts), [], mode);
+  });
+  assert.deepEqual(unfollowedCargoPatches('[patch.crates-io]\ncore = { path = "~core" }\n', new Set(["~core"])), [], "`~core` names the member");
 });
