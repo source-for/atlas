@@ -443,8 +443,8 @@ export function unresolvedImportLimitations(imports: readonly UnresolvedRelative
 /**
  * Root `Cargo.toml` `[patch.*]` path overrides that recorded no crate edge, one line
  * each: out-of-repository paths (never followed), paths naming no scanned crate, and
- * patches Cargo would not use because the patched version satisfies no dependent's
- * requirement. Same resolution as extraction (`resolveCargoPatches`); empty without
+ * patches whose version no scanned crate's normal dependency requirement admits (an
+ * observation about the scanned crates only: Cargo may still use the patch elsewhere). Same resolution as extraction (`resolveCargoPatches`); empty without
  * Rust crates or such overrides.
  */
 export function cargoPatchLimitations(discovery: Discovery, readFile: (path: string) => string): string[] {
@@ -453,7 +453,7 @@ export function cargoPatchLimitations(discovery: Discovery, readFile: (path: str
     if (patch.reason === "version-mismatch") {
       const [first, ...more] = patch.rejected ?? [];
       const requirement = first ? `${displayText(first.path)}:${first.line} requires '${displayText(first.requirement)}'${more.length ? ` (+${more.length} more)` : ""}` : "";
-      return `Cargo [patch] not used: version ${displayText(patch.version ?? "")} does not satisfy ${requirement}; no crate edge recorded: ${where}`;
+      return `Cargo [patch] accepted by no scanned crate's normal dependency: version ${displayText(patch.version ?? "")} does not satisfy ${requirement}; no crate edge recorded: ${where}`;
     }
     return patch.reason === "outside-repository"
       ? `Cargo [patch] path resolves outside the repository; not followed, no crate edge recorded: ${where}`

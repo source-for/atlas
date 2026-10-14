@@ -815,8 +815,9 @@ function repositoryPathOf(path: string): string | undefined {
 export interface UnfollowedCargoPatch extends CargoPatchPath {
   /**
    * `outside-repository`: resolves above the source root (never read); `no-crate`: names
-   * no scanned crate; `version-mismatch`: every dependent's requirement rejects the
-   * patched crate's version, so Cargo does not use the patch.
+   * no scanned crate; `version-mismatch`: every scanned crate's normal dependency on it
+   * rejects the patched crate's version. (Cargo may still use the patch for a
+   * dev/build dependency, the root package or a transitive crate — not checked.)
    */
   reason: "outside-repository" | "no-crate" | "version-mismatch";
   /** `version-mismatch` only: the patched crate's version and the rejecting requirements. */
@@ -870,7 +871,8 @@ export function resolveCargoPatches(discovery: Discovery, readFile: (path: strin
     const text = read(`${dir}/Cargo.toml`);
     if (text === undefined) return undefined;
     const manifest = parseCargoManifest(text);
-    return manifest.packageVersionInherited ? root.workspacePackageVersion : manifest.packageVersion;
+    // Cargo (>= 1.75) treats a package without `version` as 0.0.0.
+    return manifest.packageVersionInherited ? root.workspacePackageVersion : manifest.packageVersion ?? "0.0.0";
   };
   // Inheritance is by declaration KEY (`renamed = { workspace = true }`); the patch then
   // matches the entry's resolved package name (`package = "core"`).

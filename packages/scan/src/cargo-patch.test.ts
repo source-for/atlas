@@ -351,7 +351,7 @@ test("round 3: a patch is used only when the patched version satisfies the requi
   scanBothModes(CORE_APP(patched, 'core = "1"\n', 'version = "2.0.0"'), (mode, artifacts) => {
     assert.deepEqual(crateEdges(artifacts), [], `${mode}: core 2.0.0 does not satisfy ^1`);
     assert.deepEqual(patchLimitations(artifacts), [
-      "Cargo [patch] not used: version 2.0.0 does not satisfy app/Cargo.toml:6 requires '1'; no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }",
+      "Cargo [patch] accepted by no scanned crate's normal dependency: version 2.0.0 does not satisfy app/Cargo.toml:6 requires '1'; no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }",
     ], mode);
   });
   // `version.workspace = true` takes the [workspace.package] version.
@@ -429,7 +429,7 @@ test("round 4: partial comparator bounds and prereleases gate patches like Cargo
   scanBothModes(CORE_APP(patched, 'core = "1"\n', 'version = "1.0.0-alpha"'), (mode, artifacts) => {
     assert.deepEqual(crateEdges(artifacts), [], `${mode}: 1 does not admit the prerelease 1.0.0-alpha`);
     assert.deepEqual(patchLimitations(artifacts), [
-      "Cargo [patch] not used: version 1.0.0-alpha does not satisfy app/Cargo.toml:6 requires '1'; no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }",
+      "Cargo [patch] accepted by no scanned crate's normal dependency: version 1.0.0-alpha does not satisfy app/Cargo.toml:6 requires '1'; no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }",
     ], mode);
   });
 });
@@ -445,4 +445,18 @@ test("round 4: `version = { workspace = true }` inherits [workspace.package] lik
       assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:8"], `${mode} ${spelling}: inherited 1.4.0 satisfies ^1`);
     });
   }
+});
+
+// CLA-587 review round 4 (Opus round 2): a crate without `version` is 0.0.0 for Cargo.
+test("round 4: a patched crate without [package] version is 0.0.0 in the version check (quick + full)", () => {
+  const patched = `${MEMBERS}\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  scanBothModes(CORE_APP(patched, 'core = "1"\n', ""), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: ^1 does not admit 0.0.0`);
+    assert.deepEqual(patchLimitations(artifacts), [
+      "Cargo [patch] accepted by no scanned crate's normal dependency: version 0.0.0 does not satisfy app/Cargo.toml:6 requires '1'; no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }",
+    ], mode);
+  });
+  scanBothModes(CORE_APP(patched, 'core = "0"\n', ""), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], `${mode}: ^0 admits 0.0.0`);
+  });
 });
