@@ -258,11 +258,18 @@ export function scrubCargoError(stderr: string, paths: ReadonlyArray<readonly [l
 }
 
 /**
- * Why a rust-analyzer run failed, as one stable line: its first `Error:` line with machine paths replaced, never the
- * whole stderr (wall-clock log timestamps, progress lines, the temporary checkout, a backtrace).
+ * Why a rust-analyzer run failed, as one stable line: its first `Error:` line, or else its panic (`thread 'main'
+ * panicked at crates/…/x.rs:12:5:` plus the message line after it), with machine paths replaced — never the whole
+ * stderr (wall-clock log timestamps, progress lines, the temporary checkout, a backtrace).
  */
 export function scrubScipError(stderr: string, paths: ReadonlyArray<readonly [label: string, path: string | undefined]>): string {
-  return stderr.split("\n").some(line => /^\s*error\b/i.test(line)) ? scrubCargoError(stderr, paths) : "rust-analyzer exited unsuccessfully.";
+  const lines = stderr.split("\n").map(line => line.trim());
+  if (lines.some(line => /^error\b/i.test(line))) return scrubCargoError(stderr, paths);
+  const panic = lines.findIndex(line => /^thread '.*' panicked at /.test(line));
+  if (panic < 0) return "rust-analyzer exited unsuccessfully.";
+  // Rust 1.73+ prints the location ending in `:` and the message on the next line.
+  const message = lines[panic]!.endsWith(":") && lines[panic + 1] ? `${lines[panic]} ${lines[panic + 1]}` : lines[panic]!;
+  return scrubCargoError(message, paths);
 }
 
 /**

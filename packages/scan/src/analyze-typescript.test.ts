@@ -140,7 +140,9 @@ test("CLA-586: compiler messages name scanned files root-relative and other loca
     "<installation>/node_modules/x/index.d.ts, <home>/other, <home>/repo-old/a.ts, <home>/repo.bak",
   );
   assert.equal(relativize("'/Volumes/X/home/me/a.ts'"), "'/Volumes/X/home/me/a.ts'");
+  // A root-relative path is never written into a URL; a label is.
   assert.equal(relativize(`file://${root}/a.ts`), `file://${root}/a.ts`);
+  assert.equal(relativize("file:///home/me/repo/x.d.ts file:///home/me/y"), "file://<installation>/x.d.ts file://<home>/y");
   assert.equal(relativize(`${root}-sibling/a.ts`), "../repo-sibling/a.ts");
   // Anything else under the scan's checkout or work dir is root-relative too, at any depth.
   assert.equal(
