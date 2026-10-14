@@ -135,3 +135,26 @@ for (const mode of ["quick", "full"] as const) {
     } finally { rmSync(repo, { recursive: true, force: true }); }
   });
 }
+
+// CLA-587 review round 4 (Codex): real declarations' ids are allocated before any
+// recovered one's, so a recovered `-N` suffix cannot take a real declaration's id either.
+for (const mode of ["quick", "full"] as const) {
+  test(`${mode} scan: a recovered declaration's collision suffix never takes a real declaration's id`, { timeout: 120_000 }, () => {
+    const real = "export const anonymousEnum = 1;\nexport const anonymousEnum_2 = 2;\n";
+    const ids = (text: string): string[][] => {
+      const repo = committedRepo({ "package.json": JSON.stringify({ name: "parser" }), "tsconfig.json": "{}", "src/c.ts": text });
+      try {
+        const first = scanRepository(repo, { analysisMode: mode });
+        assert.deepEqual(validateArchitectureExtraction(first.extraction), []);
+        const second = scanRepository(repo, { analysisMode: mode });
+        assert.equal(JSON.stringify(second.extraction), JSON.stringify(first.extraction), "byte-stable across runs");
+        return first.extraction.entities.filter(entity => entity.kind === "code").map(entity => [entity.id, entity.name]);
+      } finally { rmSync(repo, { recursive: true, force: true }); }
+    };
+    const clean = ids(real);
+    assert.deepEqual(clean, [["code:src-c-ts:anonymous-enum", "anonymousEnum"], ["code:src-c-ts:anonymous-enum-2", "anonymousEnum_2"]]);
+    for (const text of [`enum {}\n${real}`, `${real}enum {}\n`]) {
+      assert.deepEqual(ids(text), [...clean, ["code:src-c-ts:anonymous-enum-3", "anonymous enum"]], JSON.stringify(text));
+    }
+  });
+}

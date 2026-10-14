@@ -1109,8 +1109,8 @@ interface EntityDescriptor {
   /** Token+AST clone fingerprint for function-like code entities — snapshot overlay. */
   cloneFingerprint?: string;
   /**
-   * A declaration with a parser-recovered (missing) name: on a desired-ID collision it
-   * yields to real declarations, so a syntax error never moves a real symbol's ID.
+   * A declaration with a parser-recovered (missing) name: its id is allocated after every
+   * real declaration's, so a syntax error never moves a real symbol's id.
    */
   recovered?: true;
 }
@@ -1878,10 +1878,16 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
 
   // Assign collision-free IDs in a fully canonical order (independent of discovery order).
   const sortedEntities = [...entityDescriptors].sort((left, right) =>
-    left.desiredId.localeCompare(right.desiredId)
-    || Number(left.recovered === true) - Number(right.recovered === true)
-    || left.naturalKey.localeCompare(right.naturalKey));
-  const entityIds = resolveCollisions(sortedEntities.map(descriptor => descriptor.desiredId));
+    left.desiredId.localeCompare(right.desiredId) || left.naturalKey.localeCompare(right.naturalKey));
+  // Real declarations claim ids first, globally: a recovered (parse-error) declaration is
+  // allocated only after every real one, so neither its bare id nor a `-N` suffix can take
+  // an id a real declaration desires (`anonymousEnum_2` keeps `…-anonymous-enum-2` beside
+  // `enum {}`). Without recovered declarations this is the plain canonical order.
+  const allocationOrder = sortedEntities.map((_, index) => index)
+    .sort((left, right) => Number(sortedEntities[left]!.recovered === true) - Number(sortedEntities[right]!.recovered === true) || left - right);
+  const allocated = resolveCollisions(allocationOrder.map(index => sortedEntities[index]!.desiredId));
+  const entityIds: string[] = new Array(sortedEntities.length);
+  allocationOrder.forEach((index, position) => { entityIds[index] = allocated[position]!; });
   const idByKey = new Map(sortedEntities.map((descriptor, index) => [descriptor.naturalKey, entityIds[index]!]));
 
   const entities: ArchitectureExtractionEntity[] = sortedEntities.map((descriptor, index) => ({
