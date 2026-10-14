@@ -72,6 +72,11 @@ export interface TopLevelDeclaration {
   exported: boolean;
   /** The declaring statement/declarator — the subtree symbol references are walked in. */
   node: ts.Node;
+  /**
+   * The parser recovered a MISSING identifier (a syntax error), so `name` is the
+   * {@link declarationName} fallback, not text in the source.
+   */
+  recovered?: true;
 }
 
 export interface ModuleImport {
@@ -176,12 +181,15 @@ export function topLevelDeclarations(sourceFile: ts.SourceFile): TopLevelDeclara
   const indirect = indirectlyExportedNames(sourceFile);
   const lineOf = (position: number): number => sourceFile.getLineAndCharacterOfPosition(position).line + 1;
   const push = (name: string, node: ts.Node, direct: boolean): void => {
+    const named = node as NamedTopLevelDeclaration;
+    const recovered = !(named.name && ts.isIdentifier(named.name) && named.name.text.trim());
     declarations.push({
       name,
       startLine: lineOf(node.getStart(sourceFile)),
       endLine: lineOf(node.getEnd()),
       exported: direct || indirect.has(name),
       node,
+      ...(recovered ? { recovered: true as const } : {}),
     });
   };
   for (const statement of sourceFile.statements) {
@@ -1100,6 +1108,11 @@ interface EntityDescriptor {
   cyclomaticComplexity?: number;
   /** Token+AST clone fingerprint for function-like code entities — snapshot overlay. */
   cloneFingerprint?: string;
+  /**
+   * A declaration with a parser-recovered (missing) name: on a desired-ID collision it
+   * yields to real declarations, so a syntax error never moves a real symbol's ID.
+   */
+  recovered?: true;
 }
 
 interface RelationDescriptor {
@@ -1585,6 +1598,10 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
       const naturalKey = `${file}#${index}`;
       const cyclomaticComplexity = cyclomaticForDeclaration(declaration);
       const cloneFingerprint = cloneFingerprintForDeclaration(declaration);
+      // A recovered `anonymous <kind>` name is not in the source, so its evidence carries
+      // no symbol (path + lines only). `default` is: the keyword is on the line.
+      const symbol = declaration.recovered && declaration.name !== "default" ? undefined : declaration.name;
+      const anchor = { path: file, ...(symbol !== undefined ? { symbol } : {}), startLine: declaration.startLine, endLine: declaration.endLine };
       entityDescriptors.push({
         naturalKey,
         desiredId: typedId("code", file, declaration.name),
@@ -1593,11 +1610,12 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
         parentKey: file,
         ...(declaration.exported ? { exposure: [{
           kind: "moduleExport",
-          evidence: { source: { path: file, symbol: declaration.name, startLine: declaration.startLine, endLine: declaration.endLine }, reason: "declared module export" },
+          evidence: { source: { ...anchor }, reason: "declared module export" },
         }] } : {}),
-        sourceRefs: [{ path: file, symbol: declaration.name, startLine: declaration.startLine, endLine: declaration.endLine }],
+        sourceRefs: [{ ...anchor }],
         ...(cyclomaticComplexity !== undefined ? { cyclomaticComplexity } : {}),
         ...(cloneFingerprint !== undefined ? { cloneFingerprint } : {}),
+        ...(declaration.recovered ? { recovered: true as const } : {}),
       });
       if (!keyByName.has(declaration.name)) keyByName.set(declaration.name, naturalKey);
     });
@@ -1860,7 +1878,9 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
 
   // Assign collision-free IDs in a fully canonical order (independent of discovery order).
   const sortedEntities = [...entityDescriptors].sort((left, right) =>
-    left.desiredId.localeCompare(right.desiredId) || left.naturalKey.localeCompare(right.naturalKey));
+    left.desiredId.localeCompare(right.desiredId)
+    || Number(left.recovered === true) - Number(right.recovered === true)
+    || left.naturalKey.localeCompare(right.naturalKey));
   const entityIds = resolveCollisions(sortedEntities.map(descriptor => descriptor.desiredId));
   const idByKey = new Map(sortedEntities.map((descriptor, index) => [descriptor.naturalKey, entityIds[index]!]));
 

@@ -108,3 +108,30 @@ for (const mode of ["quick", "full"] as const) {
     } finally { rmSync(repo, { recursive: true, force: true }); }
   });
 }
+
+// CLA-587 review round 3: a parser-recovered declaration never takes a real declaration's
+// id, and its evidence carries no invented symbol.
+for (const mode of ["quick", "full"] as const) {
+  test(`${mode} scan: real declarations keep their bare ids beside recovered ones; recovered anchors carry no invented symbol`, { timeout: 120_000 }, () => {
+    const repo = committedRepo({
+      "package.json": JSON.stringify({ name: "parser" }),
+      "tsconfig.json": "{}",
+      "src/a.ts": "enum {}\nexport const anonymousEnum = 1;\n",
+      "src/b.ts": "export default interface {}\nexport const Default = 1;\n",
+    });
+    try {
+      const first = scanRepository(repo, { analysisMode: mode });
+      assert.deepEqual(validateArchitectureExtraction(first.extraction), []);
+      const code = first.extraction.entities.filter(entity => entity.kind === "code")
+        .map(entity => [entity.id, entity.name, entity.sourceRefs[0]!.symbol ?? null, entity.sourceRefs[0]!.startLine]);
+      assert.deepEqual(code, [
+        ["code:src-a-ts:anonymous-enum", "anonymousEnum", "anonymousEnum", 2],
+        ["code:src-a-ts:anonymous-enum-2", "anonymous enum", null, 1],
+        ["code:src-b-ts:default", "Default", "Default", 2],
+        ["code:src-b-ts:default-2", "default", "default", 1],
+      ]);
+      const second = scanRepository(repo, { analysisMode: mode });
+      assert.equal(JSON.stringify(second.extraction), JSON.stringify(first.extraction), "byte-stable across runs");
+    } finally { rmSync(repo, { recursive: true, force: true }); }
+  });
+}
