@@ -611,6 +611,10 @@ export interface CargoPathDependency {
   path: string;
   /** 1-based line of the declaration (evidence anchor). */
   line: number;
+  /** `workspace = true`: the path comes from the root's `[workspace.dependencies]`. */
+  inherited?: true;
+  /** Declared in `[workspace.dependencies]` (a path relative to the root, not a dependency of this crate). */
+  workspace?: true;
 }
 
 /**
@@ -618,13 +622,16 @@ export interface CargoPathDependency {
  * for otherwise-opaque Rust crates (R1 parses no .rs, but the workspace wiring is
  * right there in Cargo.toml). Covers `[dependencies]` and target-scoped
  * `[target.….dependencies]` sections — inline-table form and `[dependencies.name]`
- * subsections — and ignores dev/build dependency sections.
+ * subsections — and ignores dev/build dependency sections. A `workspace = true`
+ * declaration (inline, dotted `name.workspace = true`, or in a subsection) is returned
+ * with `inherited` and an empty path; `[workspace.dependencies]` entries carry `workspace`.
  */
 export function cargoPathDependencies(manifestText: string): CargoPathDependency[] {
   const dependencies: CargoPathDependency[] = [];
   const lines = manifestText.split(/\r?\n/);
   let inDependencySection = false;
   let subsectionName: string | undefined;
+  let workspaceTable = false;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
     const header = /^\s*\[(.+)\]\s*$/.exec(line);
@@ -633,18 +640,23 @@ export function cargoPathDependencies(manifestText: string): CargoPathDependency
       const isDependencies = /(^|\.)dependencies(\.|$)/.test(section)
         && !/dev-dependencies|build-dependencies/.test(section);
       inDependencySection = isDependencies;
-      const subsection = /(?:^|\.)dependencies\.([A-Za-z0-9_-]+)$/.exec(section);
-      subsectionName = isDependencies && subsection ? subsection[1] : undefined;
+      workspaceTable = /^\s*workspace\./.test(section);
+      const subsection = /(?:^|\.)dependencies\.("[^"]+"|'[^']+'|[A-Za-z0-9_-]+)\s*$/.exec(section);
+      subsectionName = isDependencies && subsection ? subsection[1]!.replace(/^["']|["']$/g, "") : undefined;
       continue;
     }
     if (!inDependencySection) continue;
+    const scope = workspaceTable ? { workspace: true as const } : {};
     if (subsectionName) {
       const pathValue = /^\s*path\s*=\s*"([^"]+)"/.exec(line);
-      if (pathValue) dependencies.push({ name: subsectionName, path: pathValue[1]!, line: index + 1 });
+      if (pathValue) dependencies.push({ name: subsectionName, path: pathValue[1]!, line: index + 1, ...scope });
+      else if (/^\s*workspace\s*=\s*true\b/.test(line)) dependencies.push({ name: subsectionName, path: "", line: index + 1, inherited: true, ...scope });
       continue;
     }
-    const inline = /^\s*([A-Za-z0-9_-]+)\s*=\s*\{[^}]*\bpath\s*=\s*"([^"]+)"/.exec(line);
-    if (inline) dependencies.push({ name: inline[1]!, path: inline[2]!, line: index + 1 });
+    const inline = /^\s*([A-Za-z0-9_-]+)\s*=\s*\{[^}]*(?:^|[{,\s])path\s*=\s*"([^"]+)"/.exec(line);
+    if (inline) { dependencies.push({ name: inline[1]!, path: inline[2]!, line: index + 1, ...scope }); continue; }
+    const inherited = /^\s*([A-Za-z0-9_-]+)\s*(?:=\s*\{[^}]*(?:^|[{,\s])|\.\s*)workspace\s*=\s*true\b/.exec(line);
+    if (inherited) dependencies.push({ name: inherited[1]!, path: "", line: index + 1, inherited: true, ...scope });
   }
   return dependencies;
 }
@@ -1105,7 +1117,8 @@ function isTrackedImportTarget(base: string, trackedFiles: ReadonlySet<string>):
   const candidates = [
     base,
     ...IMPORT_TARGET_EXTENSIONS.map(extension => `${stem}${extension}`),
-    ...IMPORT_TARGET_EXTENSIONS.map(extension => `${base}/index${extension}`),
+    // The root's index is `index.d.ts`, not `/index.d.ts` (as in relativeCandidates).
+    ...IMPORT_TARGET_EXTENSIONS.map(extension => `${base ? `${base}/` : ""}index${extension}`),
   ];
   return candidates.some(candidate => trackedFiles.has(candidate));
 }
@@ -1540,14 +1553,24 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
   }
 
   // Rust crate wiring is an observed fact in Cargo.toml — `path = "…"`
-  // dependencies become container edges, so a crate is never a mystery island.
+  // dependencies become container edges, so a crate is never a mystery island. An
+  // inherited `foo = { workspace = true }` takes the root `[workspace.dependencies]`
+  // path (relative to the root).
+  let rootManifest = "";
+  try { if (discovery.units.some(unit => unit.kind === "rust")) rootManifest = readFile("Cargo.toml") ?? ""; } catch { /* no root manifest */ }
+  const workspacePaths = new Map(cargoPathDependencies(rootManifest).flatMap(dependency => dependency.workspace && !dependency.inherited ? [[dependency.name, dependency.path] as const] : []));
   for (const unit of discovery.units) {
     if (unit.kind !== "rust") continue;
     const manifestPath = `${unit.dir}/Cargo.toml`;
     let manifestText: string;
     try { manifestText = readFile(manifestPath); } catch { continue; }
     for (const dependency of cargoPathDependencies(manifestText)) {
-      const targetDir = resolveRelativeUnitImport(`${unit.dir}/Cargo.toml`, dependency.path, unitDirs);
+      if (dependency.workspace) continue;
+      const inheritedPath = dependency.inherited ? workspacePaths.get(dependency.name) : undefined;
+      if (dependency.inherited && inheritedPath === undefined) continue;
+      const targetDir = inheritedPath !== undefined
+        ? resolveRelativeUnitImport("Cargo.toml", inheritedPath, unitDirs)
+        : resolveRelativeUnitImport(`${unit.dir}/Cargo.toml`, dependency.path, unitDirs);
       if (!targetDir || targetDir === unit.dir) continue;
       addRelation(
         unit.dir,

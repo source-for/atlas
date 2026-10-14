@@ -463,7 +463,7 @@ export function cargoManifestDependencies(manifestText: string): CargoDependency
     if (!section) continue;
     const scope = /^workspace(\.|$)/.test(table) ? "workspace" : "own";
     const tableKey = section[3] === undefined ? table : table.slice(0, -(section[3].length + 1));
-    const subsection = section[3]?.replace(/^"|"$/g, "");
+    const subsection = section[3]?.replace(/^["']|["']$/g, "");
     if (subsection !== undefined) {
       // `[dependencies.core]`: the keys belong to that one dependency.
       const field = new RegExp(String.raw`^\s*(path|workspace)\s*=\s*(?:${CARGO_STRING}|(true))`).exec(line);

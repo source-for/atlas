@@ -847,3 +847,15 @@ test("displayText caps by code point and strips bidi override/isolate characters
   assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(capped), "no lone high surrogate");
   assert.equal(displayText("./a\u202Etxt.ts\u2066\u2069\u202A"), "./atxt.ts");
 });
+
+test("Cargo literal-quoted subsection names inherit workspace dependencies: [dependencies.'core']", () => {
+  const files = {
+    "Cargo.toml": '[workspace]\nmembers = ["app"]\n[workspace.dependencies]\ncore = { path = "crates/core" }\nutil = { path = "crates/util" }\n',
+    "app/Cargo.toml": "[package]\nname = \"app\"\n\n[dependencies.'core']\nworkspace = true\n\n[dependencies.\"util\"]\nworkspace = true\n",
+    "app/src/main.rs": "fn main() {}\n",
+    "crates/core/Cargo.toml": '[package]\nname = "core"\n', "crates/core/src/lib.rs": "pub fn f() {}\n",
+    "crates/util/Cargo.toml": '[package]\nname = "util"\n', "crates/util/src/lib.rs": "pub fn f() {}\n",
+  };
+  assert.deepEqual(cargoManifestDependencies(files["app/Cargo.toml"]).map(dependency => [dependency.name, dependency.inherited]), [["core", true], ["util", true]]);
+  withRepo(files, dir => assert.deepEqual(discoverRepository(dir).units.filter(unit => unit.kind === "rust").map(unit => unit.dir), ["app", "crates/core", "crates/util"]));
+});

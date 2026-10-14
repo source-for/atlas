@@ -518,7 +518,9 @@ test("cargoPathDependencies reads inline tables, subsections, and target-scoped 
     "[dev-dependencies]",
     'test-util = { path = "../test-util" }',
   ].join("\n");
-  assert.deepEqual(cargoPathDependencies(manifest).map(dep => [dep.name, dep.path]), [
+  // `serde.workspace = true` is returned as inherited (its path lives in the root manifest).
+  assert.deepEqual(cargoPathDependencies(manifest).filter(dep => dep.inherited).map(dep => [dep.name, dep.path]), [["serde", ""]]);
+  assert.deepEqual(cargoPathDependencies(manifest).filter(dep => !dep.inherited).map(dep => [dep.name, dep.path]), [
     ["engine-core", "../engine-core"],
     ["protocol", "../protocol"],
     ["bindgen-helper", "../bindgen-helper"],
@@ -1035,4 +1037,44 @@ test("NodeNext: ./b.mjs prefers b.mts over a same-stem b.ts, ./c.cjs prefers c.c
   const { extraction } = collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
   const targets = extraction.relations.filter(relation => relation.from === "component:src-a-ts").map(relation => relation.to).sort();
   assert.deepEqual(targets, ["component:src-b-mts", "component:src-c-cts", "component:src-d-ts"]);
+});
+
+// CLA-578 last small round.
+test("inherited Cargo workspace dependencies become crate edges like literal path deps", () => {
+  const dirs = ["app", "crates/shared", "crates/util", "crates/sub", "crates/unused"];
+  const discovery: Discovery = {
+    sourceFiles: [],
+    units: dirs.map(dir => ({ kind: "rust" as const, dir, name: dir, evidencePath: dir, packageManifest: undefined })),
+    unitByFile: new Map(),
+    unitByPackageName: new Map(),
+    summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
+  };
+  const files: Record<string, string> = {
+    "README.md": "# Acme",
+    "Cargo.toml": '[workspace]\nmembers = ["app"]\n\n[workspace.dependencies]\nshared = { path = "crates/shared" }\nutil = { version = "1", path = "crates/util" }\nsub = { path = "crates/sub" }\nunused = { path = "crates/unused" }\n',
+    "app/Cargo.toml": "[dependencies]\nshared.workspace = true\nutil = { workspace = true, features = [\"x\"] }\n\n[dependencies.'sub']\nworkspace = true\n",
+    ...Object.fromEntries(dirs.slice(1).map(dir => [`${dir}/Cargo.toml`, "[dependencies]\n"])),
+  };
+  const extraction = extractArchitecture({
+    discovery,
+    readFile: path => { const text = files[path]; if (text === undefined) throw new Error(`missing ${path}`); return text; },
+    systemName: "Acme",
+    systemSlug: "acme",
+  });
+  const edges = extraction.relations.filter(relation => relation.from === "container:app")
+    .map(relation => [relation.to, relation.evidence[0]!.source.path, relation.evidence[0]!.source.startLine]).sort();
+  assert.deepEqual(edges, [
+    ["container:crates-shared", "app/Cargo.toml", 2],
+    ["container:crates-sub", "app/Cargo.toml", 6],
+    ["container:crates-util", "app/Cargo.toml", 3],
+  ]);
+});
+
+test("a '..' import to a manifest-less root with index.d.ts is not reported", () => {
+  const files: Record<string, string> = { "src/a.ts": "import type { T } from '..';\nimport type { U } from '../gone';\nexport type All = [T, U];\n" };
+  const paths = Object.keys(files);
+  const trackedFiles = new Set([...paths, "index.d.ts"]);
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "root", dir: "r", name: "r", evidencePath: "r", packageManifest: undefined }], unitByFile: new Map(paths.map(path => [path, "r"])), unitByPackageName: new Map(), trackedFiles, summary: { singlePackage: true, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const collected = collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
+  assert.deepEqual(collected.unresolvedRelativeImports.map(item => item.specifier), ["../gone"]);
 });
