@@ -346,6 +346,9 @@ type ActiveStoryFlight = {
   playAfterArrival: boolean;
 };
 
+/** Where a pan began, under which scene root and lens detail (CLA-405). A viewport tile
+ * refresh keeps both; a level change, open inside, restore, story step or zoom handoff does not. */
+type ScanPanStart = { camera: Camera; rootEntityId: string | undefined; detail: SemanticDetail };
 type PendingInspectorCameraFlight = {
   sourceSession: SemanticLensSession;
   targetSession: SemanticLensSession;
@@ -385,6 +388,8 @@ type CanvasViewportProps = {
   onSemanticEditStart: (reason: string, camera: Camera) => void;
   onCameraFlightCancel: () => void;
   onCameraPanStart: () => void;
+  /** A pending pan lens settle was cancelled and no pan continues it (CLA-405). */
+  onPanSettleCancel: () => void;
   onLensCancel: (reason: string, camera: Camera) => void;
   onLensPan: (camera: Camera) => void;
   onSemanticZoomBurstStart: (camera: Camera) => Camera;
@@ -392,6 +397,8 @@ type CanvasViewportProps = {
   scanZoomAdoptRawRef: { current: Camera | undefined };
   /** Lens cancellation outside the canvas (window Escape, breadcrumbs) must end the pending gesture too. */
   semanticAssistCancelRef: { current: (() => void) | undefined };
+  /** Cancels a pending drag/wheel pan lens settle, if any (CLA-405). */
+  panSettleCancelRef: { current: (() => void) | undefined };
   onLodState: (state: RendererLodState | undefined) => void;
   visibilityMode: 'all' | 'dim' | 'isolate';
   flowActive: boolean;
@@ -418,7 +425,7 @@ type CanvasViewportProps = {
   }) => void;
 };
 
-function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, semanticRenderPacketRef, semanticLensSession, scene, camera, setCamera, selectedId, onPick, onOpenInside, focusedIds, relationFocusIds, activeRelationIds, flowRelationIds, requestedBackend, reduceMotion, animationActive, inspectorFlightActive, flowActive, projectionOverride, onSemanticZoom, cinematicTransition, onDiagnostics, onViewportChange, onCameraSettled, onCameraInput, onNavigationFlush, onInteractionStart, onSemanticEditStart, onCameraFlightCancel, onCameraPanStart, onLensCancel, onLensPan, onSemanticZoomBurstStart, onLodState, scanZoomAdoptRawRef, semanticAssistCancelRef, visibilityMode, authoringTool, authoringEnabled, authoringDetail, authoringEntityIds, selectedRelationId, onCreateRelationship, onGuideRelationship }: CanvasViewportProps) {
+function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, semanticRenderPacketRef, semanticLensSession, scene, camera, setCamera, selectedId, onPick, onOpenInside, focusedIds, relationFocusIds, activeRelationIds, flowRelationIds, requestedBackend, reduceMotion, animationActive, inspectorFlightActive, flowActive, projectionOverride, onSemanticZoom, cinematicTransition, onDiagnostics, onViewportChange, onCameraSettled, onCameraInput, onNavigationFlush, onInteractionStart, onSemanticEditStart, onCameraFlightCancel, onCameraPanStart, onPanSettleCancel, onLensCancel, onLensPan, onSemanticZoomBurstStart, onLodState, scanZoomAdoptRawRef, semanticAssistCancelRef, panSettleCancelRef, visibilityMode, authoringTool, authoringEnabled, authoringDetail, authoringEntityIds, selectedRelationId, onCreateRelationship, onGuideRelationship }: CanvasViewportProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<AtlasRenderer | undefined>(undefined);
   const liveCameraRef = useRef(camera);
@@ -504,6 +511,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
   const onSemanticEditStartRef = useRef(onSemanticEditStart);
   const onCameraFlightCancelRef = useRef(onCameraFlightCancel);
   const onCameraPanStartRef = useRef(onCameraPanStart);
+  const onPanSettleCancelRef = useRef(onPanSettleCancel);
   const onLensCancelRef = useRef(onLensCancel);
   const onLensPanRef = useRef(onLensPan);
   const onSemanticZoomBurstStartRef = useRef(onSemanticZoomBurstStart);
@@ -518,8 +526,10 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
   onSemanticEditStartRef.current = onSemanticEditStart;
   onCameraFlightCancelRef.current = onCameraFlightCancel;
   onCameraPanStartRef.current = onCameraPanStart;
+  onPanSettleCancelRef.current = onPanSettleCancel;
   onLensCancelRef.current = onLensCancel;
   semanticAssistCancelRef.current = cancelPendingSemanticGesture;
+  panSettleCancelRef.current = cancelPendingPanSettle;
   onLensPanRef.current = onLensPan;
   onSemanticZoomBurstStartRef.current = onSemanticZoomBurstStart;
   onLodStateRef.current = onLodState;
@@ -981,6 +991,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
         if (panSettleTimerRef.current !== undefined) window.clearTimeout(panSettleTimerRef.current);
         pinchSettleTimerRef.current = undefined;
         panSettleTimerRef.current = undefined;
+        onPanSettleCancelRef.current();
       },
       clearPendingRawAdoption: () => { consumeScanZoomAdoptRaw(); },
       rebaseRawCamera: camera => { rawCameraRef.current = { ...camera }; },
@@ -1076,6 +1087,14 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
     semanticAssistUntilRef.current = 0;
     semanticAssistSampleRef.current = undefined;
     semanticZoomBurstActiveRef.current = false;
+  }
+
+  /** A camera chosen elsewhere (Fit, zoom buttons, minimap) ends a pan whose settle is pending. */
+  function cancelPendingPanSettle() {
+    if (panSettleTimerRef.current === undefined) return;
+    window.clearTimeout(panSettleTimerRef.current);
+    panSettleTimerRef.current = undefined;
+    onPanSettleCancelRef.current();
   }
 
   /** An external lens cancel ends the pending gesture: its settle would re-run the zoom handoff. */
@@ -1435,6 +1454,8 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
     const pointer = pointerRef.current;
     if (!pointer || pointer.id !== event.pointerId) return;
     if (!pointer.moved) {
+      // A click ends any pan whose settle its pointerdown cancelled.
+      onPanSettleCancelRef.current();
       const bounds = event.currentTarget.getBoundingClientRect();
       const picked = rendererRef.current?.pick(event.clientX - bounds.left, event.clientY - bounds.top);
       if (picked) onPick(picked);
@@ -1496,6 +1517,7 @@ function CanvasViewport({ cameraPublicationGuard, inspectorFlightCameraRef, sema
       onPointerCancel={event => {
         if (panSettleTimerRef.current !== undefined) window.clearTimeout(panSettleTimerRef.current);
         panSettleTimerRef.current = undefined;
+        onPanSettleCancelRef.current();
         touchPointersRef.current.delete(event.pointerId);
         pinchRef.current = undefined;
         pointerRef.current = undefined;
@@ -1657,6 +1679,12 @@ export function App() {
   const lodReplayRef = useRef<RendererLodState | undefined>(undefined);
   const [camera, updateCamera] = useState<Camera>(initialNavigation.camera);
   const renderedCameraRef = useRef(camera);
+  /** Camera (and its scene) when the pan that has not settled yet began; Back after a pan file change returns here. */
+  const panStartCameraRef = useRef<ScanPanStart | undefined>(undefined);
+  /** Drops a pending pan file handoff (CLA-405) and returns its pan start if it was still pending. */
+  const scanPanFileHandoffFenceRef = useRef<(() => ScanPanStart | undefined) | undefined>(undefined);
+  /** What that pending handoff began on; read only while its fence is set. */
+  const scanPanFileHandoffSourceRef = useRef<{ scene: AtlasScene; selectedId: string; fixture: unknown } | undefined>(undefined);
   const cameraPublicationGuardRef = useRef(createCameraPublicationEchoGuard());
   const previousReactCameraRef = useRef(camera);
   const pendingInspectorCameraFlightRef = useRef<PendingInspectorCameraFlight | undefined>(undefined);
@@ -1729,6 +1757,7 @@ export function App() {
   const scanCodePrewarmRef = useRef<{ focus: string; safeWidth: number; controller: AbortController; promise: Promise<void> } | undefined>(undefined);
   const scanZoomAdoptRawRef = useRef<Camera | undefined>(undefined);
   const semanticAssistCancelRef = useRef<(() => void) | undefined>(undefined);
+  const panSettleCancelRef = useRef<(() => void) | undefined>(undefined);
   const [detailsOpen, setDetailsOpen] = useState(() => initialInspectorOpen());
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>(() => scanFixture ? 'overview' : 'details');
   const [inspectorHistory, setInspectorHistory] = useState<InspectorHistorySubject[]>([]);
@@ -1887,6 +1916,11 @@ export function App() {
       cancelForegroundSceneRequest();
     }
     if (reverseScenePendingRef.current && !reverseScenePendingRef.current.owns()) cancelReverseScenePreparation();
+    // A pan file handoff that began on this very scene, selection and fixture already owns them:
+    // this effect can run late, after a slow frame, for a scene published before that handoff
+    // began, and must not cancel it (CLA-405). The handoff checks scene, session and selection itself.
+    const panHandoff = scanPanFileHandoffFenceRef.current ? scanPanFileHandoffSourceRef.current : undefined;
+    if (panHandoff?.scene === scene && panHandoff.selectedId === selectedId && panHandoff.fixture === scanFixture) return;
     cancelGestureSceneRequests(false);
   }, [scene, selectedId, scanFixture]);
   useEffect(() => () => {
@@ -2674,6 +2708,7 @@ export function App() {
         const request = scanFixture && !importedAtlasRef.current
           ? beginForegroundScanNavigation('Restoring architecture navigation', true, true) : undefined;
         cancelGestureSceneRequests();
+        abandonPendingPan();
         cancelAskMapShow(); // back/forward supersedes an in-flight Ask "Show on map"
         abortInspectorCameraFlight();
         const restoreGeneration = navigationRestoreGenerationRef.current + 1;
@@ -3134,6 +3169,7 @@ export function App() {
   }
 
   function cancelSemanticLensAt(reason: string, reachedCamera: Camera) {
+    panStartCameraRef.current = undefined;
     stopLateScanReveal();
     scanLateRevealRef.current = undefined;
     const current = semanticLensSessionRef.current;
@@ -3178,6 +3214,12 @@ export function App() {
   }
 
   function stabilizeSemanticLensForPan(reachedCamera: Camera) {
+    // A start recorded under another root or lens detail (a level change or zoom handoff since)
+    // is not this pan's. The scene object itself is not compared: tile refreshes replace it.
+    const recorded = panStartCameraRef.current;
+    const panStart = recorded && recorded.rootEntityId === sceneRef.current.rootEntityId
+      && recorded.detail === semanticLensSessionDetail(semanticLensSessionRef.current) ? recorded : undefined;
+    panStartCameraRef.current = undefined;
     if (foregroundSceneRequestRef.current.pending()) return;
     scanViewportInteractionRef.current = 'pan';
     if (levelScenePreparationPending(levelCompileAbortRef.current)) return;
@@ -3191,7 +3233,17 @@ export function App() {
       measureCurrentMapSafeArea(),
       160,
     );
-    const nextSession = plan.session;
+    // A scan atlas compiles one scene per file at L4 (CLA-405). The sibling file under the
+    // centre cannot take the lens inside this file's scene: hold everything on the current
+    // file and let the file handoff publish the other file's scene, root and lens together.
+    const transfer = plan.session.focusTransfer;
+    const panFileId = transfer && scanFixture && !importedAtlasRef.current
+      && semanticLensSessionDetail(current) === 'code'
+      && sceneRef.current.rootEntityId === transfer.sourceEntries.at(-1)?.targetId
+      ? transfer.targetId : undefined;
+    const nextSession = panFileId
+      ? { ...plan.session, settled: transfer!.sourceEntries, focusTransfer: undefined }
+      : plan.session;
     semanticLensSessionRef.current = nextSession;    setSemanticLensSession(nextSession);
     const lensPath = semanticLensCanonicalPathIds(nextSession);
     const next = canonicalNavigationState({
@@ -3202,11 +3254,118 @@ export function App() {
     }, navigationDefaults);
     navigationRef.current = next;
     historyControllerRef.current?.replace(next);
+    if (panFileId) startScanPanFileHandoff(panFileId, panStart);
     if (!nextSession.focusTransfer) return;
     animateSemanticFocusTransfer(nextSession.focusTransfer.targetId);
   }
 
+  /**
+   * Re-root an L4 scan map on the sibling file a pan settled on (CLA-405). Nothing is
+   * published until that file's scene is ready; then scene, root, lens path and a new
+   * history entry land together, so Back returns to the file the reader left, at the
+   * camera the pan began from. A later pan, zoom or navigation replaces the session or
+   * the scene and this request is dropped.
+   */
+  function startScanPanFileHandoff(fileId: string, panStart: ScanPanStart | undefined) {
+    const fixture = scanFixture;
+    if (!fixture) return;
+    viewportSceneRequestRef.current.cancel();
+    viewportRequestedTileRef.current = undefined;
+    const request = gestureSceneRequestRef.current.begin();
+    const token = ++zoomHandoffGenerationRef.current;
+    const sourceScene = sceneRef.current;
+    const sourceSession = semanticLensSessionRef.current;
+    const selection = inspectorSelectionRef.current;
+    let fenced = false;
+    const fence = () => {
+      const pending = !fenced && request.owns() && token === zoomHandoffGenerationRef.current;
+      fenced = true;
+      if (request.owns()) gestureSceneRequestRef.current.cancel();
+      if (token === zoomHandoffGenerationRef.current) zoomHandoffInflightRef.current = undefined;
+      return pending ? panStart : undefined;
+    };
+    fenceScanPanFileHandoff();
+    scanPanFileHandoffFenceRef.current = fence;
+    scanPanFileHandoffSourceRef.current = { scene: sourceScene, selectedId, fixture };
+    const owns = () => !fenced && request.owns() && token === zoomHandoffGenerationRef.current && ownsScenePublication(
+      { fixture, scene: sourceScene, session: sourceSession, selection },
+      { fixture: scanFixture, scene: sceneRef.current, session: semanticLensSessionRef.current, selection: inspectorSelectionRef.current },
+    );
+    zoomHandoffInflightRef.current = { detail: 'code', compileFocus: fileId };
+    const safeWidth = currentScanCodeSafeWidth();
+    void fixture.ensureNeighborhood(fileId, request.signal).then(async () => {
+      if (!owns()) return;
+      const prepared = await composeScanSceneAsync(fileId, sourceScene, request.signal, undefined, undefined, undefined, safeWidth);
+      if (!owns() || !scanDeeperBandHasPeerCards(prepared, fileId, 'code')) return;
+      const nextSession = semanticLevelSession(prepared, 'code', [fileId, ...sourceSession.settled.map(entry => entry.targetId).reverse()]);
+      if (nextSession.settled.at(-1)?.targetId !== fileId) return;
+      if (scanPanFileHandoffFenceRef.current === fence) scanPanFileHandoffFenceRef.current = undefined;
+      // The file was a faded L3 card in the old scene; keep its frame's top-left (and title)
+      // where the reader put it. Its code frame can differ in size, so the far edges move.
+      const liveCamera = renderedCameraRef.current;
+      const from = semanticBounds(sourceScene, fileId, 'component');
+      const to = semanticBounds(prepared, fileId, 'code');
+      const nextCamera = from && to ? {
+        x: liveCamera.x + to.x - from.x,
+        y: liveCamera.y + to.y - from.y,
+        zoom: liveCamera.zoom,
+      } : liveCamera;
+      stopLateScanReveal();
+      scanLateRevealRef.current = undefined;
+      installSemanticSession(nextSession);
+      activeLevelRef.current = semanticDetails.indexOf('code');
+      scanZoomAdoptRawRef.current = nextCamera;
+      sceneRef.current = prepared;
+      setScene(prepared);
+      setNavigationIdentity(identity => ({ ...identity, rootEntityId: fileId }));
+      renderedCameraRef.current = nextCamera;
+      updateCamera(nextCamera);
+      // The settle left the file's entry at the camera over the other file: Back returns
+      // to where the reader was before this pan instead.
+      if (panStart) historyControllerRef.current?.replace(canonicalNavigationState({ ...navigationRef.current, camera: panStart.camera }, navigationDefaults));
+      commitNavigation({
+        ...navigationRef.current,
+        rootEntityId: fileId,
+        camera: nextCamera,
+        detail: nextSession.baseDetail,
+        lensPath: semanticLensCanonicalPathIds(nextSession),
+      }, 'push');
+      publishSemanticRenderPacket(nextCamera, prepared, nextSession);
+    }).catch(error => {
+      if (owns() && !(error instanceof DOMException && error.name === 'AbortError')) setLiveMessage(scenePreparationFailureMessage(error, 'This file could not be prepared. Try again.'));
+    }).finally(() => {
+      if (scanPanFileHandoffFenceRef.current === fence) scanPanFileHandoffFenceRef.current = undefined;
+      if (token === zoomHandoffGenerationRef.current) zoomHandoffInflightRef.current = undefined;
+    });
+  }
+
+  function fenceScanPanFileHandoff() {
+    const fence = scanPanFileHandoffFenceRef.current;
+    scanPanFileHandoffFenceRef.current = undefined;
+    return fence?.();
+  }
+
+  /** A restore or foreground navigation leaves the entry a pending pan belonged to: its 160 ms
+   * lens settle and pan start must not land on the entry the reader moved to (CLA-405). */
+  function abandonPendingPan() {
+    panSettleCancelRef.current?.();
+    panStartCameraRef.current = undefined;
+  }
+
+  function currentScanPanStart(): ScanPanStart {
+    return { camera: { ...renderedCameraRef.current }, rootEntityId: sceneRef.current.rootEntityId, detail: semanticLensSessionDetail(semanticLensSessionRef.current) };
+  }
+
+  /** A pan that drops a file handoff still being prepared continues that handoff's pan:
+   * nothing re-rooted, so Back should still return to where it began. */
+  function fenceScanPanFileHandoffForPan() {
+    const dropped = fenceScanPanFileHandoff();
+    if (dropped) panStartCameraRef.current ??= dropped;
+  }
+
   function beginSemanticZoomBurst(reachedCamera: Camera): Camera {
+    panStartCameraRef.current = undefined;
+    fenceScanPanFileHandoff();
     if (foregroundSceneRequestRef.current.pending()) return reachedCamera;
     scanViewportInteractionRef.current = 'zoom';
     semanticMorphStateRef.current = undefined;
@@ -4065,6 +4224,11 @@ export function App() {
 
   /** Called only for user camera intent, never for renderer or flight samples. */
   function beginUserCameraIntent() {
+    // Any camera the reader chooses supersedes a pan file handoff still being prepared, and a
+    // pan whose lens settle has not fired yet. Canvas drag and wheel input clear that settle
+    // themselves before they get here, so their consecutive pans stay one pan.
+    fenceScanPanFileHandoff();
+    panSettleCancelRef.current?.();
     if (!beginForegroundCameraIntent(levelCompileAbortRef.current, () => cancelForegroundSceneRequest())) return false;
     foregroundSceneRequestRef.current.cameraIntent();
     levelCompileAbortRef.current?.abort();
@@ -4074,6 +4238,8 @@ export function App() {
   }
 
   function handleDirectCameraInput(): Camera {
+    // Canvas input (drag, wheel, pinch); a zoom among them forgets the pan start at burst start.
+    fenceScanPanFileHandoffForPan();
     beginUserCameraIntent();
     return cancelInspectorCameraFlight();
   }
@@ -4100,6 +4266,7 @@ export function App() {
   }
 
   function beginForegroundScanNavigation(reason: string, historyRestore = false, storyPreparation = false) {
+    abandonPendingPan();
     stopLateScanReveal();
     scanLateRevealRef.current = undefined;
     cancelGestureSceneRequests();
@@ -6875,12 +7042,17 @@ export function App() {
               renderedCameraRef.current = next;
             }}
             onCameraFlightCancel={handleDirectCameraInput}
-            onCameraPanStart={cancelReverseScenePreparation}
+            onCameraPanStart={() => {
+              fenceScanPanFileHandoffForPan();
+              panStartCameraRef.current ??= currentScanPanStart();
+              cancelReverseScenePreparation();
+            }}
             onCreateRelationship={createRelationship}
             onDiagnostics={setDiagnostics}
             onGuideRelationship={guideRelationship}
             onInteractionStart={handleMapInteractionStart}
             onSemanticEditStart={handleSemanticEditStart}
+            onPanSettleCancel={() => { panStartCameraRef.current = undefined; }}
             onLensCancel={cancelSemanticLensAt}
             onLensPan={stabilizeSemanticLensForPan}
             onLodState={publishLodState}
@@ -6891,6 +7063,7 @@ export function App() {
             onSemanticZoomBurstStart={beginSemanticZoomBurst}
             scanZoomAdoptRawRef={scanZoomAdoptRawRef}
             semanticAssistCancelRef={semanticAssistCancelRef}
+            panSettleCancelRef={panSettleCancelRef}
             onViewportChange={setViewport}
             projectionOverride={relationFocus.projectionOverride}
             reduceMotion={reduceMotion}
@@ -6943,7 +7116,10 @@ export function App() {
           </div>
 
           <Minimap camera={camera} onPan={(next, phase) => {
+            // Grabbing the minimap ends any canvas pan still settling, even while a level loads.
+            if (phase === 'start') panSettleCancelRef.current?.();
             if (levelScenePreparationPending(levelCompileAbortRef.current)) { setCamera(() => next); return; }
+            if (phase === 'start') panStartCameraRef.current = currentScanPanStart();
             if (phase === 'move') {
               beginUserCameraIntent();
               setCamera(() => next);

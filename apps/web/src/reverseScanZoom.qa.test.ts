@@ -25,7 +25,9 @@ it('freezes pending semantic zoom while camera samples continue, and cancels at 
   const pan = app.slice(app.indexOf('if (!pointer.moved)'), app.indexOf('pointer.x = event.clientX'));
   expect(pan).toContain('onCameraPanStartRef.current();');
   expect(pan).not.toContain('onInteractionStartRef.current');
-  expect(app).toContain('onCameraPanStart={cancelReverseScenePreparation}');
+  // CLA-405: pan start also records the pre-pan camera and drops a pending pan file handoff.
+  const panStart = app.slice(app.indexOf('onCameraPanStart={() => {'), app.indexOf('onCreateRelationship='));
+  expect(panStart).toContain('cancelReverseScenePreparation();');
   expect(app).toContain("if (direction !== 'inward' && pending.scene === target");
 });
 
