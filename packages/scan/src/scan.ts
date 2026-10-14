@@ -31,7 +31,7 @@ import {
   type ClonePair,
   type ExtractInput,
   type UnresolvedRelativeImport,
-  unfollowedCargoPatches,
+  resolveCargoPatches,
 } from "./extract.js";
 import { mergeEnrichment, type EnrichmentReport } from "./enrich.js";
 import { applyComponentMembership, type ComponentMapInput, type ComponentMapReport } from './component-map.js';
@@ -441,17 +441,20 @@ export function unresolvedImportLimitations(imports: readonly UnresolvedRelative
 }
 
 /**
- * Root `Cargo.toml` `[patch.*]` path overrides that recorded no crate edge: one line
- * each — out-of-repository paths are reported, never followed. Read the same way
- * extraction reads the root manifest; empty without Rust crates or such overrides.
+ * Root `Cargo.toml` `[patch.*]` path overrides that recorded no crate edge, one line
+ * each: out-of-repository paths (never followed), paths naming no scanned crate, and
+ * patches Cargo would not use because the patched version satisfies no dependent's
+ * requirement. Same resolution as extraction (`resolveCargoPatches`); empty without
+ * Rust crates or such overrides.
  */
 export function cargoPatchLimitations(discovery: Discovery, readFile: (path: string) => string): string[] {
-  const crateDirs = new Set(discovery.units.flatMap(unit => unit.kind === "rust" ? [unit.dir] : []));
-  if (crateDirs.size === 0) return [];
-  let rootManifest = "";
-  try { rootManifest = readFile("Cargo.toml") ?? ""; } catch { return []; }
-  return unfollowedCargoPatches(rootManifest, crateDirs).map(patch => {
+  return resolveCargoPatches(discovery, readFile).unfollowed.map(patch => {
     const where = `Cargo.toml:${patch.line}: [patch.${displayText(patch.source)}] ${displayText(patch.name)} = { path = '${displayText(patch.path)}' }`;
+    if (patch.reason === "version-mismatch") {
+      const [first, ...more] = patch.rejected ?? [];
+      const requirement = first ? `${displayText(first.path)}:${first.line} requires '${displayText(first.requirement)}'${more.length ? ` (+${more.length} more)` : ""}` : "";
+      return `Cargo [patch] not used: version ${displayText(patch.version ?? "")} does not satisfy ${requirement}; no crate edge recorded: ${where}`;
+    }
     return patch.reason === "outside-repository"
       ? `Cargo [patch] path resolves outside the repository; not followed, no crate edge recorded: ${where}`
       : `Cargo [patch] path names no scanned crate; no crate edge recorded: ${where}`;

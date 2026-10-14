@@ -122,12 +122,12 @@ test("cargoSourcedDependencies: registry/git declarations with their [patch] sou
     'builder = "1"',
   ].join("\n");
   assert.deepEqual(cargoSourcedDependencies(manifest), [
-    { name: "plain", key: "plain", line: 2, source: "crates-io" },
-    { name: "table", key: "table", line: 3, source: "crates-io" },
-    { name: "real-name", key: "renamed", line: 4, source: "crates-io" },
-    { name: "private", key: "private", line: 5, source: "corp" },
+    { name: "plain", key: "plain", line: 2, source: "crates-io", version: "1" },
+    { name: "table", key: "table", line: 3, source: "crates-io", version: "1" },
+    { name: "real-name", key: "renamed", line: 4, source: "crates-io", version: "1" },
+    { name: "private", key: "private", line: 5, source: "corp", version: "1" },
     { name: "gitdep", key: "gitdep", line: 6, source: "https://github.com/acme/gitdep" },
-    { name: "sub", key: "sub", line: 10, source: "crates-io" },
+    { name: "sub", key: "sub", line: 10, source: "crates-io", version: "2" },
   ]);
   assert.deepEqual(cargoPathDependencies(manifest).map(dependency => [dependency.name, dependency.path, dependency.line]), [
     ["local", "../local", 7],
@@ -319,4 +319,75 @@ test("round 2: a [patch] path with a leading `~` is a literal in-repo directory 
     assert.deepEqual(patchLimitations(artifacts), [], mode);
   });
   assert.deepEqual(unfollowedCargoPatches('[patch.crates-io]\ncore = { path = "~core" }\n', new Set(["~core"])), [], "`~core` names the member");
+});
+
+// CLA-587 review round 3 (Opus). Every scan case below was checked by the reviewer against
+// offline `cargo metadata`; each runs in quick and full mode.
+
+const CORE_APP = (root: string, appDependencies: string, coreVersion = 'version = "1.0.0"'): Record<string, string> => ({
+  ...TWO_CRATES(root, appDependencies),
+  "core/Cargo.toml": `[package]\nname = "core"\n${coreVersion}\n`,
+});
+const MEMBERS = '[workspace]\nmembers = ["core", "app"]\n';
+
+test("round 3: literal-string and dotted-key [patch] paths are followed, or reported when outside (quick + full)", () => {
+  scanBothModes(CORE_APP(`${MEMBERS}\n[patch.crates-io]\ncore = { path = 'core' }\n`, 'core = "1"\n'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], `${mode}: literal string`);
+  });
+  scanBothModes(CORE_APP(`${MEMBERS}\n[patch.crates-io]\ncore.path = "core"\n`, 'core = "1"\n'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], `${mode}: dotted key`);
+  });
+  scanBothModes(CORE_APP(`${MEMBERS}\n[patch.crates-io]\ncore = { path = '../core' }\n`, 'core = "1"\n'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], mode);
+    assert.deepEqual(patchLimitations(artifacts), [
+      "Cargo [patch] path resolves outside the repository; not followed, no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = '../core' }",
+    ], `${mode}: an out-of-repo literal-string path is reported`);
+  });
+});
+
+test("round 3: a patch is used only when the patched version satisfies the requirement; otherwise it is reported (quick + full)", () => {
+  const patched = `${MEMBERS}\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  scanBothModes(CORE_APP(patched, 'core = "1"\n', 'version = "2.0.0"'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: core 2.0.0 does not satisfy ^1`);
+    assert.deepEqual(patchLimitations(artifacts), [
+      "Cargo [patch] not used: version 2.0.0 does not satisfy app/Cargo.toml:6 requires '1'; no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }",
+    ], mode);
+  });
+  // `version.workspace = true` takes the [workspace.package] version.
+  const inheriting = (version: string): string => `${MEMBERS}\n[workspace.package]\nversion = "${version}"\n\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  scanBothModes(CORE_APP(inheriting("1.4.0"), 'core = "1.2"\n', "version.workspace = true"), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:8"], `${mode}: 1.4.0 satisfies ^1.2`);
+    assert.deepEqual(patchLimitations(artifacts), [], mode);
+  });
+  scanBothModes(CORE_APP(inheriting("2.0.0"), 'core = "1.2"\n', "version.workspace = true"), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: inherited 2.0.0 does not satisfy ^1.2`);
+    assert.equal(patchLimitations(artifacts).length, 1, mode);
+  });
+});
+
+test("round 3: dependency forms Cargo accepts all meet a patch; a multi-line git table does not (quick + full)", () => {
+  const patched = `${MEMBERS}\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  for (const [form, dependency] of [
+    ["dotted key", 'core.version = "1"\n'],
+    ["quoted key", '"core" = "1"\n'],
+    ["literal string", "core = '1'\n"],
+  ] as const) {
+    scanBothModes(CORE_APP(patched, dependency), (mode, artifacts) => {
+      assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], `${mode}: ${form}`);
+    });
+  }
+  scanBothModes(CORE_APP(patched, 'core = { features = [\n  "x",\n], git = "https://example.com/core" }\n'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: a git dependency is not overridden by [patch.crates-io]`);
+  });
+});
+
+test("round 3: git sources are canonicalised like Cargo — case-folded and https only for github.com (quick + full)", () => {
+  const gitPatch = (url: string, dependency: string): Record<string, string> =>
+    CORE_APP(`${MEMBERS}\n[patch.${JSON.stringify(url)}]\ncore = { path = "core" }\n`, `core = { git = ${JSON.stringify(dependency)} }\n`);
+  scanBothModes(gitPatch("https://gitlab.com/Acme/Core", "https://gitlab.com/acme/core"), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: gitlab paths are case-sensitive`);
+  });
+  scanBothModes(gitPatch("https://github.com/Acme/Core.git", "http://github.com/acme/core/"), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], `${mode}: github.com is canonicalised`);
+  });
 });

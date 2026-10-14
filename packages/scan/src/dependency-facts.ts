@@ -331,6 +331,12 @@ export interface CargoDependencySpec {
   gitRef?: string;
   package?: string;
   workspace?: boolean;
+  /** `registry = "…"`: the alternate registry a version requirement resolves from. */
+  registry?: string;
+  /** 1-based line where `path` was set (the inline table, dotted key or subsection field). */
+  pathLine?: number;
+  /** 1-based line where `workspace = true` was set. */
+  workspaceLine?: number;
 }
 export interface CargoManifestEntry extends CargoDependencySpec {
   key: string;
@@ -338,11 +344,26 @@ export interface CargoManifestEntry extends CargoDependencySpec {
   target?: string;
   line: number;
 }
+/** One entry of a `[patch.<source>]` table (inline, dotted keys or `[patch.<source>.<key>]`). */
+export interface CargoManifestPatch extends CargoDependencySpec {
+  /** The `<source>` key, unquoted: a registry name (`crates-io`) or a git URL. */
+  source: string;
+  key: string;
+  line: number;
+}
 export interface CargoManifest {
   packageName?: string;
+  /** `[package] version` as written. */
+  packageVersion?: string;
+  /** `[package] version.workspace = true`: the version comes from `[workspace.package]`. */
+  packageVersionInherited?: boolean;
+  /** `[workspace.package] version`. */
+  workspacePackageVersion?: string;
   isWorkspace: boolean;
   workspaceDependencies: Map<string, CargoDependencySpec & { line: number }>;
   entries: CargoManifestEntry[];
+  /** `[patch.*]` entries in source order (Cargo honours them only in the workspace root). */
+  patches: CargoManifestPatch[];
 }
 
 /** Remove a TOML `#` comment that is outside any string. */
@@ -382,7 +403,7 @@ function inlineSpec(text: string): CargoDependencySpec {
   const plain = /^"((?:[^"\\]|\\.)*)"|^'([^']*)'/.exec(value);
   if (plain) return { version: plain[1] ?? plain[2]! };
   const spec: CargoDependencySpec = {};
-  for (const key of ["version", "path", "git", "package"] as const) {
+  for (const key of ["version", "path", "git", "package", "registry"] as const) {
     const found = tomlString(value, key);
     if (found !== undefined) spec[key] = found;
   }
@@ -397,7 +418,7 @@ function assignField(spec: CargoDependencySpec, field: string, rawValue: string)
   const text = /^"((?:[^"\\]|\\.)*)"|^'([^']*)'/.exec(value);
   if (!text) return;
   const content = text[1] ?? text[2]!;
-  if (field === "version" || field === "path" || field === "git" || field === "package") spec[field] = content;
+  if (field === "version" || field === "path" || field === "git" || field === "package" || field === "registry") spec[field] = content;
   else if (field === "rev" || field === "tag" || field === "branch") spec.gitRef = content;
 }
 
@@ -408,9 +429,10 @@ function assignField(spec: CargoDependencySpec, field: string, rawValue: string)
  * multi-line inline table never turns its continuation (`package = …`) into a key.
  */
 export function parseCargoManifest(text: string): CargoManifest {
-  const manifest: CargoManifest = { isWorkspace: false, workspaceDependencies: new Map(), entries: [] };
+  const manifest: CargoManifest = { isWorkspace: false, workspaceDependencies: new Map(), entries: [], patches: [] };
   const lines = text.split(/\r?\n/);
-  type Context = { kind: "package" } | { kind: "workspace-deps"; sub?: string } | { kind: "deps"; section: CargoManifestEntry["section"]; target?: string; sub?: string } | { kind: "other" };
+  type Context = { kind: "package" } | { kind: "workspace-package" } | { kind: "workspace-deps"; sub?: string } | { kind: "deps"; section: CargoManifestEntry["section"]; target?: string; sub?: string }
+    | { kind: "patch"; source: string; sub?: string } | { kind: "other" };
   let context: Context = { kind: "other" };
   const byKey = new Map<string, CargoManifestEntry>();
   const entryFor = (key: string, section: CargoManifestEntry["section"], target: string | undefined, line: number): CargoManifestEntry => {
@@ -430,6 +452,17 @@ export function parseCargoManifest(text: string): CargoManifest {
     manifest.workspaceDependencies.set(key, created);
     return created;
   };
+  const patchesByKey = new Map<string, CargoManifestPatch>();
+  const patchFor = (source: string, key: string, line: number): CargoManifestPatch => {
+    const id = `${source}\u0000${key}`;
+    let patch = patchesByKey.get(id);
+    if (!patch) {
+      patch = { source, key, line };
+      patchesByKey.set(id, patch);
+      manifest.patches.push(patch);
+    }
+    return patch;
+  };
   const unquoteKey = (key: string): string => key.trim().replace(/^["']|["']$/g, "");
   for (let index = 0; index < lines.length; index += 1) {
     const lineNumber = index + 1;
@@ -438,8 +471,16 @@ export function parseCargoManifest(text: string): CargoManifest {
     const header = /^\[\s*([^\][]+?)\s*\]$/.exec(line);
     if (header) {
       const name = header[1]!;
+      const patch = /^patch\s*\.\s*("[^"]*"|'[^']*'|[A-Za-z0-9_-]+)\s*(?:\.\s*("[^"]*"|'[^']*'|[A-Za-z0-9_-]+))?$/.exec(name);
       if (name === "package") context = { kind: "package" };
       else if (name === "workspace") { manifest.isWorkspace = true; context = { kind: "other" }; }
+      else if (name === "workspace.package") { manifest.isWorkspace = true; context = { kind: "workspace-package" }; }
+      else if (patch) {
+        const source = unquoteKey(patch[1]!);
+        const sub = patch[2] !== undefined ? unquoteKey(patch[2]) : undefined;
+        context = { kind: "patch", source, ...(sub !== undefined ? { sub } : {}) };
+        if (sub !== undefined) patchFor(source, sub, lineNumber);
+      }
       else if (/^workspace\.dependencies(\.|$)/.test(name)) {
         manifest.isWorkspace = true;
         const sub = /^workspace\.dependencies\.(.+)$/.exec(name)?.[1];
@@ -467,24 +508,32 @@ export function parseCargoManifest(text: string): CargoManifest {
       index += 1;
       value += ` ${stripTomlComment(lines[index]!).trim()}`;
     }
-    if (context.kind === "package") {
-      const name = /^"([^"]*)"|^'([^']*)'/.exec(value);
-      if (left === "name" && name) manifest.packageName = name[1] ?? name[2]!;
+    if (context.kind === "package" || context.kind === "workspace-package") {
+      const text = /^"([^"]*)"|^'([^']*)'/.exec(value);
+      if (context.kind === "package" && left === "name" && text) manifest.packageName = text[1] ?? text[2]!;
+      else if (left === "version" && text) {
+        if (context.kind === "package") manifest.packageVersion = text[1] ?? text[2]!;
+        else manifest.workspacePackageVersion = text[1] ?? text[2]!;
+      } else if (context.kind === "package" && /^version\s*\.\s*workspace$/.test(left) && /^true\b/.test(value)) manifest.packageVersionInherited = true;
       continue;
     }
-    if (context.kind !== "deps" && context.kind !== "workspace-deps") continue;
-    if (context.sub) {
-      const spec = context.kind === "deps"
-        ? entryFor(context.sub, context.section, context.target, lineNumber)
-        : workspaceFor(context.sub, lineNumber);
+    if (context.kind !== "deps" && context.kind !== "workspace-deps" && context.kind !== "patch") continue;
+    const specFor = (key: string): CargoDependencySpec => context.kind === "deps"
+      ? entryFor(key, context.section, context.target, lineNumber)
+      : context.kind === "patch" ? patchFor(context.source, key, lineNumber) : workspaceFor(key, lineNumber);
+    let spec: CargoDependencySpec;
+    if (context.sub !== undefined) {
+      spec = specFor(context.sub);
       assignField(spec, left, value);
-      continue;
+    } else {
+      const dotted = /^((?:"[^"]*"|'[^']*'|[A-Za-z0-9_-]+))\.([A-Za-z0-9_-]+)$/.exec(left);
+      spec = specFor(unquoteKey(dotted ? dotted[1]! : left));
+      if (dotted) assignField(spec, dotted[2]!, value);
+      else Object.assign(spec, inlineSpec(value));
     }
-    const dotted = /^((?:"[^"]*"|'[^']*'|[A-Za-z0-9_-]+))\.([A-Za-z0-9_-]+)$/.exec(left);
-    const key = unquoteKey(dotted ? dotted[1]! : left);
-    const spec = context.kind === "deps" ? entryFor(key, context.section, context.target, lineNumber) : workspaceFor(key, lineNumber);
-    if (dotted) assignField(spec, dotted[2]!, value);
-    else Object.assign(spec, inlineSpec(value));
+    // Evidence lines: where `path` / `workspace = true` were actually written.
+    if (spec.path !== undefined && spec.pathLine === undefined) spec.pathLine = lineNumber;
+    if (spec.workspace && spec.workspaceLine === undefined) spec.workspaceLine = lineNumber;
   }
   return manifest;
 }

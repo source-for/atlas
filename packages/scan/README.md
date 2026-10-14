@@ -143,8 +143,12 @@ Discovery generalizes beyond Okie's own layout (validated against third-party cl
   inherited `workspace = true`) and from root **`[patch.<source>]` path overrides**: a crate that
   depends on `foo` by registry version or git URL gets a `foo` crate edge when the root manifest
   patches that source's `foo` to an in-repo crate (tokio's `[patch.crates-io] tokio = { path =
-  "tokio" }`); the edge cites both lines. A patch path outside the repository is never followed,
-  and one naming no scanned crate records nothing — both are listed in `analysis.limitations`.
+  "tokio" }`); the edge cites both lines. As in Cargo, a patch is used only when the patched
+  crate's version (or its `[workspace.package]` one) satisfies the dependent's requirement. A patch
+  path outside the repository is never followed; one naming no scanned crate, or that no
+  requirement accepts, records nothing — all three are listed in `analysis.limitations`. Every
+  Cargo.toml form (literal strings, quoted and dotted keys, multi-line inline tables) is read by the
+  one Cargo reader, `parseCargoManifest`.
 - **Declarations without a name** — a syntax error the parser recovers from with a missing
   identifier (`export default interface {}`, `enum {}` in babel's parser fixtures) — become code
   entities named `default` (a default export) or `anonymous <kind>`, never a blank name. A name
