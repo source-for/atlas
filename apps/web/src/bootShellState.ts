@@ -2,7 +2,7 @@ import { isFramedBrowsingContext } from './embedCanvas';
 import { initialInspectorOpen, isEmbedChrome, isEmbedQueryFlag } from './embedChrome';
 import { embedButtonVisible } from './embedSnippet';
 import { isDogfoodAtlas } from './hostedAtlas';
-import { clampInspectorWidth, defaultInspectorWidth, inspectorWidthStorageKey } from './inspector/inspectorPanel';
+import { initialInspectorWidth } from './inspector/inspectorPanel';
 import type { AppRoute } from './renderer/route';
 
 /**
@@ -55,21 +55,8 @@ export function bootShellLayout(
   return {
     embed: isEmbedChrome({ framed, embedQuery: isEmbedQueryFlag(search) }),
     detailsOpen: initialInspectorOpen(win, search),
-    detailsWidth: initialInspectorWidth(win.innerWidth, saved?.storage, saved?.repositoryId),
+    detailsWidth: initialInspectorWidth(win.innerWidth, () => saved?.storage, saved?.repositoryId),
   };
-}
-
-/** App's `detailsWidth` initializer: the saved `okie:inspector-width:<repositoryId>` (clamped), else the default. */
-export function initialInspectorWidth(viewportWidth: number, storage: WidthStorage | undefined, repositoryId: string | undefined): number {
-  let stored = Number.NaN;
-  if (storage && repositoryId !== undefined) {
-    try {
-      stored = Number.parseFloat(storage.getItem(inspectorWidthStorageKey(repositoryId)) ?? '');
-    } catch {
-      // Storage can be unavailable in privacy modes; use the repository default.
-    }
-  }
-  return clampInspectorWidth(Number.isFinite(stored) ? stored : defaultInspectorWidth(viewportWidth), viewportWidth);
 }
 
 // navigationState.ts's URL rules, mirrored here so the boot chunk does not carry the navigation module

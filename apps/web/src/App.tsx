@@ -105,7 +105,7 @@ import { SourceRepoLink } from './sourceRepoLink';
 import { resolveExplanationExcerpt } from './explanation/explanationSource';
 import { getDraftPreviewContext } from './operator/previewContext';
 import { OperatorMenuLink } from './operator/OperatorMenuLink';
-import { buildArchitectureBrief, clampInspectorWidth, defaultInspectorWidth, inspectorAcceptedSummary, inspectorCanShowSource, inspectorDiagramCount, inspectorEntityLead, inspectorCyclomatic, inspectorCoverage, inspectorDuplicates, inspectorUntestedBehaviours, formatCoverageRange, inspectorNotationDetailsView, inspectorNotationScope, inspectorPathOwners, inspectorSecondaryCopy, inspectorTabForEntity, inspectorWidthRange, inspectorWidthStorageKey, presentInspectorNotationDiagnostics, selectedEntityReframePlan, selectedRelationPresentation, type InspectorTab } from './inspector/inspectorSupport';
+import { buildArchitectureBrief, clampInspectorWidth, defaultInspectorWidth, initialInspectorWidth, inspectorAcceptedSummary, inspectorCanShowSource, inspectorDiagramCount, inspectorEntityLead, inspectorCyclomatic, inspectorCoverage, inspectorDuplicates, inspectorUntestedBehaviours, formatCoverageRange, inspectorNotationDetailsView, inspectorNotationScope, inspectorPathOwners, inspectorSecondaryCopy, inspectorTabForEntity, inspectorWidthRange, inspectorWidthStorageKey, presentInspectorNotationDiagnostics, selectedEntityReframePlan, selectedRelationPresentation, type InspectorTab } from './inspector/inspectorSupport';
 import { inspectorHistoryRestorePlan, popInspectorHistory, pushInspectorHistory, type InspectorHistorySubject } from './inspector/inspectorHistory';
 import { createInspectorNeighborhoodRequest, inspectorNavigationIdentity } from './inspector/inspectorNeighborhoodRequest';
 import { readDemoQuery } from './renderer/query';
@@ -1734,15 +1734,8 @@ export function App() {
   const [inspectorHistory, setInspectorHistory] = useState<InspectorHistorySubject[]>([]);
   const [expandedRelationshipGroups, setExpandedRelationshipGroups] = useState<ReadonlySet<string>>(() => new Set());
   const [expandedDetailLists, setExpandedDetailLists] = useState<ReadonlySet<string>>(() => new Set());
-  const [detailsWidth, setDetailsWidth] = useState(() => {
-    let stored = Number.NaN;
-    try {
-      stored = Number.parseFloat(localStorage.getItem(inspectorWidthStorageKey(initialNavigation.repositoryId)) ?? '');
-    } catch {
-      // Storage can be unavailable in privacy modes; use the repository default.
-    }
-    return clampInspectorWidth(Number.isFinite(stored) ? stored : defaultInspectorWidth(window.innerWidth), window.innerWidth);
-  });
+  // CLA-268: the boot skeleton reads the same initializer, so the two agree on the inspector's first width.
+  const [detailsWidth, setDetailsWidth] = useState(() => initialInspectorWidth(window.innerWidth, () => localStorage, initialNavigation.repositoryId));
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);

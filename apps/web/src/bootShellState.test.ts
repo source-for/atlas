@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { Window } from 'happy-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { BootShell } from './BootShell';
-import { advanceBootShellStep, BOOT_SHELL_STEPS, bootShellHeaderSlots, bootShellLayout, bootShellRepositoryId, bootShellStepLabel, createBootShellOwner, initialInspectorWidth, recallRouteRepository, rememberRouteRepository } from './bootShellState';
+import { advanceBootShellStep, BOOT_SHELL_STEPS, bootShellHeaderSlots, bootShellLayout, bootShellRepositoryId, bootShellStepLabel, createBootShellOwner, recallRouteRepository, rememberRouteRepository } from './bootShellState';
 import { initialInspectorOpen } from './embedChrome';
-import { clampInspectorWidth, defaultInspectorWidth, inspectorWidthStorageKey } from './inspector/inspectorPanel';
+import { defaultInspectorWidth, initialInspectorWidth, inspectorWidthStorageKey } from './inspector/inspectorPanel';
 import { navigationStateFromUrl, type NavigationDefaults } from './navigation/navigationState';
 import { parseAppRoute } from './renderer/route';
 
@@ -51,38 +52,34 @@ function memoryStorage(entries: Record<string, string> = {}) {
   return { getItem: (key: string) => map.get(key) ?? null, setItem: (key: string, value: string) => { map.set(key, value); }, map };
 }
 
-/** App's `detailsWidth` initializer, verbatim (App.tsx), for the parity checks below. */
-function appInitialWidth(storage: { getItem(key: string): string | null }, repositoryId: string, viewport: number) {
-  let stored = Number.NaN;
-  try {
-    stored = Number.parseFloat(storage.getItem(inspectorWidthStorageKey(repositoryId)) ?? '');
-  } catch {
-    // as App
-  }
-  return clampInspectorWidth(Number.isFinite(stored) ? stored : defaultInspectorWidth(viewport), viewport);
-}
-
 describe('CLA-268 boot shell keeps the repository\'s saved inspector width', () => {
   const repo = 'repo:source-for-atlas';
-  it.each([
-    [1440, '520'], [1440, '300'], [1440, '9999'], [1060, '520'], [800, '480'], [640, '420'], [1440, 'wide'], [1440, ''],
-  ])('at %ipx with %s saved, the skeleton\'s width is App\'s', (viewport, saved) => {
-    const storage = memoryStorage({ [inspectorWidthStorageKey(repo)]: saved });
-    expect(bootShellLayout(page(viewport), '', { storage, repositoryId: repo }).detailsWidth).toBe(appInitialWidth(storage, repo, viewport));
+  it('App and the skeleton share one initializer', () => {
+    const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+    expect(app).toContain('const [detailsWidth, setDetailsWidth] = useState(() => initialInspectorWidth(window.innerWidth, () => localStorage, initialNavigation.repositoryId));');
+    expect(app).not.toMatch(/localStorage\.getItem\(inspectorWidthStorageKey/);
   });
 
-  it('a 520px saved width at 1440 is 520, not the 403 default', () => {
+  // Saved width, clamped to the viewport's range (360 up to 520 or 46% of the viewport); junk falls back to the default.
+  it.each([
+    [1440, '520', 520], [1440, '300', 360], [1440, '9999', 520], [1440, '455.4', 455], [1060, '520', 488], [800, '480', 368], [1440, 'wide', 403], [1440, '', 403],
+  ])('at %ipx with %s saved, the skeleton opens the inspector at %ipx', (viewport, saved, expected) => {
+    const storage = memoryStorage({ [inspectorWidthStorageKey(repo)]: saved });
+    expect(bootShellLayout(page(viewport), '', { storage, repositoryId: repo }).detailsWidth).toBe(expected);
+  });
+
+  it('another repository\'s width is not this one\'s', () => {
     const storage = memoryStorage({ [inspectorWidthStorageKey(repo)]: '520' });
-    expect(bootShellLayout(page(1440), '', { storage, repositoryId: repo }).detailsWidth).toBe(520);
-    // Another repository's width is not this one's.
-    expect(initialInspectorWidth(1440, storage, 'repo:other')).toBe(403);
+    expect(bootShellLayout(page(1440), '', { storage, repositoryId: 'repo:other' }).detailsWidth).toBe(403);
   });
 
   it('uses the default while the repository is unknown or storage is unavailable', () => {
     const storage = memoryStorage({ [inspectorWidthStorageKey(repo)]: '520' });
-    expect(initialInspectorWidth(1440, storage, undefined)).toBe(403);
-    expect(initialInspectorWidth(1440, undefined, repo)).toBe(403);
-    expect(initialInspectorWidth(1440, { getItem: () => { throw new Error('denied'); } }, repo)).toBe(403);
+    expect(initialInspectorWidth(1440, () => storage, undefined)).toBe(403);
+    expect(initialInspectorWidth(1440, () => undefined, repo)).toBe(403);
+    expect(initialInspectorWidth(1440, () => ({ getItem: () => { throw new Error('denied'); } }), repo)).toBe(403);
+    // Reading the storage property itself can throw in privacy modes: that is inside the guard too.
+    expect(initialInspectorWidth(1440, () => { throw new Error('SecurityError'); }, repo)).toBe(403);
   });
 });
 
@@ -204,10 +201,24 @@ describe('CLA-268 boot shell header slots', () => {
 describe('CLA-268 boot shell view', () => {
   const markup = renderToStaticMarkup(createElement(BootShell, { layout: { embed: false, detailsOpen: true, detailsWidth: 403 }, step: 'view', headerSlots: ['import', 'screenshot', 'share', 'embed', 'repo'] as const, fontsReady: true }));
 
-  it('is busy, with one live region naming the step', () => {
-    expect(markup).toMatch(/^<div aria-busy="true" aria-label="Atlas loading" class="app-shell boot-shell" data-boot-step="view" data-embed="false"/);
+  it('has one live region naming the step, which nothing holds back', () => {
+    expect(markup).toMatch(/^<div class="app-shell boot-shell" data-boot-step="view" data-embed="false"/);
     expect(markup.match(/role="status"/g)).toHaveLength(1);
     expect(markup).toContain('<p class="boot-status" role="status">Preparing the view…</p>');
+    // A busy ancestor may hold a live region's updates until it goes un-busy; the skeleton never does (App replaces it).
+    expect(markup).not.toContain('aria-busy');
+    // No accessible name on a role-less element.
+    expect(markup).not.toContain('aria-label');
+  });
+
+  it('exposes no landmark or text other than the step line', () => {
+    expect(markup).toMatch(/<header aria-hidden="true" class="topbar">/);
+    const document = new Window().document;
+    document.body.innerHTML = markup;
+    for (const hidden of document.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+    expect(document.querySelectorAll('header, nav, main, aside, section[aria-label], [role]').length).toBe(1);
+    const exposed = document.body.textContent;
+    expect(exposed).toBe('Preparing the view…');
   });
 
   it('holds no controls: nothing can take focus or be clicked', () => {
@@ -220,7 +231,7 @@ describe('CLA-268 boot shell view', () => {
       expect(markup).toContain(region);
     }
     // Each header slot carries its App control's classes (App's narrow-width rules hide or keep them alike).
-    expect(markup).toContain('<div aria-hidden="true" class="top-actions"><span class="icon-button"></span><span class="diagram-add-menu screenshot-menu"><span class="boot-menu-summary"></span></span><span class="icon-button share-view-button"></span><span class="embed-atlas-control"><span class="icon-button embed-atlas-button"></span></span><span class="icon-button"></span></div>');
+    expect(markup).toContain('<div class="top-actions"><span class="icon-button"></span><span class="diagram-add-menu screenshot-menu"><span class="boot-menu-summary"></span></span><span class="icon-button share-view-button"></span><span class="embed-atlas-control"><span class="icon-button embed-atlas-button"></span></span><span class="icon-button"></span></div>');
     // App's ids and test ids stay App's: the skeleton is never mistaken for the mounted atlas.
     expect(markup).not.toMatch(/id="architecture-inspector"|data-testid="atlas-(app|canvas)"/);
   });

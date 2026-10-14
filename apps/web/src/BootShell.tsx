@@ -7,19 +7,23 @@ import { LayersIcon, SearchIcon, SourceForMark } from './icons';
  * box App will occupy, and it holds no controls: nothing in it can take focus or be clicked. Its one live region
  * names the boot step in progress. The wordmark stays hidden until its webfont has loaded: drawn in the fallback face
  * first, its words would move when the face swaps in.
+ *
+ * Accessibility: everything but the step line is hidden from assistive technology (the header too, so no empty banner
+ * landmark is exposed). The step line is a polite live region with no `aria-busy` ancestor: the skeleton is replaced by
+ * App rather than ever going un-busy, so a busy ancestor could hold its announcements for good.
  */
 export function BootShell({ layout, step, headerSlots, fontsReady }: { layout: BootShellLayout; step: BootShellStep; headerSlots: readonly BootShellHeaderSlot[]; fontsReady: boolean }) {
   const label = bootShellStepLabel(step);
-  return <div aria-busy="true" aria-label="Atlas loading" className="app-shell boot-shell" data-boot-step={step} data-embed={layout.embed ? 'true' : 'false'} data-fonts={fontsReady ? 'ready' : 'pending'} data-shell-skeleton="">
-    <header className="topbar">
-      <div aria-hidden="true" className="brand-block">
+  return <div className="app-shell boot-shell" data-boot-step={step} data-embed={layout.embed ? 'true' : 'false'} data-fonts={fontsReady ? 'ready' : 'pending'} data-shell-skeleton="">
+    <header aria-hidden="true" className="topbar">
+      <div className="brand-block">
         <SourceForMark className="brand-mark" size={30}/>
         <div><div className="brand-line"><strong>Source For</strong><span className="brand-name">Atlas</span><span className="brand-product">PREVIEW</span></div></div>
       </div>
-      <div aria-hidden="true" className="search-zone">
+      <div className="search-zone">
         <div className="search-trigger"><SearchIcon size={16}/><span>Find a system, flow, or source file…</span><kbd>⌘ K</kbd></div>
       </div>
-      <div aria-hidden="true" className="top-actions">
+      <div className="top-actions">
         {headerSlots.map(slot => <HeaderSlot key={slot} slot={slot}/>)}
       </div>
     </header>

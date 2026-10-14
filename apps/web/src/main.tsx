@@ -13,7 +13,9 @@ import '@okie/theme/tokens.css';
 import './app.css';
 import { ASPECT_PRESET_TARGET, parsePortableAtlas, type PortableAtlas } from '@okie/architecture';
 import { installPublishedAtlasAttribution, releaseAtlasAttributionReservation, reserveAtlasAttribution } from './atlasAttribution';
+import { AppLoadErrorScreen } from './AppLoadErrorScreen';
 import { BootShell } from './BootShell';
+import { retryableImport } from './retryableImport';
 import { bootShellHeaderSlots, bootShellLayout, bootShellRepositoryId, createBootShellOwner, recallRouteRepository, rememberRouteRepository, type BootShellStep } from './bootShellState';
 import { bootNeighborhoodAtlas } from './neighborhoodBoot';
 import type { AppRoute } from './renderer/route';
@@ -102,13 +104,10 @@ async function tryBootScanFixture(
 
 /**
  * CLA-268: App's module, requested while the atlas data is still being prepared instead of after it. App reads the
- * active fixture at import (refreshAppScanFixture re-reads it before mount).
+ * active fixture at import (refreshAppScanFixture re-reads it before mount). A failed import is not kept, so the await
+ * before mount (or a later boot) imports again.
  */
-let appModule: Promise<typeof import('./App')> | undefined;
-function loadAppModule(): Promise<typeof import('./App')> {
-  appModule ??= import('./App');
-  return appModule;
-}
+const loadAppModule = retryableImport(() => import('./App'));
 
 /** CLA-268: start the renderer's WASM download/compile (not for the Canvas 2D backend, which never loads it). */
 function prewarmRenderer(): void {
@@ -469,7 +468,18 @@ async function boot() {
     }
   }
   startupLifetime.assertCurrent();
-  const { App, refreshAppScanFixture } = await loadAppModule();
+  let appModule: Awaited<ReturnType<typeof loadAppModule>>;
+  try {
+    appModule = await loadAppModule();
+  } catch (error) {
+    // The skeleton must not keep claiming "Opening the map…": say what failed and offer a reload.
+    startupLifetime.assertCurrent();
+    releaseAtlasAttributionReservation(document);
+    setDocumentPage(documentPageFor('error'));
+    renderRoot(<StrictMode><AppLoadErrorScreen error={error} onReload={() => window.location.reload()}/></StrictMode>);
+    return;
+  }
+  const { App, refreshAppScanFixture } = appModule;
   startupLifetime.assertCurrent();
   // App may have been imported before the fixture was set (CLA-268): read it now, while App is unmounted.
   refreshAppScanFixture();
