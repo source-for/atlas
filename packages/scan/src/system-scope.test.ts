@@ -28,8 +28,8 @@ function discovery(): Discovery {
   return {
     sourceFiles: ["pkg/a/src/index.ts", "pkg/b/src/main.ts"],
     units: [
-      { kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" },
-      { kind: "member", dir: "pkg/b", name: "@acme/b", packageName: "@acme/b", evidencePath: "pkg/b" },
+      { kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" },
+      { kind: "member", dir: "pkg/b", name: "@acme/b", packageName: "@acme/b", evidencePath: "pkg/b", packageManifest: "pkg/b/package.json" },
     ],
     unitByFile: new Map([["pkg/a/src/index.ts", "pkg/a"], ["pkg/b/src/main.ts", "pkg/b"]]),
     unitByPackageName: new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"]]),

@@ -39,6 +39,13 @@ export interface SourceUnit {
    * also a JS workspace member (the crate owns the dir; the npm name still maps to it).
    */
   packageName?: string;
+  /**
+   * Repository-relative path of the unit's own `package.json`, when it has one: every
+   * member, the root unit (if the root manifest exists), and a `rust` unit whose dir
+   * is also a JS member. THE predicate for "this unit has npm manifest facts"
+   * (runtime dependencies, exports/main/types, bin) — never test `kind` for that.
+   */
+  packageManifest?: string;
   /** Repository-relative anchor for the container. */
   evidencePath: string;
 }
@@ -562,13 +569,15 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
     const rootPackage = readPackageName(sourceRoot, "");
     const rootName = rootPackage ?? basename(sourceRoot);
     const rootKey = slug(rootName);
+    const hasRootManifest = safeRegularFile(sourceRoot, "package.json") !== undefined;
     for (const file of sourceCandidates) unitByFile.set(file, rustCrateOf(file) ?? rootKey);
     units.push({
       kind: "root",
       dir: rootKey,
       name: rootName,
       ...(rootPackage ? { packageName: rootPackage } : {}),
-      evidencePath: safeRegularFile(sourceRoot, "package.json") ? "package.json" : rootKey,
+      ...(hasRootManifest ? { packageManifest: "package.json" } : {}),
+      evidencePath: hasRootManifest ? "package.json" : rootKey,
     });
     if (rootPackage) unitByPackageName.set(rootPackage, rootKey);
   } else {
@@ -597,7 +606,7 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
       .filter(dir => sourceCandidates.some(file => unitByFile.get(file) === dir));
     for (const dir of membersWithSource) {
       const name = readPackageName(sourceRoot, dir);
-      units.push({ kind: "member", dir, name: name ?? dir, evidencePath: dir, ...(name ? { packageName: name } : {}) });
+      units.push({ kind: "member", dir, name: name ?? dir, evidencePath: dir, ...(name ? { packageName: name } : {}), packageManifest: `${dir}/package.json` });
       if (name) unitByPackageName.set(name, dir);
     }
     if (hasTooling) {
@@ -606,9 +615,18 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
   }
 
   for (const dir of rustCrateDirs) {
-    // Same dir as a (non-skipped) JS member: one Rust unit that also answers to the npm name.
-    const packageName = memberDirs.has(dir) && !skippedMemberSet.has(dir) ? readPackageName(sourceRoot, dir) : undefined;
-    units.push({ kind: "rust", dir, name: dir.replace(/^crates\//, ""), evidencePath: dir, ...(packageName ? { packageName } : {}) });
+    // Same dir as a (non-skipped) JS member: one Rust unit that also carries the
+    // member's npm manifest facts and answers to its npm name.
+    const isJsMember = memberDirs.has(dir) && !skippedMemberSet.has(dir);
+    const packageName = isJsMember ? readPackageName(sourceRoot, dir) : undefined;
+    units.push({
+      kind: "rust",
+      dir,
+      name: dir.replace(/^crates\//, ""),
+      evidencePath: dir,
+      ...(packageName ? { packageName } : {}),
+      ...(isJsMember ? { packageManifest: `${dir}/package.json` } : {}),
+    });
     if (packageName) unitByPackageName.set(packageName, dir);
   }
 

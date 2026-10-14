@@ -139,7 +139,7 @@ function hugeExtraction(fileCount: number) {
   };
   const discovery: Discovery = {
     sourceFiles,
-    units: [{ kind: "member", dir: "pkg/h", name: "@acme/h", packageName: "@acme/h", evidencePath: "pkg/h" }],
+    units: [{ kind: "member", dir: "pkg/h", name: "@acme/h", packageName: "@acme/h", evidencePath: "pkg/h", packageManifest: "pkg/h/package.json" }],
     unitByFile,
     unitByPackageName: new Map([["@acme/h", "pkg/h"]]),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
@@ -1111,7 +1111,7 @@ test("a planted secret in source does not appear in the outbound chatCompletions
   const extraction = extractArchitecture({
     discovery: {
       sourceFiles: ["src/index.ts"],
-      units: [{ kind: "root", dir: "", name: "acme-app", packageName: "acme-app", evidencePath: "package.json" }],
+      units: [{ kind: "root", dir: "", name: "acme-app", packageName: "acme-app", packageManifest: "package.json", evidencePath: "package.json" }],
       unitByFile: new Map([["src/index.ts", ""]]),
       unitByPackageName: new Map([["acme-app", ""]]),
       summary: { singlePackage: true, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
@@ -1182,7 +1182,7 @@ function acmeExtraction() {
   const extraction = extractArchitecture({
     discovery: {
       sourceFiles: ["pkg/a/src/index.ts"],
-      units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" }],
+      units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" }],
       unitByFile: new Map([["pkg/a/src/index.ts", "pkg/a"]]),
       unitByPackageName: new Map([["@acme/a", "pkg/a"]]),
       summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },

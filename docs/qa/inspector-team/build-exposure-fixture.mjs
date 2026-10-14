@@ -9,7 +9,7 @@ const files={
  'src/cli.ts':"import { publicApi } from './index.js';\npublicApi(1);\nexport function neverCalled() { return 7; }\n",
 };
 const sourceFiles=Object.keys(files).filter(x=>x.endsWith('.ts')).sort();
-const discovery={sourceFiles,units:[{kind:'root',dir:'inspector-qa',name:'inspector-qa',packageName:'inspector-qa',evidencePath:'package.json'}],unitByFile:new Map(sourceFiles.map(f=>[f,'inspector-qa'])),unitByPackageName:new Map([['inspector-qa','inspector-qa']]),summary:{singlePackage:true,includedJs:false,skippedJsFiles:0,skippedMembers:[]}};
+const discovery={sourceFiles,units:[{kind:'root',dir:'inspector-qa',name:'inspector-qa',packageName:'inspector-qa',packageManifest:'package.json',evidencePath:'package.json'}],unitByFile:new Map(sourceFiles.map(f=>[f,'inspector-qa'])),unitByPackageName:new Map([['inspector-qa','inspector-qa']]),summary:{singlePackage:true,includedJs:false,skippedJsFiles:0,skippedMembers:[]}};
 const readFile=p=>{if(!(p in files))throw new Error('Missing fixture file '+p);return files[p]};
 const a=buildScanArtifacts({discovery,pin:{commitSha:'1'.repeat(40),treeHash:'2'.repeat(40),generatedAt:'2026-09-12T00:00:00.000Z'},readFile,repositorySlug:'qa-inspector',systemName:'Inspector QA'});
 const out='/tmp/okie-inspector-team/exposure-scan/qa__inspector';mkdirSync(out,{recursive:true});

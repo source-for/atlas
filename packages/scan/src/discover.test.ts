@@ -514,21 +514,22 @@ test("an import of an existing tracked file is never unresolved: single-package 
   });
 });
 
-test("same dir as both a JS member and a Rust crate: one Rust unit that keeps the npm name alias", () => {
+test("same dir as both a JS member and a Rust crate: one Rust unit that keeps the npm name and manifest facts", () => {
   withRepo({
     "package.json": JSON.stringify({ name: "mono", workspaces: ["engine", "app"] }),
     "tsconfig.json": "{}",
     "Cargo.toml": '[workspace]\nmembers = ["engine"]\n',
-    "engine/package.json": JSON.stringify({ name: "@m/engine" }),
+    "engine/package.json": JSON.stringify({ name: "@m/engine", exports: "./src/index.ts", bin: "./src/cli.ts", dependencies: { pg: "^8.0.0" } }),
     "engine/Cargo.toml": '[package]\nname = "engine"\n',
     "engine/src/lib.rs": "pub fn run() {}\n",
-    "engine/src/index.ts": "export const e = 1;\n",
+    "engine/src/index.ts": "import pg from 'pg';\nexport const e = 1;\nexport const pool = pg;\n",
+    "engine/src/cli.ts": "export function main() {}\n",
     "app/package.json": JSON.stringify({ name: "@m/app" }),
     "app/main.ts": "import { e } from '@m/engine';\nexport const a = e;\n",
   }, dir => {
     const discovery = discoverRepository(dir);
     assert.deepEqual(discovery.units.filter(unit => unit.dir === "engine"), [
-      { kind: "rust", dir: "engine", name: "engine", evidencePath: "engine", packageName: "@m/engine" },
+      { kind: "rust", dir: "engine", name: "engine", evidencePath: "engine", packageName: "@m/engine", packageManifest: "engine/package.json" },
     ], "exactly one unit owns the dir");
     assert.equal(discovery.unitByPackageName.get("@m/engine"), "engine");
     assert.equal(discovery.unitByFile.get("engine/src/index.ts"), "engine");
@@ -536,5 +537,11 @@ test("same dir as both a JS member and a Rust crate: one Rust unit that keeps th
     const { snapshot } = scanRepository(dir, { analysisMode: "quick" });
     assert.deepEqual(snapshot.entities.filter(entity => entity.kind === "container").map(entity => entity.id).sort(), ["container:app", "container:engine"]);
     assert.ok(snapshot.relations.some(relation => relation.from === "container:app" && relation.to === "container:engine"), "an import of the npm name resolves to the merged unit");
+    // The merged unit keeps engine/package.json's npm facts (CLA-578 round 3).
+    assert.ok(snapshot.entities.some(entity => entity.id === "external:pg"), "runtime dependency pg becomes an external system");
+    assert.ok(snapshot.relations.some(relation => relation.from === "container:engine" && relation.to === "external:pg"));
+    const exposureOf = (id: string) => snapshot.entities.find(entity => entity.id === id)?.exposure?.map(item => item.kind) ?? [];
+    assert.ok(exposureOf("code:engine-src-index-ts:e").includes("publicApi"), "exports marks the public API");
+    assert.ok(exposureOf("component:engine-src-cli-ts").includes("entryPoint"), "bin marks the entry point");
   });
 });

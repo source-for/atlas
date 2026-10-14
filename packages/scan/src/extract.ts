@@ -873,13 +873,12 @@ interface ExternalEmitInput {
   addRelation: (fromKey: string, toKey: string, desiredId: string, naturalKey: string, evidence: ArchitectureExtractionEvidence) => void;
 }
 
-/** package.json manifests that declare runtime deps: the root plus every workspace member. */
+/** package.json manifests that declare runtime deps: the root plus every unit's own manifest. */
 function dependencyManifestPaths(discovery: Discovery): string[] {
-  const memberManifests = discovery.units
-    .filter(unit => unit.kind === "member")
-    .map(unit => `${unit.dir}/package.json`)
+  const unitManifests = discovery.units
+    .flatMap(unit => unit.packageManifest && unit.packageManifest !== "package.json" ? [unit.packageManifest] : [])
     .sort();
-  return ["package.json", ...memberManifests];
+  return ["package.json", ...unitManifests];
 }
 
 /**
@@ -1395,8 +1394,9 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
     if (value && typeof value === "object") return Object.values(value as Record<string, unknown>).flatMap(stringsIn);
     return [];
   };
-  for (const unit of discovery.units.filter(unit => unit.kind === "member" || unit.kind === "root")) {
-    const manifestPath = unit.kind === "root" ? "package.json" : `${unit.dir}/package.json`;
+  for (const unit of discovery.units) {
+    const manifestPath = unit.packageManifest;
+    if (!manifestPath) continue;
     let manifest: Record<string, unknown>;
     try { manifest = JSON.parse(readFile(manifestPath)) as Record<string, unknown>; } catch { continue; }
     const publicPaths = Object.hasOwn(manifest, "exports") ? stringsIn(manifest.exports) : [...stringsIn(manifest.main), ...stringsIn(manifest.types)];

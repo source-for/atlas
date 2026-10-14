@@ -99,8 +99,8 @@ function syntheticDiscovery(): Discovery {
   return {
     sourceFiles: ["pkg/a/src/index.ts", "pkg/b/src/main.ts"],
     units: [
-      { kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" },
-      { kind: "member", dir: "pkg/b", name: "@acme/b", packageName: "@acme/b", evidencePath: "pkg/b" },
+      { kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" },
+      { kind: "member", dir: "pkg/b", name: "@acme/b", packageName: "@acme/b", evidencePath: "pkg/b", packageManifest: "pkg/b/package.json" },
     ],
     unitByFile: new Map([["pkg/a/src/index.ts", "pkg/a"], ["pkg/b/src/main.ts", "pkg/b"]]),
     unitByPackageName: new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"]]),
@@ -168,8 +168,8 @@ test("extractArchitecture derives edges from dynamic import('…') the static pa
   const discovery: Discovery = {
     sourceFiles: ["pkg/a/src/index.ts", "pkg/b/src/main.ts", "pkg/b/src/panel.ts"],
     units: [
-      { kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" },
-      { kind: "member", dir: "pkg/b", name: "@acme/b", packageName: "@acme/b", evidencePath: "pkg/b" },
+      { kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" },
+      { kind: "member", dir: "pkg/b", name: "@acme/b", packageName: "@acme/b", evidencePath: "pkg/b", packageManifest: "pkg/b/package.json" },
     ],
     unitByFile: new Map([
       ["pkg/a/src/index.ts", "pkg/a"], ["pkg/b/src/main.ts", "pkg/b"], ["pkg/b/src/panel.ts", "pkg/b"],
@@ -264,7 +264,7 @@ test("codeSurface 'public' keeps only exported declarations as code entities; de
 function symbolDiscovery(): Discovery {
   return {
     sourceFiles: ["pkg/a/src/a.ts", "pkg/a/src/b.ts"],
-    units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" }],
+    units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" }],
     unitByFile: new Map([["pkg/a/src/a.ts", "pkg/a"], ["pkg/a/src/b.ts", "pkg/a"]]),
     unitByPackageName: new Map([["@acme/a", "pkg/a"]]),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
@@ -361,7 +361,7 @@ test("symbol pass resolves default, namespace and re-export aliases while respec
   };
   const discovery: Discovery = {
     sourceFiles: ["pkg/a/src/a.ts", "pkg/a/src/barrel.ts", "pkg/a/src/cycle.ts", "pkg/a/src/b.ts"],
-    units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" }],
+    units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" }],
     unitByFile: new Map([["pkg/a/src/a.ts", "pkg/a"], ["pkg/a/src/barrel.ts", "pkg/a"], ["pkg/a/src/cycle.ts", "pkg/a"], ["pkg/a/src/b.ts", "pkg/a"]]),
     unitByPackageName: new Map([["@acme/a", "pkg/a"]]),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
@@ -422,7 +422,7 @@ test("symbol resolution keeps outer calls through block consts, but respects fun
   const paths = Object.keys(files).filter(path => path.endsWith(".ts"));
   const discovery: Discovery = {
     sourceFiles: paths,
-    units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" }],
+    units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" }],
     unitByFile: new Map(paths.map(path => [path, "pkg/a"])),
     unitByPackageName: new Map([["@acme/a", "pkg/a"]]),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
@@ -443,7 +443,7 @@ test("manifest exposure distinguishes module exports, public API re-exports, and
     "pkg/a/src/cli.ts": "export function run() {}\n",
   };
   const paths = ["pkg/a/src/internal.ts", "pkg/a/src/index.ts", "pkg/a/src/cli.ts"];
-  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" }], unitByFile: new Map(paths.map(path => [path, "pkg/a"])), unitByPackageName: new Map([["@acme/a", "pkg/a"]]), summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" }], unitByFile: new Map(paths.map(path => [path, "pkg/a"])), unitByPackageName: new Map([["@acme/a", "pkg/a"]]), summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
   const extraction = extractArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
   assert.deepEqual(validateArchitectureExtraction(extraction), []);
   const byId = new Map(extraction.entities.map(entity => [entity.id, entity]));
@@ -473,7 +473,7 @@ test("a relative import escaping the discovered set maps to the owning unit as a
   const discovery: Discovery = {
     sourceFiles: ["apps/web/src/adapter.ts"],
     units: [
-      { kind: "member", dir: "apps/web", name: "@acme/web", packageName: "@acme/web", evidencePath: "apps/web" },
+      { kind: "member", dir: "apps/web", name: "@acme/web", packageName: "@acme/web", evidencePath: "apps/web", packageManifest: "apps/web/package.json" },
       { kind: "rust", dir: "crates/engine-wasm", name: "engine-wasm", evidencePath: "crates/engine-wasm" },
     ],
     unitByFile: new Map([["apps/web/src/adapter.ts", "apps/web"]]),
@@ -570,7 +570,7 @@ test("observed language tags land on system, containers, and file components (CL
   const discovery: Discovery = {
     sourceFiles: ["pkg/app/src/a.ts", "pkg/app/src/widget.tsx", "scripts/build.mjs", "crates/engine/src/lib.rs"],
     units: [
-      { kind: "member", dir: "pkg/app", name: "@acme/app", packageName: "@acme/app", evidencePath: "pkg/app" },
+      { kind: "member", dir: "pkg/app", name: "@acme/app", packageName: "@acme/app", evidencePath: "pkg/app", packageManifest: "pkg/app/package.json" },
       { kind: "tooling", dir: "tooling", name: "Build tooling", evidencePath: "scripts" },
       { kind: "rust", dir: "crates/engine", name: "engine", evidencePath: "crates/engine" },
     ],
@@ -872,7 +872,7 @@ test("duplicates overlay writes edges onto existing snapshot ids only", () => {
 function exposureFixture(manifest: object, sources: Record<string, string>, root = false) {
   const dir = root ? "synthetic-root" : "pkg/a";
   const paths = Object.keys(sources);
-  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: root ? "root" : "member", dir, name: "a", packageName: "a", evidencePath: root ? "package.json" : dir }], unitByFile: new Map(paths.map(path => [path, dir])), unitByPackageName: new Map([["a", dir]]), summary: { singlePackage: root, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: root ? "root" : "member", dir, name: "a", packageName: "a", packageManifest: root ? "package.json" : `${dir}/package.json`, evidencePath: root ? "package.json" : dir }], unitByFile: new Map(paths.map(path => [path, dir])), unitByPackageName: new Map([["a", dir]]), summary: { singlePackage: root, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
   return extractArchitecture({ discovery, readFile: path => path === (root ? "package.json" : "pkg/a/package.json") ? JSON.stringify(manifest) : sources[path]!, systemName: "Acme", systemSlug: "acme" });
 }
 test("export-star-only package entrypoints expose reachable public declarations", () => {
@@ -919,8 +919,8 @@ test("unresolved relative imports are recorded with path, line and specifier: so
   };
   const paths = ["pkg/a/src/index.ts", "pkg/a/src/ok.ts", "pkg/b/src/z.ts"];
   const units = [
-    { kind: "member" as const, dir: "pkg/a", name: "a", evidencePath: "pkg/a" },
-    { kind: "member" as const, dir: "pkg/b", name: "b", evidencePath: "pkg/b" },
+    { kind: "member" as const, dir: "pkg/a", name: "a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" },
+    { kind: "member" as const, dir: "pkg/b", name: "b", evidencePath: "pkg/b", packageManifest: "pkg/b/package.json" },
   ];
   // Tracked but not source: an asset and a `.js` the TS-repo rule skipped.
   const trackedFiles = new Set([...paths, "pkg/a/src/logo.svg", "pkg/a/src/legacy.js"]);
@@ -953,7 +953,7 @@ test("queried relative imports resolve by their path: existing files record an e
   };
   const paths = ["pkg/a/src/index.ts", "pkg/a/src/worker.ts"];
   const trackedFiles = new Set([...paths, "pkg/a/src/logo.svg", "pkg/a/src/text.txt", "pkg/a/src/frag.css"]);
-  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "member", dir: "pkg/a", name: "a", evidencePath: "pkg/a" }], unitByFile: new Map(paths.map(path => [path, "pkg/a"])), unitByPackageName: new Map(), trackedFiles, summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "member", dir: "pkg/a", name: "a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" }], unitByFile: new Map(paths.map(path => [path, "pkg/a"])), unitByPackageName: new Map(), trackedFiles, summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
   const collected = collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
   assert.deepEqual(collected.unresolvedRelativeImports, [
     { path: "pkg/a/src/index.ts", line: 4, specifier: "./gone.svg?url" },

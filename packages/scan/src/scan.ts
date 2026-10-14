@@ -375,8 +375,8 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
       analysisMode: params.analysisMode ?? 'quick',
       ...(params.languageAnalysis ? { languageAnalysis: params.languageAnalysis } : {}),
       ...(params.dependencyInputs ? { manifestInputs: params.dependencyInputs } : {}),
-      // A crate unit with a packageName is also a JS workspace member (same dir).
-      workspaceDirectories: discovery.units.filter(unit => unit.kind === 'member' || (unit.kind === 'rust' && unit.packageName)).map(unit => unit.dir),
+      // Every non-root unit with its own package.json is a JS workspace member (incl. a same-dir crate).
+      workspaceDirectories: discovery.units.filter(unit => unit.kind !== 'root' && unit.packageManifest).map(unit => unit.dir),
     }),
     ...(params.includeSource ? { sources: portableSourcePaths(snapshot, discovery).map(path => ({ path, text: readFile(path) })) } : {}),
     ...(enrichmentReport ? { enrichmentReport } : {}),

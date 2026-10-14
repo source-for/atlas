@@ -37,7 +37,7 @@ const files: Record<string, string> = {
 function discovery(): Discovery {
   return {
     sourceFiles: ["pkg/a/src/index.ts", "pkg/a/src/long.ts", "pkg/a/src/wide.ts"],
-    units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a" }],
+    units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" }],
     unitByFile: new Map([
       ["pkg/a/src/index.ts", "pkg/a"],
       ["pkg/a/src/long.ts", "pkg/a"],
