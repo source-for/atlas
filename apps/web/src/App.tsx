@@ -7115,11 +7115,10 @@ export function App() {
           </div>
 
           <Minimap camera={camera} onPan={(next, phase) => {
+            // Grabbing the minimap ends any canvas pan still settling, even while a level loads.
+            if (phase === 'start') panSettleCancelRef.current?.();
             if (levelScenePreparationPending(levelCompileAbortRef.current)) { setCamera(() => next); return; }
-            if (phase === 'start') {
-              panSettleCancelRef.current?.();
-              panStartCameraRef.current = currentScanPanStart();
-            }
+            if (phase === 'start') panStartCameraRef.current = currentScanPanStart();
             if (phase === 'move') {
               beginUserCameraIntent();
               setCamera(() => next);

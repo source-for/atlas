@@ -585,3 +585,46 @@ it('browser Back inside a pan\'s lens settle wins: the restored entry keeps its 
   expect(captured.camera.x).toBeCloseTo(seededX, 1);
   expect(urlCamera().x).toBeCloseTo(seededX, 1);
 });
+
+it('grabbing the minimap while a level loads drops a canvas pan whose lens settle is still pending', async () => {
+  await openFileA();
+  await reopenFromUrl();
+  const entries = window.history.length;
+  let releaseLoad!: () => void;
+  const loading = new Promise<void>(done => { releaseLoad = done; });
+  const realEnsure = fixture.ensureNeighborhood.bind(fixture);
+  vi.spyOn(fixture, 'ensureNeighborhood').mockImplementation(async (...args: Parameters<typeof realEnsure>) => { await loading; return realEnsure(...args); });
+  const levels = host.querySelectorAll<HTMLButtonElement>('.level-rail button');
+  await act(async () => levels[levels.length - 1]!.click()); await settle();
+  // A pan made while the level loads; its 160 ms lens settle is pending.
+  await dragToCentre(cardCentre(FILE_B));
+  const inset = host.querySelector<SVGSVGElement>('[data-testid="minimap-inset"]')!;
+  vi.spyOn(inset, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 168, 100));
+  if (!('setPointerCapture' in inset)) Object.assign(inset, { setPointerCapture() {}, releasePointerCapture() {} });
+  await act(async () => { inset.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 9, pointerType: 'mouse', button: 0, clientX: 84, clientY: 50, bubbles: true })); });
+  await act(async () => releaseLoad()); await settle(); await settle();
+  await idle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  expect(window.history.length).toBe(entries);
+});
+
+it('a level navigation that finishes inside a pan\'s lens settle keeps its own view: no old pan camera, no file change', async () => {
+  await openFileA();
+  await reopenFromUrl();
+  let releaseLoad!: () => void;
+  const loading = new Promise<void>(done => { releaseLoad = done; });
+  const realEnsure = fixture.ensureNeighborhood.bind(fixture);
+  vi.spyOn(fixture, 'ensureNeighborhood').mockImplementation(async (...args: Parameters<typeof realEnsure>) => { await loading; return realEnsure(...args); });
+  // A pan onto the other file; its 160 ms lens settle is pending.
+  await dragToCentre(cardCentre(FILE_B));
+  const levels = host.querySelectorAll<HTMLButtonElement>('.level-rail button');
+  await act(async () => levels[levels.length - 1]!.click()); await settle();
+  const panEnd = { ...captured.camera };
+  await act(async () => releaseLoad()); await settle(); await settle();
+  await idle();
+  // The level lands on A with its own framing; the old pan neither re-roots nor writes its camera.
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  expect(claims().urlLens).not.toContain(FILE_B);
+  expect(Math.abs(captured.camera.x - panEnd.x)).toBeGreaterThan(1);
+  expectCamera(urlCamera(), captured.camera);
+});
