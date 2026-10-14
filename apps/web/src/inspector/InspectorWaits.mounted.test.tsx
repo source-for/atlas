@@ -211,46 +211,70 @@ describe('open inside a non-resident child', () => {
   // A is compiling when the reader leaves it (Back, the control that stays live
   // over the pending view) and opens B; A's compile is still outstanding while
   // B's runs. Released in either order, nothing of A is ever drawn again.
-  it.each([['A then B', 0, 1], ['B then A', 1, 0]] as const)('ends on B when two child compiles overlap, released %s', async (_order, firstIndex, secondIndex) => {
-    const compiles = await openContainer();
-    await click(childButton('component:web-shell'));
-    await settle();
-    await act(async () => compiles[0]!.release());
-    await settle();
-    await click(childButton('container:web-app'));
-    await settle();
-    expect(entityTitle()).toBe('Atlas web app');
-    await click(childButton('component:web-navigation'));
-    await settle();
-    expect(pendingTitle()).toBe('Navigation and history');
-    await click('[data-testid="inspector-back"]');
-    await settle();
-    expect(entityTitle()).toBe('Atlas web app');
-    const app = host.querySelector('[data-testid="atlas-app"]')!;
-    const seen = new Set<string>();
-    const record = () => { for (const value of [pendingTitle(), entityTitle(), app.getAttribute('data-selected-entity-id')]) if (value) seen.add(value); };
-    const observer = new MutationObserver(record);
-    observer.observe(host, { attributes: true, childList: true, subtree: true, characterData: true });
-    // B has not been opened before, so its scene is not cached and it compiles.
-    await click(childButton('component:web-stories'));
-    await settle();
-    record();
-    const pending = compiles.slice(1);
-    expect(pending.map(compile => compile.focus)).toEqual(['component:web-navigation', 'component:web-stories']);
-    expect(pendingTitle()).toBe(storiesName);
-    await act(async () => pending[firstIndex]!.release());
-    await settle();
-    record();
-    if (firstIndex === 0) expect(pendingTitle()).toBe(storiesName);
-    await act(async () => pending[secondIndex]!.release());
-    await settle();
-    record();
-    observer.disconnect();
-    expect(pendingTitle()).toBeUndefined();
-    expect(entityTitle()).toBe(storiesName);
-    expect(app.getAttribute('data-selected-entity-id')).toBe('component:web-stories');
-    expect(seen).not.toContain('Navigation and history');
-    expect(seen).not.toContain('component:web-navigation');
+  //
+  // History is set up so it does not depend on camera-flight timing: boot on the
+  // shell (no inspector flight has run), so the parent click records exactly one
+  // entry, and Back pops that entry whatever the motion preference or load.
+  describe.each(['default motion', 'reduced motion'] as const)('with %s', motion => {
+    it.each([['A then B', 0, 1], ['B then A', 1, 0]] as const)('ends on B when two child compiles overlap, released %s', async (_order, firstIndex, secondIndex) => {
+      if (motion === 'reduced motion') {
+        const matchMedia = window.matchMedia.bind(window);
+        vi.spyOn(window, 'matchMedia').mockImplementation(query => {
+          const list = matchMedia(query);
+          if (query.includes('prefers-reduced-motion: reduce')) Object.defineProperty(list, 'matches', { value: true });
+          return list;
+        });
+      }
+      await mount('/?fixture=scan&backend=canvas2d&sel=component%3Aweb-shell');
+      await click('#details-tab');
+      expect(entityTitle()).toBe('Application shell');
+      expect(host.querySelector('[data-testid="inspector-back"]')).toBeNull();
+      resident.enabled = false;
+      const compiles: Array<{ focus: string; release: () => void }> = [];
+      vi.spyOn(fixture, 'createSceneAsync').mockImplementation((focus, previous, residency) => new Promise<AtlasScene>(done => {
+        compiles.push({ focus, release: () => done(fixture.createScene(focus, previous, residency)) });
+      }));
+      // The parent link is a resident hierarchy navigation: history = [shell].
+      await click(childButton('container:web-app'));
+      await settle();
+      expect(entityTitle()).toBe('Atlas web app');
+      await click(childButton('component:web-navigation'));
+      await settle();
+      expect(compiles.map(compile => compile.focus)).toEqual(['component:web-navigation']);
+      expect(pendingTitle()).toBe('Navigation and history');
+      await click('[data-testid="inspector-back"]');
+      await settle();
+      expect(pendingTitle()).toBeUndefined();
+      expect(entityTitle()).toBe('Application shell');
+      // Back to the container through the shell's parent link (resident, synchronous).
+      await click(childButton('container:web-app'));
+      await settle();
+      expect(entityTitle()).toBe('Atlas web app');
+      const app = host.querySelector('[data-testid="atlas-app"]')!;
+      const seen = new Set<string>();
+      const record = () => { for (const value of [pendingTitle(), entityTitle(), app.getAttribute('data-selected-entity-id')]) if (value) seen.add(value); };
+      const observer = new MutationObserver(record);
+      observer.observe(host, { attributes: true, childList: true, subtree: true, characterData: true });
+      await click(childButton('component:web-stories'));
+      await settle();
+      record();
+      // Both compiles are outstanding: A was cancelled by Back but its compile never returned.
+      expect(compiles.map(compile => compile.focus)).toEqual(['component:web-navigation', 'component:web-stories']);
+      expect(pendingTitle()).toBe(storiesName);
+      await act(async () => compiles[firstIndex]!.release());
+      await settle();
+      record();
+      if (firstIndex === 0) expect(pendingTitle()).toBe(storiesName);
+      await act(async () => compiles[secondIndex]!.release());
+      await settle();
+      record();
+      observer.disconnect();
+      expect(pendingTitle()).toBeUndefined();
+      expect(entityTitle()).toBe(storiesName);
+      expect(app.getAttribute('data-selected-entity-id')).toBe('component:web-stories');
+      expect(seen).not.toContain('Navigation and history');
+      expect(seen).not.toContain('component:web-navigation');
+    });
   });
 
   it('drops the pending child when Back is used during the wait', async () => {
