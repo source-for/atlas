@@ -139,4 +139,10 @@ test("CLA-586: compiler messages name scanned files root-relative and other loca
     "<installation>/node_modules/x/index.d.ts, <home>/other and <home>/repo-old/a.ts",
   );
   assert.equal(relativizeCompilerMessage(`${root}-sibling/a.ts`, root), `${root}-sibling/a.ts`);
+  // Anything else under the scan's temporary checkout is root-relative too, at any depth.
+  assert.equal(
+    relativizeCompilerMessage(`Cannot read file '/work/okie-committed-Ab12/missing/tsconfig.json'; '/work/okie-committed-Ab12'; ${root}/src`, root, labelled, "/work/okie-committed-Ab12"),
+    "Cannot read file '../missing/tsconfig.json'; '..'; src",
+  );
+  assert.equal(relativizeCompilerMessage("/gh/okie-scan-gh-x/repo.tar.gz /gh/okie-scan-gh-xy", "/gh/okie-scan-gh-x/tree/top", [], "/gh/okie-scan-gh-x"), "../../repo.tar.gz /gh/okie-scan-gh-xy");
 });

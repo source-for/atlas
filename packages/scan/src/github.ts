@@ -375,6 +375,8 @@ function acquisitionError(src: GithubSourceRef, result: { status: number; rateLi
 export interface AcquiredTree {
   /** Absolute path to the extracted repository root (the tarball's single top-level dir). */
   root: string;
+  /** The temporary directory holding the tarball and `root`; removed by `cleanup`. */
+  checkoutRoot: string;
   /** Escaping / dangling / looping symlinks removed after extraction (in-repo links are kept); see detachSymlinks. */
   skipped: SkippedTreeEntries;
   cleanup: () => void;
@@ -427,7 +429,7 @@ export async function acquireGithubTree(
       throw new GithubAcquisitionError(`Failed to extract tarball: ${scrubGithubTokens(String(error))}`);
     }
     const skipped = detachSymlinks(root);
-    return { root, skipped, cleanup };
+    return { root, checkoutRoot: workDir, skipped, cleanup };
   } catch (error) {
     cleanup();
     throw error;

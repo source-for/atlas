@@ -450,13 +450,13 @@ function skippedJsLimitations(summary: DiscoverySummary): string[] {
 }
 
 /** Runs the local scan pipeline against an already-acquired committed tree. */
-function analyzeLanguages(root: string, discovery: Discovery, mode: ScanOptions['analysisMode'], installationRoot?: string, rustIndexCacheDir?: string): LanguageAnalysis | undefined {
+function analyzeLanguages(root: string, discovery: Discovery, mode: ScanOptions['analysisMode'], installationRoot?: string, rustIndexCacheDir?: string, checkoutRoot?: string): LanguageAnalysis | undefined {
   if (mode !== 'full') return undefined;
-  const analyses = [analyzeTypeScript(root, discovery.sourceFiles, installationRoot), analyzeRust(root, discovery.sourceFiles, rustIndexCacheDir ? { indexCacheDir: rustIndexCacheDir } : {})];
+  const analyses = [analyzeTypeScript(root, discovery.sourceFiles, installationRoot, checkoutRoot), analyzeRust(root, discovery.sourceFiles, rustIndexCacheDir ? { indexCacheDir: rustIndexCacheDir } : {})];
   return { schemaVersion: 1, definitions: analyses.flatMap(item => item.definitions), references: analyses.flatMap(item => item.references), modules: analyses.flatMap(item => item.modules), externalReferences: analyses.flatMap(item => item.externalReferences ?? []), coverage: analyses.flatMap(item => item.coverage) };
 }
 
-export function scanAcquiredRepository(acquired: Pick<AcquiredCommittedTree, "root" | "pin" | "sourceName" | "installationRoot"> & { skipped?: SkippedTreeEntries }, options: ScanOptions = {}): ScanArtifacts {
+export function scanAcquiredRepository(acquired: Pick<AcquiredCommittedTree, "root" | "pin" | "sourceName" | "installationRoot"> & { checkoutRoot?: string; skipped?: SkippedTreeEntries }, options: ScanOptions = {}): ScanArtifacts {
   const sourceRoot = acquired.root;
   const packageName = rootPackageName(sourceRoot);
   const fallbackName = acquired.sourceName;
@@ -470,7 +470,7 @@ export function scanAcquiredRepository(acquired: Pick<AcquiredCommittedTree, "ro
   // Read manifests/lockfiles BEFORE analyzers run: cargo/rust-analyzer may write a
   // Cargo.lock into the acquired tree, which must never be cited as committed evidence.
   const dependencyInputs = collectDependencyInputs(discovery.sourceFiles, readFile);
-  const languageAnalysis = analyzeLanguages(sourceRoot, discovery, options.analysisMode, acquired.installationRoot, options.rustIndexCacheDir);
+  const languageAnalysis = analyzeLanguages(sourceRoot, discovery, options.analysisMode, acquired.installationRoot, options.rustIndexCacheDir, acquired.checkoutRoot);
   return buildScanArtifacts({
     dependencyInputs,
     discovery,
@@ -528,7 +528,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
       skippedEntries: acquired.skipped,
     });
     const dependencyInputs = collectDependencyInputs(discovery.sourceFiles, readFile);
-    const languageAnalysis = analyzeLanguages(acquired.root, discovery, options.analysisMode, undefined, options.rustIndexCacheDir);
+    const languageAnalysis = analyzeLanguages(acquired.root, discovery, options.analysisMode, undefined, options.rustIndexCacheDir, acquired.checkoutRoot);
     if (discovery.sourceFiles.length === 0) {
       throw new Error(
         `No scannable source files in ${source.owner}/${source.repo} at ${commit.sha.slice(0, 12)}. ` +

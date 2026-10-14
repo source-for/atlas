@@ -25,27 +25,36 @@ export function typedPackageOf(name: string): string | undefined {
 
 /**
  * Compiler messages name absolute paths (`File '/tmp/okie-committed-x/repo/lib/b.ts' is not under 'rootDir' …`).
- * Paths inside `root` become root-relative (`root` itself `.`); the other prefixes become `<label>`, longest first,
- * so a limitation never depends on the temporary checkout or where the repository lives.
+ * Paths inside `root` become root-relative (`root` itself `.`), and so does anything else under `checkoutRoot`, the
+ * scan's own temporary directory (`../missing/tsconfig.json` for a parent project reference); the other prefixes
+ * become `<label>`. Longest prefix first, so a limitation never depends on the temporary checkout or where the
+ * repository lives.
  */
-export function relativizeCompilerMessage(text: string, root: string, labelled: ReadonlyArray<readonly [label: string, path: string | undefined]> = []): string {
+export function relativizeCompilerMessage(text: string, root: string, labelled: ReadonlyArray<readonly [label: string, path: string | undefined]> = [], checkoutRoot?: string): string {
   const forms = (path: string): string[] => {
     let physical = path;
     try { physical = realpathSync(path); } catch { /* keep the lexical path */ }
     return [...new Set([path, physical].map(form => form.split(sep).join("/").replace(/\/+$/, "")).filter(Boolean))];
   };
-  const prefixes = [...forms(root).map(path => [path, ""] as const), ...labelled.flatMap(([label, path]) => path ? forms(path).map(form => [form, `<${label}>`] as const) : [])]
-    .sort((left, right) => right[0].length - left[0].length);
-  for (const [path, label] of prefixes) {
+  // [prefix, bare replacement, replacement before a `/`]
+  const prefixes: (readonly [string, string, string])[] = [
+    ...forms(root).map(path => [path, ".", ""] as const),
+    ...(checkoutRoot ? forms(checkoutRoot).map(path => {
+      const up = relative(root, checkoutRoot).split(sep).join("/");
+      return [path, up, `${up}/`] as const;
+    }) : []),
+    ...labelled.flatMap(([label, path]) => path ? forms(path).map(form => [form, `<${label}>`, `<${label}>/`] as const) : []),
+  ].sort((left, right) => right[0].length - left[0].length);
+  for (const [path, bare, beforeSlash] of prefixes) {
     // The prefix must end at a path boundary: `/repo` never rewrites `/repo-other`.
     const pattern = new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:/|(?=['"\\s,:;)\\]]|$))`, "g");
-    text = text.replace(pattern, match => label ? `${label}${match.endsWith("/") ? "/" : ""}` : match.endsWith("/") ? "" : ".");
+    text = text.replace(pattern, match => match.endsWith("/") ? beforeSlash : bare);
   }
   return text;
 }
 
 /** Real project-aware compiler analysis; unresolved dependencies remain explicit limitations. */
-export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly string[], installationRoot?: string): LanguageAnalysis {
+export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly string[], installationRoot?: string, checkoutRoot?: string): LanguageAnalysis {
   const root = resolve(sourceRoot);
   const paths: string[] = [];
   const configs: string[] = [];
@@ -75,7 +84,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
   };
   const allowed = new Set((discoveredFiles ?? paths.map(relativePath)).filter(path => /\.[cm]?[jt]sx?$/.test(path)).map(path => resolve(root, path)));
   const message = (diagnostic: ts.Diagnostic | ts.DiagnosticMessageChain): string =>
-    relativizeCompilerMessage(ts.flattenDiagnosticMessageText(diagnostic.messageText, " "), root, [["installation", installationRoot], ["home", homedir()]]);
+    relativizeCompilerMessage(ts.flattenDiagnosticMessageText(diagnostic.messageText, " "), root, [["installation", installationRoot], ["home", homedir()]], checkoutRoot);
   const result: LanguageAnalysis = { schemaVersion: 1, definitions: [], references: [], modules: [], coverage: [] };
   const limitations = new Set<string>();
   const indexed = new Set<string>();

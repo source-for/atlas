@@ -127,11 +127,12 @@ test("CLA-586: two full scans of one commit, checked out under different temp ro
     execFileSync("git", args, { cwd: source, env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH ?? ""}` } });
   };
   try {
-    // Compiler messages that name absolute files: a config matching no inputs (TS18003)
-    // and an import from outside rootDir (TS6059, which also names package.json).
+    // Compiler messages that name absolute files: a config matching no inputs (TS18003),
+    // an import from outside rootDir (TS6059, which also names package.json), and a
+    // project reference to a sibling of the checkout (a config read error and TS6053).
     const files: Record<string, string> = {
       "package.json": '{"name":"stable-full-scan","type":"module"}\n',
-      "tsconfig.json": '{"compilerOptions":{"rootDir":"src","outDir":"dist","strict":true,"module":"NodeNext","moduleResolution":"NodeNext"},"include":["src","lib"]}\n',
+      "tsconfig.json": '{"compilerOptions":{"rootDir":"src","outDir":"dist","strict":true,"module":"NodeNext","moduleResolution":"NodeNext"},"include":["src","lib"],"references":[{"path":"../missing"}]}\n',
       "empty/tsconfig.json": '{"include":["nothing/**/*.ts"]}\n',
       "src/a.ts": 'import { b } from "../lib/b.js";\nexport const a: number = b + 1;\n',
       "lib/b.ts": "export const b = 1;\n",
@@ -166,6 +167,8 @@ test("CLA-586: two full scans of one commit, checked out under different temp ro
     const atlas = first.written["atlas.okie.json"]!;
     assert.match(atlas, /No inputs were found in config file 'empty\/tsconfig\.json'/);
     assert.match(atlas, /TS6059: File 'lib\/b\.ts' is not under 'rootDir' 'src'/);
+    assert.match(atlas, /Cannot read file '\.\.\/missing\/tsconfig\.json'/);
+    assert.match(atlas, /TS6053: File '\.\.\/missing' not found/);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
