@@ -1,8 +1,11 @@
 import ts from "typescript";
 import { readFileSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { AnalysisDefinition, AnalysisExternalReference, AnalysisLocation, LanguageAnalysis } from "./language-analysis.js";
 import { dependencyContext } from './dependency-context.js';
+import { labelledPrefix, pathPrefixRewriter, type PathPrefix } from './path-prefixes.js';
+import { scanWorkDir } from './scan-env.js';
 
 /** The package owning a declaration file: the segment after the LAST `node_modules/` (pnpm `.pnpm/…` layout safe). */
 export function nodeModulesPackageOf(fileName: string): string | undefined {
@@ -22,8 +25,48 @@ export function typedPackageOf(name: string): string | undefined {
   return scoped ? `@${scoped[1]}/${scoped[2]}` : match[1];
 }
 
+/** Where a scan's compiler runs: the scanned root, and the machine directories around it. */
+export interface CompilerMessagePaths {
+  /** The scan's own temporary directory holding `root` (see AcquiredCommittedTree.checkoutRoot). */
+  checkoutRoot?: string;
+  /** The scanner work dir holding every checkout (scanWorkDir). */
+  workRoot?: string;
+  installationRoot?: string;
+  home?: string;
+}
+
+/**
+ * Compiler messages name absolute paths (`File '/tmp/okie-committed-x/repo/lib/b.ts' is not under 'rootDir' …`).
+ * Paths inside `root` become root-relative (`root` itself `.`). So do paths under the checkout or work dir that
+ * contains `root` (`../missing/tsconfig.json`, `../../okie-base.json`): only the repository's own relative
+ * references reach them. The installation root and home become `<label>`, as does a work dir not containing `root`.
+ * Built once per analysis; a limitation never depends on the temporary checkout or where the repository lives.
+ */
+export function compilerMessageRelativizer(root: string, paths: CompilerMessagePaths = {}): (text: string) => string {
+  const inside = (directory: string): boolean => {
+    const up = relative(directory, root);
+    return up !== "" && up !== ".." && !up.startsWith(`..${sep}`) && !isAbsolute(up);
+  };
+  const upTo = (directory: string): PathPrefix => {
+    const up = relative(root, directory).split(sep).join("/");
+    return { path: directory, bare: up, beforeSlash: `${up}/` };
+  };
+  return pathPrefixRewriter([
+    { path: root, bare: ".", beforeSlash: "" },
+    ...(paths.checkoutRoot && inside(paths.checkoutRoot) ? [upTo(paths.checkoutRoot)] : []),
+    ...(paths.workRoot ? [inside(paths.workRoot) ? upTo(paths.workRoot) : labelledPrefix("work-root", paths.workRoot)] : []),
+    labelledPrefix("installation", paths.installationRoot),
+    labelledPrefix("home", paths.home),
+  ]);
+}
+
+/** One-off form of {@link compilerMessageRelativizer}. */
+export function relativizeCompilerMessage(text: string, root: string, paths: CompilerMessagePaths = {}): string {
+  return compilerMessageRelativizer(root, paths)(text);
+}
+
 /** Real project-aware compiler analysis; unresolved dependencies remain explicit limitations. */
-export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly string[], installationRoot?: string): LanguageAnalysis {
+export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly string[], installationRoot?: string, checkoutRoot?: string): LanguageAnalysis {
   const root = resolve(sourceRoot);
   const paths: string[] = [];
   const configs: string[] = [];
@@ -52,6 +95,8 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
     return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
   };
   const allowed = new Set((discoveredFiles ?? paths.map(relativePath)).filter(path => /\.[cm]?[jt]sx?$/.test(path)).map(path => resolve(root, path)));
+  const relativize = compilerMessageRelativizer(root, { ...(checkoutRoot ? { checkoutRoot } : {}), workRoot: scanWorkDir(), ...(installationRoot ? { installationRoot } : {}), home: homedir() });
+  const message = (diagnostic: ts.Diagnostic | ts.DiagnosticMessageChain): string => relativize(ts.flattenDiagnosticMessageText(diagnostic.messageText, " "));
   const result: LanguageAnalysis = { schemaVersion: 1, definitions: [], references: [], modules: [], coverage: [] };
   const limitations = new Set<string>();
   const indexed = new Set<string>();
@@ -64,10 +109,10 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
   const loadConfig = (path: string): void => {
     if (projects.has(path)) return;
     const read = ts.readConfigFile(path, ts.sys.readFile);
-    if (read.error) { limitations.add(`${relativePath(path)}: ${ts.flattenDiagnosticMessageText(read.error.messageText, " ")}`); return; }
+    if (read.error) { limitations.add(`${relativePath(path)}: ${message(read.error)}`); return; }
     const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, dirname(path), undefined, path);
     projects.set(path, parsed);
-    for (const diagnostic of parsed.errors) limitations.add(`${relativePath(path)}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, " ")}`);
+    for (const diagnostic of parsed.errors) limitations.add(`${relativePath(path)}: ${message(diagnostic)}`);
     for (const reference of parsed.projectReferences ?? []) loadConfig(ts.resolveProjectReferencePath(reference));
   };
   for (const config of configs) loadConfig(config);
@@ -143,7 +188,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
     for (const diagnostic of [...program.getOptionsDiagnostics(), ...program.getSyntacticDiagnostics(), ...program.getSemanticDiagnostics()]) {
       if (diagnostic.category !== ts.DiagnosticCategory.Error) continue;
       const prefix = diagnostic.file && inside(diagnostic.file.fileName) ? relativePath(diagnostic.file.fileName) : config === "<inferred>" ? config : relativePath(config);
-      limitations.add(`${prefix}: TS${diagnostic.code}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, " ")}`);
+      limitations.add(`${prefix}: TS${diagnostic.code}: ${message(diagnostic)}`);
     }
     const targetDefinition = (symbol: ts.Symbol | undefined): AnalysisDefinition | undefined => {
       if (!symbol) return undefined;

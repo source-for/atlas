@@ -44,6 +44,8 @@ export function pinRepository(sourceRoot: string, revision = "HEAD"): Repository
 /** A temporary filesystem view containing only one committed Git tree. */
 export interface AcquiredCommittedTree {
   root: string;
+  /** The temporary directory holding `root`; removed by `cleanup`. */
+  checkoutRoot: string;
   /** Optional installed dependencies; never a source-file fallback. */
   installationRoot?: string;
   pin: RepositoryPin;
@@ -187,6 +189,7 @@ export function acquireCommittedTree(sourceRoot: string, revision = "HEAD", opti
   let cleaned = false;
   return {
     root,
+    checkoutRoot: temporary,
     installationRoot: sourceRoot,
     pin,
     sourceName,

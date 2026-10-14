@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { analyzeRust, RUST_LOCKDOWN_LIMITATION, rustDependencyLimitation, scrubCargoError, unsafeRustProjectJson } from "./analyze-rust.js";
+import { analyzeRust, RUST_LOCKDOWN_LIMITATION, rustDependencyLimitation, scrubCargoError, scrubScipError, unsafeRustProjectJson } from "./analyze-rust.js";
 import { observeScanSpawns } from "./scan-env.js";
 import { rustAnalyzerVersion } from "./scip-cache.js";
 
@@ -156,6 +156,36 @@ test("rust dependency limitation: a vendored [source] replacement in the tree's 
 test("rust dependency limitation: cargo errors are reduced to one line without machine paths", () => {
   const stderr = "    Updating git repository `https://example.invalid/x.git`\nerror: failed to load source for dependency `x` at /work/scan-1/tree/Cargo.toml (CARGO_HOME /srv/cargo, home /home/u)\n\nCaused by: ...\n";
   assert.equal(scrubCargoError(stderr, [["tree", "/work/scan-1/tree"], ["CARGO_HOME", "/srv/cargo"], ["home", "/home/u"]]), "failed to load source for dependency `x` at <tree>/Cargo.toml (CARGO_HOME <CARGO_HOME>, home <home>)");
+  // Cargo source ids name the tree inside a `path+file://` URL; the label still applies there.
+  assert.equal(
+    scrubCargoError("error: package `x v0.1.0 (path+file:///work/scan-1/tree/x)` cannot be built", [["tree", "/work/scan-1/tree"]]),
+    "package `x v0.1.0 (path+file://<tree>/x)` cannot be built",
+  );
   assert.match(rustDependencyLimitation("operator", "boom"), /^Dependency resolution failed offline \(boom\): external references omitted/);
   assert.match(rustDependencyLimitation("isolated", undefined), /^crates\.io dependencies are not resolved \(offline, isolated CARGO_HOME\):/);
+});
+
+test("CLA-586: a failed rust-analyzer run is one stable line, never its timestamps, temp paths or backtrace", () => {
+  const tree = "/w/okie-scan-work/okie-committed-bHtUY7/fxr";
+  const stderr = [
+    "Generating SCIP start...",
+    "2026-10-15T03:42:55.292267+10:00 ERROR Config Error(s) error_sink=ConfigErrors([])",
+    "rust-analyzer: Loading Querying project metadata",
+    `Error: Failed to load the project at ${tree}/Cargo.toml`,
+    "",
+    "Caused by:",
+    `    1: Failed to run \`cd "${tree}" && RUSTUP_TOOLCHAIN="/Users/me/.rustup/toolchains/1.87.0" cargo metadata\``,
+    "Stack backtrace:",
+    "   0: std::backtrace::Backtrace::create",
+  ].join("\n");
+  const paths = [["tree", tree], ["checkout", "/w/okie-scan-work/okie-committed-bHtUY7"], ["work-root", "/w/okie-scan-work"], ["home", "/Users/me"]] as const;
+  assert.equal(scrubScipError(stderr, paths), "Failed to load the project at <tree>/Cargo.toml");
+  assert.equal(scrubScipError("error: spawnSync rust-analyzer ETIMEDOUT", paths), "spawnSync rust-analyzer ETIMEDOUT");
+  assert.equal(scrubScipError("Generating SCIP start...\n2026-10-15T03:42:55Z INFO done", paths), "rust-analyzer exited unsuccessfully.");
+  // A panic has no `error` line: its location and message, not the generic fallback.
+  assert.equal(
+    scrubScipError(`Generating SCIP start...\nthread 'main' panicked at crates/project-model/src/workspace.rs:12:5:\nno sysroot under ${tree}/target\nnote: run with \`RUST_BACKTRACE=1\``, paths),
+    "thread 'main' panicked at crates/project-model/src/workspace.rs:12:5: no sysroot under <tree>/target",
+  );
+  assert.equal(scrubScipError("thread 'main' panicked at 'boom', src/main.rs:1:1", paths), "thread 'main' panicked at 'boom', src/main.rs:1:1");
 });

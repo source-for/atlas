@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { discoverRepository } from "./discover.js";
 import { extractArchitecture } from "./extract.js";
 import { boundStableId, MAX_STABLE_ID_CHARACTERS } from "./ids.js";
-import { pinRepository } from "./pin.js";
-import { buildScanArtifacts, stableJson } from "./scan.js";
+import { acquireCommittedTree, pinRepository } from "./pin.js";
+import { rustAnalyzerVersion } from "./scip-cache.js";
+import { buildScanArtifacts, scanAcquiredRepository, scanOutputFiles, stableJson } from "./scan.js";
 import { ASPECT_PRESET_TARGET } from "@okie/architecture";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
@@ -98,4 +102,97 @@ test("CLA-299: every id in Okie's own scan is within the 192-character limit (bo
   assert.match(unresolved[1]!, /^Unresolved relative import packages\/scene-compiler\/scripts\/generate-golden-source-excerpts\.mjs:\d+: '\.\.\/dist\/golden-source-excerpts\.js'$/);
   assert.equal(artifacts.discoverySummary.skippedEntries, undefined);
   assert.equal(artifacts.discoverySummary.excludedTestDataFiles, undefined);
+});
+
+/**
+ * Commits `files` to a fresh repository, then full-scans that commit twice, each run under its own
+ * OKIE_SCAN_WORK_DIR (so the work dir, the temporary checkout and their path lengths all differ), and
+ * returns both runs' output files exactly as the CLI writes them.
+ */
+function fullScanTwice(files: Record<string, string>): { work: string; workRoots: string[]; runs: Record<string, string>[] } {
+  const work = mkdtempSync(join(tmpdir(), "okie-cla586-"));
+  const source = join(work, "source");
+  const git = (args: string[]): void => { execFileSync("git", args, { cwd: source, stdio: "ignore" }); };
+  const configured = process.env.OKIE_SCAN_WORK_DIR;
+  try {
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(source, path)), { recursive: true });
+      writeFileSync(join(source, path), text);
+    }
+    git(["init", "-q"]);
+    git(["add", "."]);
+    git(["-c", "user.name=Okie", "-c", "user.email=okie@example.test", "commit", "-q", "--no-gpg-sign", "-m", "fixture"]);
+    const workRoots = ["first", "second-run"].map(name => join(work, name));
+    const runs = workRoots.map(workRoot => {
+      process.env.OKIE_SCAN_WORK_DIR = workRoot;
+      const acquired = acquireCommittedTree(source);
+      try {
+        assert.ok(acquired.root.startsWith(realpathSync(workRoot)), "the checkout is under this run's work dir");
+        return scanOutputFiles(scanAcquiredRepository(acquired, { analysisMode: "full" }));
+      } finally {
+        acquired.cleanup();
+      }
+    });
+    return { work, workRoots, runs };
+  } catch (error) {
+    rmSync(work, { recursive: true, force: true });
+    throw error;
+  } finally {
+    if (configured === undefined) delete process.env.OKIE_SCAN_WORK_DIR;
+    else process.env.OKIE_SCAN_WORK_DIR = configured;
+  }
+}
+
+/** Both runs wrote the same files, byte for byte, and no file names the fixture location. */
+function assertByteIdentical({ work, workRoots, runs: [first, second] }: ReturnType<typeof fullScanTwice>): void {
+  assert.deepEqual(Object.keys(second!), Object.keys(first!));
+  for (const name of Object.keys(first!)) {
+    assert.equal(second![name], first![name], `${name} differs between two full scans of the same commit`);
+    for (const path of [work, realpathSync(work), ...workRoots]) assert.ok(!first![name]!.includes(path), `${name} names ${path}`);
+  }
+}
+
+test("CLA-586: two full scans of one commit, under different work dirs and temp checkouts, are byte-identical", () => {
+  // Compiler messages that name absolute files: a config matching no inputs (TS18003), an import from
+  // outside rootDir (TS6059, which also names package.json), a project reference to a sibling of the
+  // checkout (a config read error and TS6053), and a reference up into the work dir itself.
+  const scanned = fullScanTwice({
+    "package.json": '{"name":"stable-full-scan","type":"module"}\n',
+    "tsconfig.json": '{"compilerOptions":{"rootDir":"src","outDir":"dist","strict":true,"module":"NodeNext","moduleResolution":"NodeNext"},"include":["src","lib"],"references":[{"path":"../missing"}]}\n',
+    "empty/tsconfig.json": '{"include":["nothing/**/*.ts"]}\n',
+    "up/tsconfig.json": '{"extends":"../../../okie-base.json","include":["*.ts"]}\n',
+    "up/c.ts": "export const c = 1;\n",
+    "src/a.ts": 'import { b } from "../lib/b.js";\nexport const a: number = b + 1;\n',
+    "lib/b.ts": "export const b = 1;\n",
+  });
+  try {
+    assertByteIdentical(scanned);
+    // The diagnostics are still reported, with root-relative paths.
+    const atlas = scanned.runs[0]!["atlas.okie.json"]!;
+    assert.match(atlas, /No inputs were found in config file 'empty\/tsconfig\.json'/);
+    assert.match(atlas, /TS6059: File 'lib\/b\.ts' is not under 'rootDir' 'src'/);
+    assert.match(atlas, /Cannot read file '\.\.\/missing\/tsconfig\.json'/);
+    assert.match(atlas, /TS6053: File '\.\.\/missing' not found/);
+    assert.match(atlas, /Cannot read file '\.\.\/\.\.\/okie-base\.json'/);
+  } finally {
+    rmSync(scanned.work, { recursive: true, force: true });
+  }
+});
+
+test("CLA-586: two full scans of a Rust tree rust-analyzer cannot load are byte-identical", t => {
+  if (!rustAnalyzerVersion()) { t.skip("rust-analyzer is not installed"); return; }
+  // A malformed manifest: rust-analyzer fails, and its stderr carries a wall-clock log timestamp,
+  // the temporary checkout, the toolchain under $HOME and a backtrace.
+  const scanned = fullScanTwice({
+    "Cargo.toml": '[package]\nname = "broken-manifest"\nversion = "0.1.0"\nedition = "2021"\n\n[workspace\n',
+    "src/lib.rs": "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+  });
+  try {
+    assertByteIdentical(scanned);
+    const atlas = scanned.runs[0]!["atlas.okie.json"]!;
+    assert.match(atlas, /Failed to load the project at <tree>\/Cargo\.toml/);
+    assert.doesNotMatch(atlas, /Stack backtrace|ERROR Config Error|okie-committed-/);
+  } finally {
+    rmSync(scanned.work, { recursive: true, force: true });
+  }
 });
