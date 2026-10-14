@@ -366,9 +366,9 @@ export const GOLDEN_SOURCE_EXCERPTS = {
     "path": "crates/atlas-gpu/src/glyph.rs",
     "symbol": "GlyphAtlas",
     "language": "rust",
-    "startLine": 157,
-    "endLine": 162,
-    "highlightLine": 157,
+    "startLine": 206,
+    "endLine": 211,
+    "highlightLine": 206,
     "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
     "lines": [
       "pub struct GlyphAtlas {",
