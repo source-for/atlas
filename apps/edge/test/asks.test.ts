@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ASK_ACTIONS, ASK_ORIGINS, askUsageRequest, DAILY_ASKS, DEFAULT_LOCAL_PORT, GRANT_TTL_MS, grantSql, newGrantToken,
   OPERATOR_ASK_USAGE_PATH as SCRIPT_PATH, operatorOrigin, parseAsksArgs, readAskUsageResult, sha256Hex, wranglerD1Args,
+  WRANGLER_ENV_DROPPED, wranglerEnv,
 } from '../scripts/asksCore.mjs';
 import asksScriptSource from '../scripts/asks.mjs?raw';
 import { signSession } from '../src/auth';
@@ -553,6 +554,24 @@ describe('operator asks script (CLA-539)', () => {
     expect(() => wranglerD1Args('prod', sql)).toThrow();
   });
 
+  it('gives wrangler the shell\'s env from before the staging .env is loaded, without the API or Access tokens', () => {
+    const shell = { PATH: '/bin', HOME: '/h', CLOUDFLARE_API_TOKEN: 'cf', STAGING_ACCESS_CLIENT_ID: 'id', STAGING_ACCESS_CLIENT_SECRET: 'secret', OTHER: 'kept' };
+    expect(wranglerEnv(shell)).toEqual({ env: { PATH: '/bin', HOME: '/h', OTHER: 'kept' }, droppedApiToken: true });
+    expect(shell.CLOUDFLARE_API_TOKEN).toBe('cf'); // a copy; the script's own env still has the Access keys for the request
+    expect(wranglerEnv({ PATH: '/bin' })).toEqual({ env: { PATH: '/bin' }, droppedApiToken: false });
+    expect(WRANGLER_ENV_DROPPED).toEqual(['CLOUDFLARE_API_TOKEN', 'STAGING_ACCESS_CLIENT_ID', 'STAGING_ACCESS_CLIENT_SECRET']);
+    // Source-level only (workerd cannot run the script): the snapshot is taken before loadEnvFile writes the .env
+    // into process.env, and it is the only env the wrangler child is given. This proves the order and the wiring
+    // as written, not what a running child receives.
+    const snapshot = asksScriptSource.indexOf('const child = wranglerEnv(process.env);');
+    expect(snapshot).toBeGreaterThan(-1);
+    expect(snapshot).toBeLessThan(asksScriptSource.indexOf('process.loadEnvFile('));
+    expect(asksScriptSource.match(/\benv:/g)).toEqual(['env:']);
+    expect(asksScriptSource).toContain('  env: child.env,\n');
+    expect(asksScriptSource.match(/spawnSync\(/g)).toHaveLength(1);
+    expect(asksScriptSource).not.toMatch(/\.\.\.process\.env/);
+  });
+
   it('formats the Worker\'s answer and never prints the token or the raw body', () => {
     const show = { command: 'show', env: 'production', githubId: '123' } as const;
     const reset = { command: 'reset', env: 'staging', githubId: '123' } as const;
@@ -573,7 +592,9 @@ describe('operator asks script (CLA-539)', () => {
     ] });
     expect(readAskUsageResult(show, 200, JSON.stringify({ result: 'unknown-account', action: 'ask-show', accountId: '123' }))).toEqual({ ok: false, message: 'no account with GitHub id 123 on production; nothing was changed' });
     expect(readAskUsageResult(show, 404, jsonText({ error: 'not found' }))).toMatchObject({ ok: false, message: expect.stringContaining('the grant was not accepted') });
-    expect(readAskUsageResult(show, 503, '{}')).toMatchObject({ ok: false, message: expect.stringContaining('budget is unavailable') });
+    // A failed show changed nothing; a failed reset may already have been applied, so it says to check.
+    expect(readAskUsageResult(show, 503, '{}')).toEqual({ ok: false, message: 'production answered 503: the Ask budget is unavailable right now. Nothing was changed. Run asks:show again for a fresh grant.' });
+    expect(readAskUsageResult(reset, 503, '{}')).toEqual({ ok: false, message: 'staging answered 503: the Ask budget is unavailable right now. The reset may or may not have happened; run asks:show to check before resetting again.' });
     const refused = [
       readAskUsageResult(show, 200, `<html>${TOKEN}</html>`),
       readAskUsageResult(show, 302, TOKEN),
@@ -589,7 +610,12 @@ describe('operator asks script (CLA-539)', () => {
     for (const outcome of [...refused, readAskUsageResult(show, 200, body({ action: 'ask-show' })), readAskUsageResult(show, 404, TOKEN), readAskUsageResult(show, 503, TOKEN)]) {
       expect(JSON.stringify(outcome)).not.toContain(TOKEN);
     }
-    // The CLI prints only what readAskUsageResult returns, redacted, and wrangler never sees the token.
+    // Source-level checks on asks.mjs (workerd cannot spawn it, so its flow is not run here). They prove only that
+    // no console.log/console.error call in the file names `token` directly, that the redaction list includes the
+    // token, and that the grant SQL is built from its hash. They do not prove what is printed at run time (a call
+    // printing wrangler's output or a raw error would pass), that every output path passes through
+    // redactHeaderValues, the order of the grant write and the request, or the exit codes. Those were exercised by
+    // running the CLI end to end against a local `wrangler dev` and with mocked wrangler/origin runs, not here.
     expect(asksScriptSource).not.toMatch(/console\.(?:log|error)\([^)]*\btoken\b(?!,)/);
     expect(asksScriptSource).toContain('const secrets = { ...access.headers, token };');
     expect(asksScriptSource).toContain('tokenHash: await sha256Hex(token),');

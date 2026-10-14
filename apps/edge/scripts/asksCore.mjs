@@ -103,6 +103,22 @@ export function wranglerD1Args(env, sql) {
   return ['exec', 'wrangler', 'd1', 'execute', 'USERS_DB', ...where, '--json', '--command', sql];
 }
 
+/** Keys wrangler's child env never gets: the API token (it must use `wrangler login`) and the staging Access token. */
+export const WRANGLER_ENV_DROPPED = ['CLOUDFLARE_API_TOKEN', 'STAGING_ACCESS_CLIENT_ID', 'STAGING_ACCESS_CLIENT_SECRET'];
+
+/**
+ * wrangler's child env: a copy of `snapshot` (the shell's env, taken before any `.env` is loaded) without
+ * {@link WRANGLER_ENV_DROPPED}. `droppedApiToken` says whether CLOUDFLARE_API_TOKEN was set, for the CLI's note.
+ * @param {Record<string, string | undefined>} snapshot
+ * @returns {{ env: Record<string, string | undefined>, droppedApiToken: boolean }}
+ */
+export function wranglerEnv(snapshot) {
+  const env = { ...snapshot };
+  const droppedApiToken = Boolean(env.CLOUDFLARE_API_TOKEN);
+  for (const key of WRANGLER_ENV_DROPPED) delete env[key];
+  return { env, droppedApiToken };
+}
+
 /**
  * The request's own headers and body (the caller adds the Access headers for staging).
  * @param {{ token: string, action: string, accountId: string }} request
@@ -126,7 +142,13 @@ export function readAskUsageResult(args, status, text) {
   if (status === 404) {
     return { ok: false, message: `${args.env} answered 404: the grant was not accepted (unknown, expired or already used), or this Worker does not have the operator route yet. ${again}` };
   }
-  if (status === 503) return { ok: false, message: `${args.env} answered 503: the Ask budget is unavailable right now. Nothing was changed. ${again}` };
+  if (status === 503) {
+    // A reset can fail after the budget already applied it (the reply was lost), so only show can promise nothing changed.
+    const changed = args.command === 'reset'
+      ? `The reset may or may not have happened; run asks:show to check before resetting again.`
+      : `Nothing was changed. ${again}`;
+    return { ok: false, message: `${args.env} answered 503: the Ask budget is unavailable right now. ${changed}` };
+  }
   let body;
   try { body = JSON.parse(text); } catch { body = undefined; }
   if (status !== 200 || !body || typeof body !== 'object') return { ok: false, message: `${args.env} answered ${status} with an unexpected body. ${again}` };

@@ -13,6 +13,8 @@ export declare function newGrantToken(): string;
 export declare function sha256Hex(text: string): Promise<string>;
 export declare function grantSql(grant: { tokenHash: string; action: string; accountId: string; createdAt: string; expiresAt: string }): string;
 export declare function wranglerD1Args(env: string, sql: string): string[];
+export declare const WRANGLER_ENV_DROPPED: readonly string[];
+export declare function wranglerEnv(snapshot: Record<string, string | undefined>): { env: Record<string, string | undefined>; droppedApiToken: boolean };
 export declare function askUsageRequest(request: { token: string; action: string; accountId: string }): { headers: { authorization: string; 'content-type': string }; body: string };
 export declare function readAskUsageResult(
   args: { command: 'show' | 'reset'; env: string; githubId: string },

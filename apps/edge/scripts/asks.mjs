@@ -13,11 +13,12 @@
 // Credentials: `wrangler login` (OAuth), like users.mjs: CLOUDFLARE_API_TOKEN is removed from wrangler's env.
 // Staging is behind Cloudflare Access: the request carries the `atlas-staging-smoke` service token from
 // STAGING_ACCESS_CLIENT_ID / STAGING_ACCESS_CLIENT_SECRET (environment or the repo-root .env), as smoke.mjs does.
+// wrangler's env is the shell's, taken before the .env is loaded and without those two keys.
 // The grant token goes to the one fixed origin only, redirects are never followed, and it is never printed.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { ASK_ACTIONS, askUsageRequest, GRANT_TTL_MS, grantSql, newGrantToken, OPERATOR_ASK_USAGE_PATH, operatorOrigin, parseAsksArgs, readAskUsageResult, sha256Hex, wranglerD1Args } from './asksCore.mjs';
+import { ASK_ACTIONS, askUsageRequest, GRANT_TTL_MS, grantSql, newGrantToken, OPERATOR_ASK_USAGE_PATH, operatorOrigin, parseAsksArgs, readAskUsageResult, sha256Hex, wranglerD1Args, wranglerEnv } from './asksCore.mjs';
 import { accessHeaders, redactHeaderValues, smokeRequester } from './smokeAccess.mjs';
 import { wranglerRows } from './usersCore.mjs';
 
@@ -28,6 +29,11 @@ if ('error' in args) {
   process.exit(2);
 }
 
+// wrangler's env comes from the shell's env as it is now, before the staging .env is loaded below, so the child
+// never sees .env keys; the API token and the Access token are dropped from it too.
+const child = wranglerEnv(process.env);
+if (child.droppedApiToken) console.error(`note: ignoring ${API_TOKEN} so wrangler uses your \`wrangler login\` session`);
+
 let access = { headers: {} };
 if (args.env === 'staging') {
   const dotenv = fileURLToPath(new URL('../../../.env', import.meta.url));
@@ -37,12 +43,6 @@ if (args.env === 'staging') {
     console.error(`asks: ${access.error}`);
     process.exit(1);
   }
-}
-
-const env = { ...process.env };
-if (env[API_TOKEN]) {
-  delete env[API_TOKEN];
-  console.error(`note: ignoring ${API_TOKEN} so wrangler uses your \`wrangler login\` session`);
 }
 
 const token = newGrantToken();
@@ -58,7 +58,7 @@ const sql = grantSql({
 // The statement holds the token's hash, never the token.
 const result = spawnSync('pnpm', wranglerD1Args(args.env, sql), {
   cwd: fileURLToPath(new URL('..', import.meta.url)),
-  env,
+  env: child.env,
   encoding: 'utf8',
   stdio: ['ignore', 'pipe', 'inherit'],
   maxBuffer: 16 * 1024 * 1024,
