@@ -17,6 +17,17 @@ import {
 
 const MAX_FOCUS = STORY_AUTHORING_LIMITS.maxFocusEntitiesPerStep;
 
+/**
+ * A step title within the authoring limit. Titles embed entity names (up to the
+ * extraction gate's 160 characters), so a long one is cut by code point with an
+ * ellipsis instead of failing story validation.
+ */
+function stepTitle(title: string): string {
+  const codePoints = Array.from(title);
+  const limit = STORY_AUTHORING_LIMITS.maxStepTitleCharacters;
+  return codePoints.length <= limit ? title : `${codePoints.slice(0, limit - 1).join("")}…`;
+}
+
 function joinEnglish(items: readonly string[]): string {
   if (items.length === 0) return "";
   if (items.length === 1) return items[0]!;
@@ -105,7 +116,7 @@ export function buildOverviewStory(
   const steps: StoryStep[] = [
     step({
       id: "step:context",
-      title: `Start with ${systemName}`,
+      title: stepTitle(`Start with ${systemName}`),
       focus: contextFocus,
       relations,
       visibleRelations,
@@ -120,7 +131,7 @@ export function buildOverviewStory(
   if (containerFocus.length > 1) {
     steps.push(step({
       id: "step:containers",
-      title: `Inside ${systemName}`,
+      title: stepTitle(`Inside ${systemName}`),
       focus: containerFocus,
       relations,
       visibleRelations,
@@ -135,7 +146,7 @@ export function buildOverviewStory(
     const childCount = countBy(components, featuredContainer.id);
     steps.push(step({
       id: "step:container",
-      title: `Look inside ${featuredContainer.name}`,
+      title: stepTitle(`Look inside ${featuredContainer.name}`),
       focus: [featuredContainer],
       relations,
       visibleRelations,
@@ -154,7 +165,7 @@ export function buildOverviewStory(
     const childCount = countBy(code, featuredComponent.id);
     steps.push(step({
       id: "step:component",
-      title: `Open ${featuredComponent.name}`,
+      title: stepTitle(`Open ${featuredComponent.name}`),
       focus: [featuredComponent],
       relations,
       visibleRelations,
@@ -174,7 +185,7 @@ export function buildOverviewStory(
       : featuredCode.name;
     steps.push(step({
       id: "step:code",
-      title: `Read ${featuredCode.name}`,
+      title: stepTitle(`Read ${featuredCode.name}`),
       focus: [featuredCode],
       relations,
       visibleRelations,

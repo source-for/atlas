@@ -31,6 +31,7 @@ import {
   type ClonePair,
   type ExtractInput,
   type UnresolvedRelativeImport,
+  resolveCargoPatches,
 } from "./extract.js";
 import { mergeEnrichment, type EnrichmentReport } from "./enrich.js";
 import { applyComponentMembership, type ComponentMapInput, type ComponentMapReport } from './component-map.js';
@@ -272,6 +273,7 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
   const scanLimitations = [
     ...discoveryLimitations(discovery.summary),
     ...unresolvedImportLimitations(collected.unresolvedRelativeImports),
+    ...cargoPatchLimitations(discovery, readFile),
   ];
 
   const metadata: ArchitectureExtractionSnapshotMetadata = {
@@ -436,6 +438,27 @@ export function unresolvedImportLimitations(imports: readonly UnresolvedRelative
     ...shown,
     ...(hidden > 0 ? [`+${hidden} more unresolved relative import(s) not itemized.`] : []),
   ];
+}
+
+/**
+ * Root `Cargo.toml` `[patch.*]` path overrides that recorded no crate edge, one line
+ * each: out-of-repository paths (never followed), paths naming no scanned crate, and
+ * patches whose version no scanned crate's normal dependency requirement admits (an
+ * observation about the scanned crates only: Cargo may still use the patch elsewhere). Same resolution as extraction (`resolveCargoPatches`); empty without
+ * Rust crates or such overrides.
+ */
+export function cargoPatchLimitations(discovery: Discovery, readFile: (path: string) => string): string[] {
+  return resolveCargoPatches(discovery, readFile).unfollowed.map(patch => {
+    const where = `Cargo.toml:${patch.line}: [patch.${displayText(patch.source)}] ${displayText(patch.name)} = { path = '${displayText(patch.path)}' }`;
+    if (patch.reason === "version-mismatch") {
+      const [first, ...more] = patch.rejected ?? [];
+      const requirement = first ? `${displayText(first.path)}:${first.line} requires '${displayText(first.requirement)}'${more.length ? ` (+${more.length} more)` : ""}` : "";
+      return `Cargo [patch] accepted by no scanned crate's normal dependency: version ${displayText(patch.version ?? "")} does not satisfy ${requirement}; no crate edge recorded: ${where}`;
+    }
+    return patch.reason === "outside-repository"
+      ? `Cargo [patch] path resolves outside the repository; not followed, no crate edge recorded: ${where}`
+      : `Cargo [patch] path names no scanned crate; no crate edge recorded: ${where}`;
+  });
 }
 
 /** The TypeScript-repo `.js` exclusions, by reason (empty when none were skipped). */

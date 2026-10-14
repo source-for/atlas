@@ -14,6 +14,7 @@ import type { Discovery } from "./discover.js";
 import type { AnalysisLocation, LanguageAnalysis } from "./language-analysis.js";
 import { pathSlug, resolveCollisions, slug, typedId, unboundedTypedId } from "./ids.js";
 import { rustTopLevelItems } from "./extract-rust.js";
+import { cargoRequirementMatches, parseCargoManifest, type CargoDependencySpec } from "./dependency-facts.js";
 
 /** Max import sites retained as evidence on one aggregated relation. */
 const MAX_EVIDENCE_PER_RELATION = 24;
@@ -71,6 +72,11 @@ export interface TopLevelDeclaration {
   exported: boolean;
   /** The declaring statement/declarator — the subtree symbol references are walked in. */
   node: ts.Node;
+  /**
+   * The parser recovered a MISSING identifier (a syntax error), so `name` is the
+   * {@link declarationName} fallback, not text in the source.
+   */
+  recovered?: true;
 }
 
 export interface ModuleImport {
@@ -112,6 +118,57 @@ function hasExportModifier(statement: ts.Statement): boolean {
     : false;
 }
 
+type NamedTopLevelDeclaration =
+  | ts.FunctionDeclaration | ts.ClassDeclaration | ts.InterfaceDeclaration | ts.TypeAliasDeclaration
+  | ts.EnumDeclaration | ts.ModuleDeclaration | ts.VariableDeclaration;
+
+const ANONYMOUS_DECLARATION_LABEL: ReadonlyArray<[(node: ts.Node) => boolean, string]> = [
+  [ts.isFunctionDeclaration, "function"],
+  [ts.isClassDeclaration, "class"],
+  [ts.isInterfaceDeclaration, "interface"],
+  [ts.isTypeAliasDeclaration, "type"],
+  [ts.isEnumDeclaration, "enum"],
+  [ts.isModuleDeclaration, "namespace"],
+  [ts.isVariableDeclaration, "variable"],
+];
+
+/**
+ * The name a top-level declaration is extracted under. Usually its identifier; but on
+ * a syntax error the parser recovers with a MISSING identifier whose text is `""`
+ * (`export default interface {}` — babel's parser fixtures — or `enum {}`), and a blank
+ * name fails the extraction gate. Such a declaration takes a deterministic fallback:
+ * `default` when it is the module's default export (the name importers bind), else
+ * `anonymous <kind>`. Only the source text decides it, so it is stable across scans.
+ */
+export function declarationName(declaration: NamedTopLevelDeclaration): string {
+  const text = declaration.name && ts.isIdentifier(declaration.name) ? declaration.name.text : "";
+  if (text.trim()) return text;
+  const statement = ts.isVariableDeclaration(declaration) ? declaration.parent.parent : declaration;
+  const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) ?? [] : [];
+  if (modifiers.some(modifier => modifier.kind === ts.SyntaxKind.DefaultKeyword)) return "default";
+  const label = ANONYMOUS_DECLARATION_LABEL.find(([is]) => is(declaration))?.[1] ?? "declaration";
+  return `anonymous ${label}`;
+}
+
+/**
+ * An entity's display name, within the extraction gate's limits. IDs are not derived
+ * from this: they come from the full path/symbol (bounded with a hash by
+ * `boundStableId`, made unique by `resolveCollisions`) before any name is shortened,
+ * and `sourceRefs.symbol` keeps the full identifier. A blank name (defensive: the
+ * TypeScript walk already names recovered declarations, see {@link declarationName})
+ * becomes `unnamed <kind>`; one over `maxNameCharacters` code points is cut with an
+ * ellipsis — a component (a path) keeps its distinctive tail, anything else its head.
+ */
+export function entityDisplayName(kind: string, name: string): string {
+  if (!name.trim()) return `unnamed ${kind}`;
+  const codePoints = Array.from(name);
+  const limit = ARCHITECTURE_EXTRACTION_LIMITS.maxNameCharacters;
+  if (codePoints.length <= limit) return name;
+  return kind === "component"
+    ? `…${codePoints.slice(codePoints.length - (limit - 1)).join("")}`
+    : `${codePoints.slice(0, limit - 1).join("")}…`;
+}
+
 /**
  * Every top-level named declaration — exported OR not. Non-exported top-level
  * symbols matter: e.g. `CanvasViewport` in App.tsx is a local function yet a
@@ -124,25 +181,28 @@ export function topLevelDeclarations(sourceFile: ts.SourceFile): TopLevelDeclara
   const indirect = indirectlyExportedNames(sourceFile);
   const lineOf = (position: number): number => sourceFile.getLineAndCharacterOfPosition(position).line + 1;
   const push = (name: string, node: ts.Node, direct: boolean): void => {
+    const named = node as NamedTopLevelDeclaration;
+    const recovered = !(named.name && ts.isIdentifier(named.name) && named.name.text.trim());
     declarations.push({
       name,
       startLine: lineOf(node.getStart(sourceFile)),
       endLine: lineOf(node.getEnd()),
       exported: direct || indirect.has(name),
       node,
+      ...(recovered ? { recovered: true as const } : {}),
     });
   };
   for (const statement of sourceFile.statements) {
     const direct = hasExportModifier(statement);
-    if (ts.isFunctionDeclaration(statement) && statement.name) push(statement.name.text, statement, direct);
-    else if (ts.isClassDeclaration(statement) && statement.name) push(statement.name.text, statement, direct);
-    else if (ts.isInterfaceDeclaration(statement)) push(statement.name.text, statement, direct);
-    else if (ts.isTypeAliasDeclaration(statement)) push(statement.name.text, statement, direct);
-    else if (ts.isEnumDeclaration(statement)) push(statement.name.text, statement, direct);
-    else if (ts.isModuleDeclaration(statement) && ts.isIdentifier(statement.name)) push(statement.name.text, statement, direct);
+    if (ts.isFunctionDeclaration(statement) && statement.name) push(declarationName(statement), statement, direct);
+    else if (ts.isClassDeclaration(statement) && statement.name) push(declarationName(statement), statement, direct);
+    else if (ts.isInterfaceDeclaration(statement)) push(declarationName(statement), statement, direct);
+    else if (ts.isTypeAliasDeclaration(statement)) push(declarationName(statement), statement, direct);
+    else if (ts.isEnumDeclaration(statement)) push(declarationName(statement), statement, direct);
+    else if (ts.isModuleDeclaration(statement) && ts.isIdentifier(statement.name)) push(declarationName(statement), statement, direct);
     else if (ts.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
-        if (ts.isIdentifier(declaration.name)) push(declaration.name.text, declaration, direct);
+        if (ts.isIdentifier(declaration.name)) push(declarationName(declaration), declaration, direct);
       }
     }
   }
@@ -617,6 +677,47 @@ export interface CargoPathDependency {
   workspace?: true;
 }
 
+/** A dependency declared without `path`/`workspace` — resolved from a registry or git. */
+export interface CargoSourcedDependency {
+  /** The package name Cargo resolves (`package = "…"` when renamed, else the key). */
+  name: string;
+  /**
+   * The declaration key (`renamed` in `renamed = { package = "core", … }`) — what a
+   * member's `renamed = { workspace = true }` inherits by; equals `name` unless renamed.
+   */
+  key: string;
+  /** 1-based line of the declaration (evidence anchor). */
+  line: number;
+  /**
+   * The `[patch.<source>]` key that would override it: the `registry = "…"` name, the
+   * `git = "…"` URL, or `crates-io` for a plain version requirement.
+   */
+  source: string;
+  /** The version requirement as written (`"1"`, `{ version = "~2.7" }`), when there is one. */
+  version?: string;
+  /** Declared in `[workspace.dependencies]`. */
+  workspace?: true;
+}
+
+/** The `[patch.<source>]` key a non-path declaration resolves through (see {@link CargoSourcedDependency.source}). */
+function cargoDependencySource(spec: CargoDependencySpec): string {
+  return spec.git ?? spec.registry ?? "crates-io";
+}
+
+/**
+ * The normal (non-dev/build) dependency declarations of a Cargo manifest, read by the
+ * one Cargo reader `parseCargoManifest` (comments, literal and basic strings, quoted
+ * and dotted keys, `[dependencies.x]` subsections, multi-line inline tables), in
+ * source order, with `[workspace.dependencies]` entries flagged `workspace`.
+ */
+function cargoNormalDeclarations(manifestText: string): Array<{ key: string; spec: CargoDependencySpec; line: number; workspace: boolean }> {
+  const manifest = parseCargoManifest(manifestText);
+  return [
+    ...manifest.entries.filter(entry => entry.section === "dependencies").map(entry => ({ key: entry.key, spec: entry, line: entry.line, workspace: false })),
+    ...[...manifest.workspaceDependencies].map(([key, spec]) => ({ key, spec, line: spec.line, workspace: true })),
+  ].filter(declaration => declaration.key.length > 0);
+}
+
 /**
  * `path = "…"` dependencies from a Cargo manifest — the deterministic edge source
  * for otherwise-opaque Rust crates (R1 parses no .rs, but the workspace wiring is
@@ -625,41 +726,211 @@ export interface CargoPathDependency {
  * subsections — and ignores dev/build dependency sections. A `workspace = true`
  * declaration (inline, dotted `name.workspace = true`, or in a subsection) is returned
  * with `inherited` and an empty path; `[workspace.dependencies]` entries carry `workspace`.
+ * Each line is where `path` / `workspace = true` is written; source order.
  */
 export function cargoPathDependencies(manifestText: string): CargoPathDependency[] {
-  const dependencies: CargoPathDependency[] = [];
-  const lines = manifestText.split(/\r?\n/);
-  let inDependencySection = false;
-  let subsectionName: string | undefined;
-  let workspaceTable = false;
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    const header = /^\s*\[(.+)\]\s*$/.exec(line);
-    if (header) {
-      const section = header[1]!;
-      const isDependencies = /(^|\.)dependencies(\.|$)/.test(section)
-        && !/dev-dependencies|build-dependencies/.test(section);
-      inDependencySection = isDependencies;
-      workspaceTable = /^\s*workspace\./.test(section);
-      const subsection = /(?:^|\.)dependencies\.("[^"]+"|'[^']+'|[A-Za-z0-9_-]+)\s*$/.exec(section);
-      subsectionName = isDependencies && subsection ? subsection[1]!.replace(/^["']|["']$/g, "") : undefined;
-      continue;
-    }
-    if (!inDependencySection) continue;
-    const scope = workspaceTable ? { workspace: true as const } : {};
-    if (subsectionName) {
-      const pathValue = /^\s*path\s*=\s*"([^"]+)"/.exec(line);
-      if (pathValue) dependencies.push({ name: subsectionName, path: pathValue[1]!, line: index + 1, ...scope });
-      else if (/^\s*workspace\s*=\s*true\b/.test(line)) dependencies.push({ name: subsectionName, path: "", line: index + 1, inherited: true, ...scope });
-      continue;
-    }
-    // The key follows `{` directly or a `,`/space inside the table (never `typed-path`).
-    const inline = /^\s*([A-Za-z0-9_-]+)\s*=\s*\{(?:[^}]*[,\s])?path\s*=\s*"([^"]+)"/.exec(line);
-    if (inline) { dependencies.push({ name: inline[1]!, path: inline[2]!, line: index + 1, ...scope }); continue; }
-    const inherited = /^\s*([A-Za-z0-9_-]+)\s*(?:=\s*\{(?:[^}]*[,\s])?|\.\s*)workspace\s*=\s*true\b/.exec(line);
-    if (inherited) dependencies.push({ name: inherited[1]!, path: "", line: index + 1, inherited: true, ...scope });
+  return cargoNormalDeclarations(manifestText).flatMap(({ key, spec, workspace }): CargoPathDependency[] => {
+    const scope = workspace ? { workspace: true as const } : {};
+    if (spec.path !== undefined) return [{ name: key, path: spec.path, line: spec.pathLine!, ...scope }];
+    if (spec.workspace) return [{ name: key, path: "", line: spec.workspaceLine!, inherited: true, ...scope }];
+    return [];
+  }).sort((left, right) => left.line - right.line);
+}
+
+/**
+ * Registry/git-sourced dependencies (no `path`, no `workspace = true`) from the same
+ * sections as {@link cargoPathDependencies}, in source order. On their own they are
+ * external crates; a root `[patch.<source>]` path override can make one an in-repo
+ * crate edge.
+ */
+export function cargoSourcedDependencies(manifestText: string): CargoSourcedDependency[] {
+  return cargoNormalDeclarations(manifestText).flatMap(({ key, spec, line, workspace }): CargoSourcedDependency[] =>
+    spec.path !== undefined || spec.workspace ? [] : [{
+      name: spec.package ?? key,
+      key,
+      line,
+      source: cargoDependencySource(spec),
+      ...(spec.version !== undefined ? { version: spec.version } : {}),
+      ...(workspace ? { workspace: true as const } : {}),
+    }]).sort((left, right) => left.line - right.line);
+}
+
+/** One `path` override in a `[patch.<source>]` table of the root Cargo manifest. */
+export interface CargoPatchPath {
+  /** The `<source>` key: a registry name (`crates-io`) or a git URL, unquoted. */
+  source: string;
+  /** The patched package name (`package = "…"` when the entry is renamed, else its key). */
+  name: string;
+  /** The `path` value, as written (relative to the root manifest). */
+  path: string;
+  /** 1-based line where `path` is written (evidence anchor). */
+  line: number;
+}
+
+/**
+ * `path` overrides in `[patch.<source>]` tables, read by `parseCargoManifest`: inline
+ * (`tokio = { path = "tokio" }`, either string kind), dotted (`tokio.path = "tokio"`)
+ * and `[patch.<source>.<key>]` subsections, with `package = "…"` renames. Cargo
+ * honours `[patch]` only in the workspace root manifest, so only that one is read.
+ * Overrides without `path` (a git or registry redirect) are not returned.
+ */
+export function cargoPatchPaths(manifestText: string): CargoPatchPath[] {
+  return parseCargoManifest(manifestText).patches.flatMap(patch => patch.path === undefined || !patch.key ? [] : [{
+    source: patch.source,
+    name: patch.package ?? patch.key,
+    path: patch.path,
+    line: patch.pathLine!,
+  }]).sort((left, right) => left.line - right.line);
+}
+
+/**
+ * The scanned crate a root `[patch]` path names, or undefined: a path that leaves the
+ * repository (`../tokio`) or names no crate unit is never followed (see
+ * {@link unfollowedCargoPatches}). Exact crate-root match, unlike import resolution.
+ */
+export function cargoPatchTargetDir(patch: CargoPatchPath, crateDirs: ReadonlySet<string>): string | undefined {
+  const target = repositoryPathOf(patch.path);
+  return target !== undefined && crateDirs.has(target) ? target : undefined;
+}
+
+/**
+ * A root-relative path as a repository path; undefined when it leaves the root. An
+ * absolute path (`/core`, `\\server\\share`, `C:\\core`, `C:/core`) is
+ * outside by definition — checked BEFORE empty segments are dropped, or `/core` would
+ * normalise to the in-repo `core`.
+ */
+function repositoryPathOf(path: string): string | undefined {
+  // Cargo does no shell expansion: `~/core` is the literal in-repo directory `~/core`.
+  if (/^[\\/]/.test(path) || /^[A-Za-z]:/.test(path)) return undefined;
+  const stack: string[] = [];
+  for (const part of path.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") { if (stack.length === 0) return undefined; stack.pop(); }
+    else stack.push(part);
   }
-  return dependencies;
+  return stack.join("/");
+}
+
+/** A root `[patch.*]` path override that became no crate edge, and why. */
+export interface UnfollowedCargoPatch extends CargoPatchPath {
+  /**
+   * `outside-repository`: resolves above the source root (never read); `no-crate`: names
+   * no scanned crate; `version-mismatch`: every scanned crate's normal dependency on it
+   * rejects the patched crate's version. (Cargo may still use the patch for a
+   * dev/build dependency, the root package or a transitive crate — not checked.)
+   */
+  reason: "outside-repository" | "no-crate" | "version-mismatch";
+  /** `version-mismatch` only: the patched crate's version and the rejecting requirements. */
+  version?: string;
+  rejected?: ReadonlyArray<{ path: string; line: number; requirement: string }>;
+}
+
+/**
+ * Root `[patch.*]` path overrides whose path cannot be followed, in manifest order
+ * (outside the repository, or naming no scanned crate). Version mismatches need the
+ * member manifests — see {@link resolveCargoPatches}.
+ */
+export function unfollowedCargoPatches(rootManifest: string, crateDirs: ReadonlySet<string>): UnfollowedCargoPatch[] {
+  return cargoPatchPaths(rootManifest).flatMap(patch => cargoPatchTargetDir(patch, crateDirs) !== undefined ? [] : [{
+    ...patch,
+    reason: repositoryPathOf(patch.path) === undefined ? "outside-repository" as const : "no-crate" as const,
+  }]);
+}
+
+/** One crate edge a root `[patch]` override creates: `fromDir` → `toDir`, citing both lines. */
+export interface CargoPatchEdge {
+  fromDir: string;
+  toDir: string;
+  /** The dependent's manifest and its declaration line. */
+  manifestPath: string;
+  line: number;
+  /** The root `Cargo.toml` line of the `path` override. */
+  patchLine: number;
+}
+
+/**
+ * Every crate edge root `[patch.<source>]` path overrides create, and every override
+ * that creates none. A patch applies to a crate's registry/git dependency on the same
+ * package from the same source — declared in the crate, or inherited by key from a
+ * path-less `[workspace.dependencies]` entry — and, as in Cargo, only when the patched
+ * crate's version (`[package] version`, or the `[workspace.package]` one it inherits)
+ * satisfies that dependency's requirement (`cargoRequirementMatches`; an unparsable or
+ * absent requirement or version does not reject). A patch whose dependents all reject
+ * it is reported `version-mismatch`. Deterministic: discovery's unit order, then
+ * manifest order.
+ */
+export function resolveCargoPatches(discovery: Discovery, readFile: (path: string) => string): { edges: CargoPatchEdge[]; unfollowed: UnfollowedCargoPatch[] } {
+  const crateUnits = discovery.units.filter(unit => unit.kind === "rust");
+  if (crateUnits.length === 0) return { edges: [], unfollowed: [] };
+  const read = (path: string): string | undefined => { try { return readFile(path) ?? undefined; } catch { return undefined; } };
+  const rootManifest = read("Cargo.toml") ?? "";
+  const crateDirs = new Set(crateUnits.map(unit => unit.dir));
+  const unfollowed = unfollowedCargoPatches(rootManifest, crateDirs);
+  const root = parseCargoManifest(rootManifest);
+  const versionOf = (dir: string): string | undefined => {
+    const text = read(`${dir}/Cargo.toml`);
+    if (text === undefined) return undefined;
+    const manifest = parseCargoManifest(text);
+    // Cargo (>= 1.75) treats a package without `version` as 0.0.0.
+    return manifest.packageVersionInherited ? root.workspacePackageVersion : manifest.packageVersion ?? "0.0.0";
+  };
+  // Inheritance is by declaration KEY (`renamed = { workspace = true }`); the patch then
+  // matches the entry's resolved package name (`package = "core"`).
+  const workspaceSources = new Map(cargoSourcedDependencies(rootManifest).flatMap(dependency => dependency.workspace ? [[dependency.key, dependency] as const] : []));
+  const dependents = crateUnits.map(unit => {
+    const manifestPath = `${unit.dir}/Cargo.toml`;
+    const text = read(manifestPath) ?? "";
+    const own = cargoSourcedDependencies(text).filter(dependency => !dependency.workspace);
+    const inherited = cargoPathDependencies(text).flatMap(dependency => {
+      if (dependency.workspace || !dependency.inherited) return [];
+      const entry = workspaceSources.get(dependency.name);
+      return entry ? [{ ...entry, line: dependency.line }] : [];
+    });
+    return { dir: unit.dir, manifestPath, dependencies: [...own, ...inherited].sort((left, right) => left.line - right.line) };
+  });
+  const edges: CargoPatchEdge[] = [];
+  for (const patch of cargoPatchPaths(rootManifest)) {
+    const toDir = cargoPatchTargetDir(patch, crateDirs);
+    if (toDir === undefined) continue;
+    const version = versionOf(toDir);
+    const rejected: Array<{ path: string; line: number; requirement: string }> = [];
+    let used = false;
+    for (const crate of dependents) {
+      if (crate.dir === toDir) continue;
+      for (const dependency of crate.dependencies) {
+        if (dependency.name !== patch.name || !cargoPatchApplies(patch.source, dependency.source)) continue;
+        if (version !== undefined && dependency.version !== undefined && cargoRequirementMatches(dependency.version, version) === false) {
+          rejected.push({ path: crate.manifestPath, line: dependency.line, requirement: dependency.version });
+          continue;
+        }
+        used = true;
+        edges.push({ fromDir: crate.dir, toDir, manifestPath: crate.manifestPath, line: dependency.line, patchLine: patch.line });
+      }
+    }
+    if (!used && rejected.length > 0) unfollowed.push({ ...patch, reason: "version-mismatch", version: version!, rejected });
+  }
+  unfollowed.sort((left, right) => left.line - right.line);
+  return { edges, unfollowed };
+}
+
+/**
+ * A git URL as Cargo's `CanonicalUrl` compares `[patch."<url>"]` keys: no trailing `/`,
+ * no `.git` suffix; only for `github.com` is the path case-folded and the scheme made
+ * `https`. Other hosts keep a case-sensitive path. A registry name is returned as is.
+ */
+function cargoSourceKey(source: string): string {
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(source)) return source;
+  let url: URL;
+  try { url = new URL(source); } catch { return source; }
+  let path = url.pathname.replace(/\/+$/, "").replace(/\.git$/, "");
+  let protocol = url.protocol;
+  if (url.hostname === "github.com") { path = path.toLowerCase(); protocol = "https:"; }
+  return `${protocol}//${url.host}${path}${url.search}`;
+}
+
+/** Whether a `[patch.<patchSource>]` table overrides a dependency resolved from `dependencySource`. */
+export function cargoPatchApplies(patchSource: string, dependencySource: string): boolean {
+  return cargoSourceKey(patchSource) === cargoSourceKey(dependencySource);
 }
 
 /** Maps a bare `@okie/*` specifier to the owning workspace-member unit dir, or undefined. */
@@ -839,6 +1110,11 @@ interface EntityDescriptor {
   cyclomaticComplexity?: number;
   /** Token+AST clone fingerprint for function-like code entities — snapshot overlay. */
   cloneFingerprint?: string;
+  /**
+   * A declaration with a parser-recovered (missing) name: its id is allocated after every
+   * real declaration's, so a syntax error never moves a real symbol's id.
+   */
+  recovered?: true;
 }
 
 interface RelationDescriptor {
@@ -1250,13 +1526,13 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
       const exported = modifiers.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword);
       const isDefault = modifiers.some(modifier => modifier.kind === ts.SyntaxKind.DefaultKeyword);
       if (exported && (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name) {
-        bindings.set(isDefault ? "default" : statement.name.text, { localName: statement.name.text });
+        bindings.set(isDefault ? "default" : declarationName(statement), { localName: declarationName(statement) });
       } else if (exported && ts.isVariableStatement(statement)) {
         for (const declaration of statement.declarationList.declarations) {
-          if (ts.isIdentifier(declaration.name)) bindings.set(declaration.name.text, { localName: declaration.name.text });
+          if (ts.isIdentifier(declaration.name)) bindings.set(declarationName(declaration), { localName: declarationName(declaration) });
         }
       } else if (exported && (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement) || ts.isEnumDeclaration(statement))) {
-        bindings.set(statement.name.text, { localName: statement.name.text });
+        bindings.set(declarationName(statement), { localName: declarationName(statement) });
       } else if (ts.isExportAssignment(statement) && ts.isIdentifier(statement.expression)) {
         bindings.set("default", { localName: statement.expression.text });
       } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
@@ -1324,6 +1600,10 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
       const naturalKey = `${file}#${index}`;
       const cyclomaticComplexity = cyclomaticForDeclaration(declaration);
       const cloneFingerprint = cloneFingerprintForDeclaration(declaration);
+      // A recovered `anonymous <kind>` name is not in the source, so its evidence carries
+      // no symbol (path + lines only). `default` is: the keyword is on the line.
+      const symbol = declaration.recovered && declaration.name !== "default" ? undefined : declaration.name;
+      const anchor = { path: file, ...(symbol !== undefined ? { symbol } : {}), startLine: declaration.startLine, endLine: declaration.endLine };
       entityDescriptors.push({
         naturalKey,
         desiredId: typedId("code", file, declaration.name),
@@ -1332,11 +1612,12 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
         parentKey: file,
         ...(declaration.exported ? { exposure: [{
           kind: "moduleExport",
-          evidence: { source: { path: file, symbol: declaration.name, startLine: declaration.startLine, endLine: declaration.endLine }, reason: "declared module export" },
+          evidence: { source: { ...anchor }, reason: "declared module export" },
         }] } : {}),
-        sourceRefs: [{ path: file, symbol: declaration.name, startLine: declaration.startLine, endLine: declaration.endLine }],
+        sourceRefs: [{ ...anchor }],
         ...(cyclomaticComplexity !== undefined ? { cyclomaticComplexity } : {}),
         ...(cloneFingerprint !== undefined ? { cloneFingerprint } : {}),
+        ...(declaration.recovered ? { recovered: true as const } : {}),
       });
       if (!keyByName.has(declaration.name)) keyByName.set(declaration.name, naturalKey);
     });
@@ -1582,6 +1863,17 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
       );
     }
   }
+  // A root `[patch.<source>]` path override (tokio: `[patch.crates-io] tokio = { path =
+  // "tokio" }`) makes a matching registry/git dependency resolve to the in-repo crate —
+  // a crate edge citing the dependency line and the patch line. Overrides that create
+  // no edge (outside the repository, no crate, version mismatch) are reported by the
+  // scan, never followed (`resolveCargoPatches`).
+  for (const edge of resolveCargoPatches(discovery, readFile).edges) {
+    const id = typedId("relation", edge.fromDir, edge.toDir);
+    const key = `unit:${edge.fromDir}->${edge.toDir}`;
+    addRelation(edge.fromDir, edge.toDir, id, key, { source: { path: edge.manifestPath, startLine: edge.line, endLine: edge.line } });
+    addRelation(edge.fromDir, edge.toDir, id, key, { source: { path: "Cargo.toml", startLine: edge.patchLine, endLine: edge.patchLine } });
+  }
 
   emitExternalSystems({ discovery, readFile, externalUsagesByPackage, entityDescriptors, addRelation });
   attachObservedLanguageTags(discovery, entityDescriptors);
@@ -1589,14 +1881,22 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
   // Assign collision-free IDs in a fully canonical order (independent of discovery order).
   const sortedEntities = [...entityDescriptors].sort((left, right) =>
     left.desiredId.localeCompare(right.desiredId) || left.naturalKey.localeCompare(right.naturalKey));
-  const entityIds = resolveCollisions(sortedEntities.map(descriptor => descriptor.desiredId));
+  // Real declarations claim ids first, globally: a recovered (parse-error) declaration is
+  // allocated only after every real one, so neither its bare id nor a `-N` suffix can take
+  // an id a real declaration desires (`anonymousEnum_2` keeps `…-anonymous-enum-2` beside
+  // `enum {}`). Without recovered declarations this is the plain canonical order.
+  const allocationOrder = sortedEntities.map((_, index) => index)
+    .sort((left, right) => Number(sortedEntities[left]!.recovered === true) - Number(sortedEntities[right]!.recovered === true) || left - right);
+  const allocated = resolveCollisions(allocationOrder.map(index => sortedEntities[index]!.desiredId));
+  const entityIds: string[] = new Array(sortedEntities.length);
+  allocationOrder.forEach((index, position) => { entityIds[index] = allocated[position]!; });
   const idByKey = new Map(sortedEntities.map((descriptor, index) => [descriptor.naturalKey, entityIds[index]!]));
 
   const entities: ArchitectureExtractionEntity[] = sortedEntities.map((descriptor, index) => ({
     id: entityIds[index]!,
     kind: descriptor.kind,
     ...(descriptor.parentKey !== undefined ? { parentId: idByKey.get(descriptor.parentKey)! } : {}),
-    name: descriptor.name,
+    name: entityDisplayName(descriptor.kind, descriptor.name),
     ...(descriptor.technology?.length ? { technology: [...descriptor.technology] } : {}),
     ...(descriptor.exposure?.length ? { exposure: descriptor.exposure.filter((entry, index, entries) =>
       entries.findIndex(candidate => candidate.kind === entry.kind
