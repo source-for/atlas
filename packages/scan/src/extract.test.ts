@@ -937,3 +937,26 @@ test("unresolved relative imports are recorded with path, line and specifier: so
   ], "resolved files and tracked non-source files (logo.svg, legacy.js) are not reported; a missing asset is; one entry per (path, line, specifier)");
   assert.deepEqual(collect([...paths].reverse()).unresolvedRelativeImports, collected.unresolvedRelativeImports, "independent of discovery order");
 });
+
+// CLA-578 round 2: bundler `?query` / `#fragment` suffixes name the same file.
+test("queried relative imports resolve by their path: existing files record an edge or stay quiet; missing ones are reported verbatim", () => {
+  const files: Record<string, string> = {
+    "pkg/a/src/index.ts": [
+      "import Worker from './worker.ts?worker';",
+      "import url from './logo.svg?url';",
+      "import text from './text.txt?raw';",
+      "import gone from './gone.svg?url';",
+      "import frag from './frag.css#section';",
+      "export const all = [Worker, url, text, gone, frag];",
+    ].join("\n"),
+    "pkg/a/src/worker.ts": "export const work = 1;\n",
+  };
+  const paths = ["pkg/a/src/index.ts", "pkg/a/src/worker.ts"];
+  const trackedFiles = new Set([...paths, "pkg/a/src/logo.svg", "pkg/a/src/text.txt", "pkg/a/src/frag.css"]);
+  const discovery: Discovery = { sourceFiles: paths, units: [{ kind: "member", dir: "pkg/a", name: "a", evidencePath: "pkg/a" }], unitByFile: new Map(paths.map(path => [path, "pkg/a"])), unitByPackageName: new Map(), trackedFiles, summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const collected = collectExtractedArchitecture({ discovery, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
+  assert.deepEqual(collected.unresolvedRelativeImports, [
+    { path: "pkg/a/src/index.ts", line: 4, specifier: "./gone.svg?url" },
+  ], "existing ?url/?raw/#fragment targets are not reported; a missing one keeps its original specifier");
+  assert.ok(collected.extraction.relations.some(relation => relation.from === "component:pkg-a-src-index-ts" && relation.to === "component:pkg-a-src-worker-ts"), "./worker.ts?worker records the file-level edge");
+});

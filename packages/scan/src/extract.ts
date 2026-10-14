@@ -1060,6 +1060,17 @@ export interface ExtractedArchitecture {
   clonePairs: readonly ClonePair[];
 }
 
+/**
+ * The path part of a relative module specifier: a bundler `?query` (`./logo.svg?url`,
+ * `./worker.ts?worker`) or `#fragment` names the same file, so it is dropped before
+ * file/unit resolution. Used for the file-level import edge only — the symbol pass
+ * keeps the raw specifier, since a `?raw`/`?worker` import's bindings are not the
+ * target module's exports.
+ */
+export function relativeSpecifierPath(specifier: string): string {
+  return specifier.replace(/[?#].*$/, "");
+}
+
 const IMPORT_TARGET_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"] as const;
 
 /**
@@ -1290,16 +1301,17 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
         source: { path: file, startLine: dependency.startLine, endLine: dependency.endLine },
       };
       if (dependency.specifier.startsWith(".")) {
-        const target = resolveFile(file, dependency.specifier);
+        const specifierPath = relativeSpecifierPath(dependency.specifier);
+        const target = resolveFile(file, specifierPath);
         if (target && target !== file) {
           addRelation(file, target, typedId("relation", file, target), `comp:${file}->${target}`, evidence);
         } else if (!target) {
           // A relative import escaping the discovered set (e.g. the generated WASM
           // pkg) still names its owning unit — keep the container-level fact.
-          const targetUnit = resolveRelativeUnitImport(file, dependency.specifier, unitDirs);
+          const targetUnit = resolveRelativeUnitImport(file, specifierPath, unitDirs);
           if (targetUnit && targetUnit !== unitDir) {
             addRelation(unitDir, targetUnit, typedId("relation", unitDir, targetUnit), `unit:${unitDir}->${targetUnit}`, evidence);
-          } else if (!isTrackedImportTarget(file, dependency.specifier, trackedFiles)) {
+          } else if (!isTrackedImportTarget(file, specifierPath, trackedFiles)) {
             // No relation and no such file in the repository: the edge is lost, so say
             // so (never silent). An existing asset/JSON/skipped file is not a gap.
             unresolvedRelativeImports.push({ path: file, line: dependency.startLine, specifier: dependency.specifier });
