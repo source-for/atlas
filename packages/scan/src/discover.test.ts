@@ -513,3 +513,28 @@ test("an import of an existing tracked file is never unresolved: single-package 
     assert.ok(!limitations.some(line => line.includes("relative import")), `tooling imports of tracked JSON / a skipped .js are not unresolved: ${limitations.join(" | ")}`);
   });
 });
+
+test("same dir as both a JS member and a Rust crate: one Rust unit that keeps the npm name alias", () => {
+  withRepo({
+    "package.json": JSON.stringify({ name: "mono", workspaces: ["engine", "app"] }),
+    "tsconfig.json": "{}",
+    "Cargo.toml": '[workspace]\nmembers = ["engine"]\n',
+    "engine/package.json": JSON.stringify({ name: "@m/engine" }),
+    "engine/Cargo.toml": '[package]\nname = "engine"\n',
+    "engine/src/lib.rs": "pub fn run() {}\n",
+    "engine/src/index.ts": "export const e = 1;\n",
+    "app/package.json": JSON.stringify({ name: "@m/app" }),
+    "app/main.ts": "import { e } from '@m/engine';\nexport const a = e;\n",
+  }, dir => {
+    const discovery = discoverRepository(dir);
+    assert.deepEqual(discovery.units.filter(unit => unit.dir === "engine"), [
+      { kind: "rust", dir: "engine", name: "engine", evidencePath: "engine", packageName: "@m/engine" },
+    ], "exactly one unit owns the dir");
+    assert.equal(discovery.unitByPackageName.get("@m/engine"), "engine");
+    assert.equal(discovery.unitByFile.get("engine/src/index.ts"), "engine");
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    const { snapshot } = scanRepository(dir, { analysisMode: "quick" });
+    assert.deepEqual(snapshot.entities.filter(entity => entity.kind === "container").map(entity => entity.id).sort(), ["container:app", "container:engine"]);
+    assert.ok(snapshot.relations.some(relation => relation.from === "container:app" && relation.to === "container:engine"), "an import of the npm name resolves to the merged unit");
+  });
+});

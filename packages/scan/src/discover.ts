@@ -34,6 +34,10 @@ export interface SourceUnit {
    */
   dir: string;
   name: string;
+  /**
+   * The npm package name. On a `rust` unit it is set only when the same directory is
+   * also a JS workspace member (the crate owns the dir; the npm name still maps to it).
+   */
   packageName?: string;
   /** Repository-relative anchor for the container. */
   evidencePath: string;
@@ -585,8 +589,11 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
     if (options.foldReexportShims !== false) reexportAliases = foldReexportShims(sourceRoot, unitByFile, nonMemberFiles);
     // Pruned when every non-member file was a folded shim.
     const hasTooling = nonMemberFiles.size > 0;
+    // A member whose dir is also a crate dir lost every file to the crate (ties go to
+    // Rust): it is merged into the crate's unit below, never a second unit.
+    const rustCrateDirSet = new Set(rustCrateDirs);
     const membersWithSource = allMembers
-      .filter(dir => !skippedMemberSet.has(dir))
+      .filter(dir => !skippedMemberSet.has(dir) && !rustCrateDirSet.has(dir))
       .filter(dir => sourceCandidates.some(file => unitByFile.get(file) === dir));
     for (const dir of membersWithSource) {
       const name = readPackageName(sourceRoot, dir);
@@ -599,7 +606,10 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
   }
 
   for (const dir of rustCrateDirs) {
-    units.push({ kind: "rust", dir, name: dir.replace(/^crates\//, ""), evidencePath: dir });
+    // Same dir as a (non-skipped) JS member: one Rust unit that also answers to the npm name.
+    const packageName = memberDirs.has(dir) && !skippedMemberSet.has(dir) ? readPackageName(sourceRoot, dir) : undefined;
+    units.push({ kind: "rust", dir, name: dir.replace(/^crates\//, ""), evidencePath: dir, ...(packageName ? { packageName } : {}) });
+    if (packageName) unitByPackageName.set(packageName, dir);
   }
 
   const sourceFiles = [...unitByFile.keys()].sort();
