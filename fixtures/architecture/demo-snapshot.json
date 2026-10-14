@@ -669,8 +669,8 @@
           "path": "apps/web/src/App.tsx",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "CanvasViewport",
-          "startLine": 6933,
-          "endLine": 6938
+          "startLine": 6962,
+          "endLine": 6967
         }
       ],
       "sourceExcerpts": [
@@ -678,9 +678,9 @@
           "path": "apps/web/src/App.tsx",
           "symbol": "CanvasViewport",
           "language": "tsx",
-          "startLine": 6933,
-          "endLine": 6938,
-          "highlightLine": 6933,
+          "startLine": 6962,
+          "endLine": 6967,
+          "highlightLine": 6962,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "          <CanvasViewport",
@@ -2064,8 +2064,8 @@
           "path": "crates/atlas-gpu/src/glyph.rs",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "GlyphAtlas",
-          "startLine": 157,
-          "endLine": 162
+          "startLine": 206,
+          "endLine": 211
         }
       ],
       "sourceExcerpts": [
@@ -2073,9 +2073,9 @@
           "path": "crates/atlas-gpu/src/glyph.rs",
           "symbol": "GlyphAtlas",
           "language": "rust",
-          "startLine": 157,
-          "endLine": 162,
-          "highlightLine": 157,
+          "startLine": 206,
+          "endLine": 211,
+          "highlightLine": 206,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "pub struct GlyphAtlas {",

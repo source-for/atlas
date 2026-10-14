@@ -44,7 +44,8 @@ test('world/CSS layout scales identically, including wrap lines and baselines', 
 test('preserves explicit paragraph breaks and whole graphemes, with honest no-fit for tiny widths', () => {
   assert.deepEqual(wrapDisplayText('First paragraph\nSecond paragraph', 300, 11, 3), ['First paragraph', 'Second paragraph']);
   const combined = 'e\u0301e\u0301e\u0301';
-  const lines = wrapDisplayText(combined, 15, 11, 8);
+  // A combining mark has no atlas glyph, so it measures as U+FFFD (1 em): one grapheme is 17.04 wide.
+  const lines = wrapDisplayText(combined, 20, 11, 8);
   assert.equal(lines.join(''), combined);
   assert.ok(lines.every(line => !line.startsWith('\u0301')));
   assert.deepEqual(wrapDisplayText('Wider', .1, 11, 3), []);
