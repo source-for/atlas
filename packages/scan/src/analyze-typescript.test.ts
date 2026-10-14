@@ -3,7 +3,7 @@ import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { analyzeTypeScript } from "./analyze-typescript.js";
+import { analyzeTypeScript, relativizeCompilerMessage } from "./analyze-typescript.js";
 import { collectExtractedArchitecture } from "./extract.js";
 import { discoverExtractedTree } from "./discover.js";
 
@@ -124,4 +124,19 @@ test("concrete arrow functions and overloaded implementations retain definite ca
     assert.equal(targets.find(target => target.name === "overloaded")!.startLine, 4);
     assert.equal(analysis.coverage[0]!.limitations.length, 0);
   } finally { repo.cleanup(); }
+});
+
+test("CLA-586: compiler messages name scanned files root-relative and other locations by label", () => {
+  const root = "/work/okie-committed-Ab12/repo";
+  const labelled = [["installation", "/home/me/repo"], ["home", "/home/me"]] as const;
+  assert.equal(
+    relativizeCompilerMessage(`File '${root}/lib/b.ts' is not under 'rootDir' '${root}/src'. Root '${root}'.`, root, labelled),
+    "File 'lib/b.ts' is not under 'rootDir' 'src'. Root '.'.",
+  );
+  // Longest prefix wins; a prefix only matches at a path boundary.
+  assert.equal(
+    relativizeCompilerMessage("/home/me/repo/node_modules/x/index.d.ts, /home/me/other and /home/me/repo-old/a.ts", root, labelled),
+    "<installation>/node_modules/x/index.d.ts, <home>/other and <home>/repo-old/a.ts",
+  );
+  assert.equal(relativizeCompilerMessage(`${root}-sibling/a.ts`, root), `${root}-sibling/a.ts`);
 });

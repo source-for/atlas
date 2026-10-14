@@ -1,5 +1,6 @@
 import ts from "typescript";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { AnalysisDefinition, AnalysisExternalReference, AnalysisLocation, LanguageAnalysis } from "./language-analysis.js";
 import { dependencyContext } from './dependency-context.js';
@@ -20,6 +21,27 @@ export function typedPackageOf(name: string): string | undefined {
   if (!match) return undefined;
   const scoped = /^([^_]+)__(.+)$/.exec(match[1]!);
   return scoped ? `@${scoped[1]}/${scoped[2]}` : match[1];
+}
+
+/**
+ * Compiler messages name absolute paths (`File '/tmp/okie-committed-x/repo/lib/b.ts' is not under 'rootDir' …`).
+ * Paths inside `root` become root-relative (`root` itself `.`); the other prefixes become `<label>`, longest first,
+ * so a limitation never depends on the temporary checkout or where the repository lives.
+ */
+export function relativizeCompilerMessage(text: string, root: string, labelled: ReadonlyArray<readonly [label: string, path: string | undefined]> = []): string {
+  const forms = (path: string): string[] => {
+    let physical = path;
+    try { physical = realpathSync(path); } catch { /* keep the lexical path */ }
+    return [...new Set([path, physical].map(form => form.split(sep).join("/").replace(/\/+$/, "")).filter(Boolean))];
+  };
+  const prefixes = [...forms(root).map(path => [path, ""] as const), ...labelled.flatMap(([label, path]) => path ? forms(path).map(form => [form, `<${label}>`] as const) : [])]
+    .sort((left, right) => right[0].length - left[0].length);
+  for (const [path, label] of prefixes) {
+    // The prefix must end at a path boundary: `/repo` never rewrites `/repo-other`.
+    const pattern = new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:/|(?=['"\\s,:;)\\]]|$))`, "g");
+    text = text.replace(pattern, match => label ? `${label}${match.endsWith("/") ? "/" : ""}` : match.endsWith("/") ? "" : ".");
+  }
+  return text;
 }
 
 /** Real project-aware compiler analysis; unresolved dependencies remain explicit limitations. */
@@ -52,6 +74,8 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
     return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
   };
   const allowed = new Set((discoveredFiles ?? paths.map(relativePath)).filter(path => /\.[cm]?[jt]sx?$/.test(path)).map(path => resolve(root, path)));
+  const message = (diagnostic: ts.Diagnostic | ts.DiagnosticMessageChain): string =>
+    relativizeCompilerMessage(ts.flattenDiagnosticMessageText(diagnostic.messageText, " "), root, [["installation", installationRoot], ["home", homedir()]]);
   const result: LanguageAnalysis = { schemaVersion: 1, definitions: [], references: [], modules: [], coverage: [] };
   const limitations = new Set<string>();
   const indexed = new Set<string>();
@@ -64,10 +88,10 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
   const loadConfig = (path: string): void => {
     if (projects.has(path)) return;
     const read = ts.readConfigFile(path, ts.sys.readFile);
-    if (read.error) { limitations.add(`${relativePath(path)}: ${ts.flattenDiagnosticMessageText(read.error.messageText, " ")}`); return; }
+    if (read.error) { limitations.add(`${relativePath(path)}: ${message(read.error)}`); return; }
     const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, dirname(path), undefined, path);
     projects.set(path, parsed);
-    for (const diagnostic of parsed.errors) limitations.add(`${relativePath(path)}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, " ")}`);
+    for (const diagnostic of parsed.errors) limitations.add(`${relativePath(path)}: ${message(diagnostic)}`);
     for (const reference of parsed.projectReferences ?? []) loadConfig(ts.resolveProjectReferencePath(reference));
   };
   for (const config of configs) loadConfig(config);
@@ -143,7 +167,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
     for (const diagnostic of [...program.getOptionsDiagnostics(), ...program.getSyntacticDiagnostics(), ...program.getSemanticDiagnostics()]) {
       if (diagnostic.category !== ts.DiagnosticCategory.Error) continue;
       const prefix = diagnostic.file && inside(diagnostic.file.fileName) ? relativePath(diagnostic.file.fileName) : config === "<inferred>" ? config : relativePath(config);
-      limitations.add(`${prefix}: TS${diagnostic.code}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, " ")}`);
+      limitations.add(`${prefix}: TS${diagnostic.code}: ${message(diagnostic)}`);
     }
     const targetDefinition = (symbol: ts.Symbol | undefined): AnalysisDefinition | undefined => {
       if (!symbol) return undefined;
