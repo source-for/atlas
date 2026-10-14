@@ -104,6 +104,51 @@ describe('Source tab while the excerpt is in flight', () => {
     expect(host.querySelector('[data-testid="source-loading"]')).toBeNull();
     expect(host.querySelector('#source-panel')!.textContent).toContain('Source excerpt unavailable');
   });
+
+  it('shows the skeleton again for a new request after an empty result: reopening the tab, or returning to the entity', async () => {
+    await mount(codeDeepLink, true);
+    const requests: Array<ReturnType<typeof deferred<SceneSourceExcerpt[] | undefined>>> = [];
+    vi.spyOn(fixture, 'ensureExcerpts').mockImplementation(id => {
+      const request = deferred<SceneSourceExcerpt[] | undefined>();
+      requests.push(request);
+      // Like the real loader, a fetched excerpt is also kept on the snapshot entity.
+      return request.promise.then(excerpts => {
+        const entity = fixture.snapshot.entities.find(candidate => candidate.id === id)!;
+        if (excerpts?.length) entity.sourceExcerpts = excerpts as typeof entity.sourceExcerpts;
+        return excerpts;
+      }) as ReturnType<ScanFixture['ensureExcerpts']>;
+    });
+    const panel = () => host.querySelector('#source-panel');
+    const loading = () => Boolean(panel()?.querySelector('[data-testid="source-loading"]'));
+    await click('#source-tab');
+    await act(async () => requests[0]!.resolve([]));
+    await settle();
+    expect(panel()!.textContent).toContain('Source excerpt unavailable');
+    // Reopen: Details, then Source again starts a second request.
+    await click('#details-tab');
+    await click('#source-tab');
+    expect(requests).toHaveLength(2);
+    expect(loading()).toBe(true);
+    expect(panel()!.textContent).not.toContain('unavailable');
+    await act(async () => requests[1]!.resolve([]));
+    await settle();
+    expect(panel()!.textContent).toContain('Source excerpt unavailable');
+    // Return: leave for the parent, come Back, open Source on the same entity again.
+    await click('#details-tab');
+    await click('.inspector-link-list button[data-inspector-entity-id="component:web-navigation"]');
+    await settle();
+    expect(entityTitle()).toBe('Navigation and history');
+    await click('[data-testid="inspector-back"]');
+    await settle();
+    expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-selected-entity-id')).toBe('code:web-navigation:navigation-state');
+    await click('#source-tab');
+    expect(requests).toHaveLength(3);
+    expect(loading()).toBe(true);
+    expect(panel()!.textContent).not.toContain('unavailable');
+    await act(async () => requests[2]!.resolve([excerpt]));
+    await settle();
+    expect(panel()!.textContent).toContain('export type NavigationState = {');
+  });
 });
 
 describe('open inside a non-resident child', () => {
@@ -118,6 +163,7 @@ describe('open inside a non-resident child', () => {
     }));
     return compiles;
   }
+  const storiesName = snapshot.entities.find(entity => entity.id === 'component:web-stories')!.name;
   const childButton = (id: string) => `.inspector-link-list button[data-inspector-entity-id="${id}"]`;
 
   it("shows the target's header at once and a skeleton until the compiled map commits, then the normal content", async () => {
@@ -138,7 +184,7 @@ describe('open inside a non-resident child', () => {
     expect(kicker()).toBe('L3 · COMPONENT');
   });
 
-  it('ends on the last of several rapid child clicks, with no flash of an earlier one', async () => {
+  it('ends on the last of several same-tick child clicks, with no flash of an earlier one', async () => {
     const compiles = await openContainer();
     const seen = new Set<string>();
     const observer = new MutationObserver(() => {
@@ -160,6 +206,51 @@ describe('open inside a non-resident child', () => {
     expect(pendingTitle()).toBeUndefined();
     expect(entityTitle()).toBe('Application shell');
     expect([...seen]).not.toContain('Navigation and history');
+  });
+
+  // A is compiling when the reader leaves it (Back, the control that stays live
+  // over the pending view) and opens B; A's compile is still outstanding while
+  // B's runs. Released in either order, nothing of A is ever drawn again.
+  it.each([['A then B', 0, 1], ['B then A', 1, 0]] as const)('ends on B when two child compiles overlap, released %s', async (_order, firstIndex, secondIndex) => {
+    const compiles = await openContainer();
+    await click(childButton('component:web-shell'));
+    await settle();
+    await act(async () => compiles[0]!.release());
+    await settle();
+    await click(childButton('container:web-app'));
+    await settle();
+    expect(entityTitle()).toBe('Atlas web app');
+    await click(childButton('component:web-navigation'));
+    await settle();
+    expect(pendingTitle()).toBe('Navigation and history');
+    await click('[data-testid="inspector-back"]');
+    await settle();
+    expect(entityTitle()).toBe('Atlas web app');
+    const app = host.querySelector('[data-testid="atlas-app"]')!;
+    const seen = new Set<string>();
+    const record = () => { for (const value of [pendingTitle(), entityTitle(), app.getAttribute('data-selected-entity-id')]) if (value) seen.add(value); };
+    const observer = new MutationObserver(record);
+    observer.observe(host, { attributes: true, childList: true, subtree: true, characterData: true });
+    // B has not been opened before, so its scene is not cached and it compiles.
+    await click(childButton('component:web-stories'));
+    await settle();
+    record();
+    const pending = compiles.slice(1);
+    expect(pending.map(compile => compile.focus)).toEqual(['component:web-navigation', 'component:web-stories']);
+    expect(pendingTitle()).toBe(storiesName);
+    await act(async () => pending[firstIndex]!.release());
+    await settle();
+    record();
+    if (firstIndex === 0) expect(pendingTitle()).toBe(storiesName);
+    await act(async () => pending[secondIndex]!.release());
+    await settle();
+    record();
+    observer.disconnect();
+    expect(pendingTitle()).toBeUndefined();
+    expect(entityTitle()).toBe(storiesName);
+    expect(app.getAttribute('data-selected-entity-id')).toBe('component:web-stories');
+    expect(seen).not.toContain('Navigation and history');
+    expect(seen).not.toContain('component:web-navigation');
   });
 
   it('drops the pending child when Back is used during the wait', async () => {

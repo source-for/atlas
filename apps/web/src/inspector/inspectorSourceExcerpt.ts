@@ -1,19 +1,23 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { completeFixturePreparation } from '../renderer/fixturePreparation';
 import type { SceneSourceExcerpt } from '../renderer/types';
 
 /** What the Source tab may claim about the selected entity's excerpt. */
 export type InspectorSourceExcerptStatus = 'ready' | 'loading' | 'unavailable' | 'failed';
 
-type Settled = { entityId: string; outcome: 'unavailable' | 'failed' };
+/** One excerpt request: from the render that wants it until the tab, the entity or a foreground load changes. */
+type RequestSession = { entityId: string };
+type Settled = { session: RequestSession; outcome: 'unavailable' | 'failed' };
 
 /**
  * Fetches the selected code entity's excerpt while the Source tab shows it, and
  * reports `loading` from the first render that wants it, so the tab never claims
- * "unavailable" while the request is still in flight.
+ * "unavailable" while a request is still in flight.
  *
- * Last selection wins: a response for an entity that is no longer selected is
- * dropped, and a settled outcome only describes the entity it was fetched for.
+ * A settled outcome only describes the request that produced it: reopening the
+ * tab, returning to the entity or retrying after a foreground load starts a new
+ * request, which is `loading` again until it settles. A response for an entity
+ * that is no longer selected is dropped.
  */
 export function useInspectorSourceExcerpt({ entityId, wanted, hasExcerpts, blocked, load, attach, onFailure }: {
   entityId: string;
@@ -27,32 +31,35 @@ export function useInspectorSourceExcerpt({ entityId, wanted, hasExcerpts, block
   onFailure: () => void;
 }): InspectorSourceExcerptStatus {
   const [settled, setSettled] = useState<Settled>();
+  // Derived during render so the first render of a new request already reads `loading`.
+  const sessionRef = useRef<RequestSession>(undefined);
+  if (!wanted || hasExcerpts || blocked) sessionRef.current = undefined;
+  else if (sessionRef.current?.entityId !== entityId) sessionRef.current = { entityId };
+  const session = sessionRef.current;
   useEffect(() => {
-    if (!wanted || hasExcerpts || blocked) return;
+    if (!session) return;
     let cancelled = false;
-    // A retry after a failure is loading again, not failed.
-    setSettled(current => current?.entityId === entityId && current.outcome === 'failed' ? undefined : current);
-    void completeFixturePreparation(load(entityId), () => !cancelled, excerpts => {
-      if (excerpts?.length) attach(entityId, excerpts);
-      else setSettled({ entityId, outcome: 'unavailable' });
+    void completeFixturePreparation(load(session.entityId), () => !cancelled, excerpts => {
+      if (excerpts?.length) attach(session.entityId, excerpts);
+      else setSettled({ session, outcome: 'unavailable' });
     }, () => {
-      setSettled({ entityId, outcome: 'failed' });
+      setSettled({ session, outcome: 'failed' });
       onFailure();
     });
     return () => { cancelled = true; };
-    // The callbacks are recreated each render; only these inputs start a request.
+    // The callbacks are recreated each render; only a new session starts a request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wanted, hasExcerpts, blocked, entityId]);
-  return inspectorSourceExcerptStatus({ entityId, wanted, hasExcerpts, settled });
+  }, [session]);
+  return inspectorSourceExcerptStatus({ wanted, hasExcerpts, session, settled });
 }
 
-export function inspectorSourceExcerptStatus({ entityId, wanted, hasExcerpts, settled }: {
-  entityId: string;
+export function inspectorSourceExcerptStatus({ wanted, hasExcerpts, session, settled }: {
   wanted: boolean;
   hasExcerpts: boolean;
+  session: RequestSession | undefined;
   settled: Settled | undefined;
 }): InspectorSourceExcerptStatus {
   if (hasExcerpts) return 'ready';
   if (!wanted) return 'unavailable';
-  return settled?.entityId === entityId ? settled.outcome : 'loading';
+  return session && settled?.session === session ? settled.outcome : 'loading';
 }
