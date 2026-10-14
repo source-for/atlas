@@ -474,7 +474,7 @@ test("a relative import escaping the discovered set maps to the owning unit as a
     sourceFiles: ["apps/web/src/adapter.ts"],
     units: [
       { kind: "member", dir: "apps/web", name: "@acme/web", packageName: "@acme/web", evidencePath: "apps/web", packageManifest: "apps/web/package.json" },
-      { kind: "rust", dir: "crates/engine-wasm", name: "engine-wasm", evidencePath: "crates/engine-wasm" },
+      { kind: "rust", dir: "crates/engine-wasm", name: "engine-wasm", evidencePath: "crates/engine-wasm", packageManifest: undefined },
     ],
     unitByFile: new Map([["apps/web/src/adapter.ts", "apps/web"]]),
     unitByPackageName: new Map([["@acme/web", "apps/web"]]),
@@ -529,8 +529,8 @@ test("Cargo path dependencies become container edges between crate units", () =>
   const discovery: Discovery = {
     sourceFiles: [],
     units: [
-      { kind: "rust", dir: "crates/engine-wasm", name: "engine-wasm", evidencePath: "crates/engine-wasm" },
-      { kind: "rust", dir: "crates/engine-core", name: "engine-core", evidencePath: "crates/engine-core" },
+      { kind: "rust", dir: "crates/engine-wasm", name: "engine-wasm", evidencePath: "crates/engine-wasm", packageManifest: undefined },
+      { kind: "rust", dir: "crates/engine-core", name: "engine-core", evidencePath: "crates/engine-core", packageManifest: undefined },
     ],
     unitByFile: new Map(),
     unitByPackageName: new Map(),
@@ -571,8 +571,8 @@ test("observed language tags land on system, containers, and file components (CL
     sourceFiles: ["pkg/app/src/a.ts", "pkg/app/src/widget.tsx", "scripts/build.mjs", "crates/engine/src/lib.rs"],
     units: [
       { kind: "member", dir: "pkg/app", name: "@acme/app", packageName: "@acme/app", evidencePath: "pkg/app", packageManifest: "pkg/app/package.json" },
-      { kind: "tooling", dir: "tooling", name: "Build tooling", evidencePath: "scripts" },
-      { kind: "rust", dir: "crates/engine", name: "engine", evidencePath: "crates/engine" },
+      { kind: "tooling", dir: "tooling", name: "Build tooling", evidencePath: "scripts", packageManifest: undefined },
+      { kind: "rust", dir: "crates/engine", name: "engine", evidencePath: "crates/engine", packageManifest: undefined },
     ],
     unitByFile: new Map([
       ["pkg/app/src/a.ts", "pkg/app"],

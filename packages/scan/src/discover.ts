@@ -44,8 +44,9 @@ export interface SourceUnit {
    * member, the root unit (if the root manifest exists), and a `rust` unit whose dir
    * is also a JS member. THE predicate for "this unit has npm manifest facts"
    * (runtime dependencies, exports/main/types, bin) — never test `kind` for that.
+   * Required (`undefined` when there is none) so no unit can omit it by accident.
    */
-  packageManifest?: string;
+  packageManifest: string | undefined;
   /** Repository-relative anchor for the container. */
   evidencePath: string;
 }
@@ -576,7 +577,7 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
       dir: rootKey,
       name: rootName,
       ...(rootPackage ? { packageName: rootPackage } : {}),
-      ...(hasRootManifest ? { packageManifest: "package.json" } : {}),
+      packageManifest: hasRootManifest ? "package.json" : undefined,
       evidencePath: hasRootManifest ? "package.json" : rootKey,
     });
     if (rootPackage) unitByPackageName.set(rootPackage, rootKey);
@@ -610,7 +611,7 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
       if (name) unitByPackageName.set(name, dir);
     }
     if (hasTooling) {
-      units.push({ kind: "tooling", dir: TOOLING_UNIT_KEY, name: "Build & fixture tooling", evidencePath: "scripts" });
+      units.push({ kind: "tooling", dir: TOOLING_UNIT_KEY, name: "Build & fixture tooling", evidencePath: "scripts", packageManifest: undefined });
     }
   }
 
@@ -625,7 +626,7 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
       name: dir.replace(/^crates\//, ""),
       evidencePath: dir,
       ...(packageName ? { packageName } : {}),
-      ...(isJsMember ? { packageManifest: `${dir}/package.json` } : {}),
+      packageManifest: isJsMember ? `${dir}/package.json` : undefined,
     });
     if (packageName) unitByPackageName.set(packageName, dir);
   }
