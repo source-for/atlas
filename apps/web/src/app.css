@@ -1188,6 +1188,8 @@ html[data-atlas-attribution] .cookie-notice { bottom: var(--atlas-attribution-he
 .boot-shell .search-trigger:hover { border-color: var(--atlas-line); background: rgba(255, 255, 255, .025); }
 .boot-shell .icon-button { cursor: default; }
 .boot-shell .brand-block { justify-self: start; }
+/* The saved inspector width can arrive with the data on a route's first visit: take it in one step, not an animation. */
+.boot-shell .workspace { transition: none; }
 .boot-menu-summary { width: 34px; height: 28px; border: 1px solid var(--atlas-line); border-radius: 7px; background: rgba(255,255,255,.025); }
 @media (max-width: 780px) {
   .boot-menu-summary { width: 31px; }

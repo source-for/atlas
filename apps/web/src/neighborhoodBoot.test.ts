@@ -11,7 +11,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-const PACKET = { kind: 'neighborhood' } as unknown as ArchitectureNeighborhoodPacket;
+const PACKET = { kind: 'neighborhood', snapshot: { repositoryId: 'repo:source-for-atlas' } } as unknown as ArchitectureNeighborhoodPacket;
 const SCOPES = [{ entityId: 'system:x', scopeId: 's', name: 'X', state: 'not run' }] as unknown as OperatorScope[];
 
 function harness(options: { slug?: string; versionId?: string; fixtureVersionId?: string } = {}) {
@@ -70,6 +70,8 @@ describe('CLA-268 published atlas boot ordering', () => {
     await expect(explanations).resolves.toBe(SCOPES);
     expect(boot.loadExplanations).toHaveBeenCalledTimes(1);
     expect(boot.onNeighborhoodArrived).toHaveBeenCalledTimes(1);
+    // The skeleton learns the repository (for its saved inspector width) from the bootstrap packet.
+    expect(boot.onNeighborhoodArrived).toHaveBeenCalledWith('repo:source-for-atlas');
     expect(boot.log).toContain('neighborhood:component:deep');
   });
 

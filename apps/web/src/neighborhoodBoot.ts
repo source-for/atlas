@@ -13,8 +13,11 @@ export type NeighborhoodBootDeps = {
   /** Fetch, validate and compile the atlas through `host` (loadScanNeighborhoodFixtureFromSearch). */
   loadFixture(host: ScanNeighborhoodHost): Promise<ScanFixture>;
   loadExplanations(slug: string, versionId: string): Promise<OperatorScope[] | undefined>;
-  /** Called once, after the bootstrap neighbourhood body has arrived (and after the explanations request starts). */
-  onNeighborhoodArrived(): void;
+  /**
+   * Called once, after the bootstrap neighbourhood body has arrived (and after the explanations request starts), with
+   * the repository it belongs to.
+   */
+  onNeighborhoodArrived(repositoryId: string): void;
 };
 
 export type NeighborhoodBoot = {
@@ -41,7 +44,7 @@ export async function bootNeighborhoodAtlas(deps: NeighborhoodBootDeps): Promise
         arrived = true;
         const versionId = host.publication?.()?.versionId;
         if (slug && versionId) early = startExplanations(versionId);
-        deps.onNeighborhoodArrived();
+        deps.onNeighborhoodArrived(packet.snapshot.repositoryId);
       }
       return packet;
     },

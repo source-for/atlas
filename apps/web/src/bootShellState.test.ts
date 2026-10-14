@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { BootShell } from './BootShell';
-import { advanceBootShellStep, BOOT_SHELL_STEPS, bootShellHeaderSlots, bootShellLayout, bootShellStepLabel } from './bootShellState';
+import { advanceBootShellStep, BOOT_SHELL_STEPS, bootShellHeaderSlots, bootShellLayout, bootShellRepositoryId, bootShellStepLabel, createBootShellOwner, initialInspectorWidth, recallRouteRepository, rememberRouteRepository } from './bootShellState';
 import { initialInspectorOpen } from './embedChrome';
-import { defaultInspectorWidth } from './inspector/inspectorPanel';
+import { clampInspectorWidth, defaultInspectorWidth, inspectorWidthStorageKey } from './inspector/inspectorPanel';
+import { navigationStateFromUrl, type NavigationDefaults } from './navigation/navigationState';
 import { parseAppRoute } from './renderer/route';
 
 const top = {};
@@ -42,6 +43,150 @@ describe('CLA-268 boot shell layout matches App\'s first render', () => {
   it('embeds (?embed=1 or framed) get embed chrome with the inspector closed', () => {
     expect(bootShellLayout(page(1440), '?embed=1')).toMatchObject({ embed: true, detailsOpen: false });
     expect(bootShellLayout({ innerWidth: 800, self: {}, top: {} }, '')).toMatchObject({ embed: true, detailsOpen: false });
+  });
+});
+
+function memoryStorage(entries: Record<string, string> = {}) {
+  const map = new Map(Object.entries(entries));
+  return { getItem: (key: string) => map.get(key) ?? null, setItem: (key: string, value: string) => { map.set(key, value); }, map };
+}
+
+/** App's `detailsWidth` initializer, verbatim (App.tsx), for the parity checks below. */
+function appInitialWidth(storage: { getItem(key: string): string | null }, repositoryId: string, viewport: number) {
+  let stored = Number.NaN;
+  try {
+    stored = Number.parseFloat(storage.getItem(inspectorWidthStorageKey(repositoryId)) ?? '');
+  } catch {
+    // as App
+  }
+  return clampInspectorWidth(Number.isFinite(stored) ? stored : defaultInspectorWidth(viewport), viewport);
+}
+
+describe('CLA-268 boot shell keeps the repository\'s saved inspector width', () => {
+  const repo = 'repo:source-for-atlas';
+  it.each([
+    [1440, '520'], [1440, '300'], [1440, '9999'], [1060, '520'], [800, '480'], [640, '420'], [1440, 'wide'], [1440, ''],
+  ])('at %ipx with %s saved, the skeleton\'s width is App\'s', (viewport, saved) => {
+    const storage = memoryStorage({ [inspectorWidthStorageKey(repo)]: saved });
+    expect(bootShellLayout(page(viewport), '', { storage, repositoryId: repo }).detailsWidth).toBe(appInitialWidth(storage, repo, viewport));
+  });
+
+  it('a 520px saved width at 1440 is 520, not the 403 default', () => {
+    const storage = memoryStorage({ [inspectorWidthStorageKey(repo)]: '520' });
+    expect(bootShellLayout(page(1440), '', { storage, repositoryId: repo }).detailsWidth).toBe(520);
+    // Another repository's width is not this one's.
+    expect(initialInspectorWidth(1440, storage, 'repo:other')).toBe(403);
+  });
+
+  it('uses the default while the repository is unknown or storage is unavailable', () => {
+    const storage = memoryStorage({ [inspectorWidthStorageKey(repo)]: '520' });
+    expect(initialInspectorWidth(1440, storage, undefined)).toBe(403);
+    expect(initialInspectorWidth(1440, undefined, repo)).toBe(403);
+    expect(initialInspectorWidth(1440, { getItem: () => { throw new Error('denied'); } }, repo)).toBe(403);
+  });
+});
+
+describe('CLA-268 boot shell repository identity is App\'s', () => {
+  const defaults = (repositoryId: string): NavigationDefaults => ({
+    repositoryId, snapshotId: 'snapshot:x', viewId: 'view:x', rootEntityId: 'system:x', selectedId: 'system:x', camera: { x: 0, y: 0, zoom: 1 },
+  });
+  const base = 'https://atlas.test/r/source-for/atlas';
+  it.each([
+    '',
+    '?nav=1&repo=repo%3Ashared&snap=snapshot%3Ax&view=view%3Ax&root=system%3Ax',
+    '?repo=repo%3Ashared',
+    '?repo=repo%3Afirst&repo=repo%3Alast',
+    '?nav=2&repo=repo%3Ashared',
+    '?nav=1&repo=%20%20',
+    '?repo=%20repo%3Apadded%20',
+    '?repo=bad%01id',
+    `?repo=${'r'.repeat(513)}`,
+    `?repo=repo%3Along&pad=${'x'.repeat(4100)}`,
+    '?embed=1',
+  ])('%s', search => {
+    const href = base + search;
+    expect(bootShellRepositoryId(href, 'repo:source-for-atlas')).toBe(navigationStateFromUrl(href, defaults('repo:source-for-atlas')).state.repositoryId);
+  });
+
+  it('a shared view names its repository before the data has arrived', () => {
+    expect(bootShellRepositoryId(`${base}?nav=1&repo=repo%3Ashared`, undefined)).toBe('repo:shared');
+    expect(bootShellRepositoryId(base, undefined)).toBeUndefined();
+  });
+});
+
+describe('CLA-268 boot shell remembers which repository a route showed', () => {
+  it('recalls what was remembered for that route only', () => {
+    const storage = memoryStorage();
+    expect(recallRouteRepository(storage, 'repo:source-for__atlas')).toBeUndefined();
+    rememberRouteRepository(storage, 'repo:source-for__atlas', 'repo:source-for-atlas');
+    expect(recallRouteRepository(storage, 'repo:source-for__atlas')).toBe('repo:source-for-atlas');
+    expect(recallRouteRepository(storage, 'repo:other')).toBeUndefined();
+  });
+
+  it('never throws when storage is unavailable', () => {
+    const denied = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
+    expect(() => rememberRouteRepository(denied, 'k', 'v')).not.toThrow();
+    expect(recallRouteRepository(denied, 'k')).toBeUndefined();
+    expect(recallRouteRepository(undefined, 'k')).toBeUndefined();
+  });
+});
+
+describe('CLA-268 boot shell root ownership', () => {
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>(res => { resolve = res; });
+    return { promise, resolve };
+  }
+  const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+
+  it('a font load that settles after App was scheduled never paints the skeleton again', async () => {
+    const fonts = deferred();
+    const render = vi.fn();
+    const owner = createBootShellOwner({ render, fontsLoaded: () => false, loadFonts: () => fonts.promise, aborted: () => false });
+    owner.show('data');
+    owner.show('opening', 'repo:x');
+    expect(render).toHaveBeenCalledTimes(2);
+    // main.tsx's renderRoot: release, then schedule App. The skeleton is still in the DOM at this point.
+    owner.release();
+    fonts.resolve();
+    await flush();
+    expect(render).toHaveBeenCalledTimes(2);
+    expect(owner.owns).toBe(false);
+  });
+
+  it('while it owns the root, the late font load repaints the current step with the wordmark shown', async () => {
+    const fonts = deferred();
+    const render = vi.fn();
+    const owner = createBootShellOwner({ render, fontsLoaded: () => false, loadFonts: () => fonts.promise, aborted: () => false });
+    owner.show('data');
+    owner.show('view', 'repo:x');
+    expect(render).toHaveBeenLastCalledWith({ step: 'view', fontsReady: false, atlasRepositoryId: 'repo:x' });
+    fonts.resolve();
+    await flush();
+    expect(render).toHaveBeenCalledTimes(3);
+    expect(render).toHaveBeenLastCalledWith({ step: 'view', fontsReady: true, atlasRepositoryId: 'repo:x' });
+  });
+
+  it('keeps the repository once known, and never paints after startup was aborted', async () => {
+    const fonts = deferred();
+    let aborted = false;
+    const render = vi.fn();
+    const owner = createBootShellOwner({ render, fontsLoaded: () => true, loadFonts: () => fonts.promise, aborted: () => aborted });
+    owner.show('data', 'repo:recalled');
+    owner.show('view');
+    expect(render).toHaveBeenLastCalledWith({ step: 'view', fontsReady: true, atlasRepositoryId: 'repo:recalled' });
+    aborted = true;
+    owner.show('opening');
+    expect(render).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('CLA-268 main.tsx hands the root over only through renderRoot', () => {
+  it('renders nothing but the skeleton straight into the root', () => {
+    const main = readFileSync(new URL('./main.tsx', import.meta.url), 'utf8');
+    const direct = [...main.matchAll(/\broot\.render\(/g)].map(match => main.slice(match.index, match.index + 22));
+    expect(direct).toEqual(['root.render(<BootShell', 'root.render(node);\n}\n\n']);
+    expect(main).toMatch(/function renderRoot\(node: ReactNode\): void \{\n {2}bootShell\.release\(\);\n {2}root\.render\(node\);/);
   });
 });
 
