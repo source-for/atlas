@@ -510,3 +510,57 @@ it('a nudge while the other file is still being prepared keeps Back at where the
   expect(claims()).toMatchObject(onFile(FILE_A));
   expectCamera(captured.camera, before);
 });
+
+/** Remount the app on the current URL, as a reload or deep link would (no L3->L4 morph). */
+async function reopenFromUrl() {
+  const url = window.location.pathname + window.location.search;
+  await act(async () => root.unmount()); host.remove();
+  captured.scene = undefined;
+  await mount(url);
+  await idle();
+}
+
+it('Back after a second file change returns to where that pan began on the second file', async () => {
+  await openFileA();
+  await dragToCentre(cardCentre(FILE_B));
+  await idle();
+  expect(claims()).toMatchObject(onFile(FILE_B));
+  const onB = { ...captured.camera };
+  await dragToCentre(cardCentre(FILE_A));
+  await idle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  await act(async () => window.history.back()); await idle();
+  expect(claims()).toMatchObject(onFile(FILE_B));
+  expectCamera(captured.camera, onB);
+});
+
+it('Back after a pan from a file opened by its URL returns to the camera before the pan', async () => {
+  await openFileA();
+  await reopenFromUrl();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  const before = { ...captured.camera };
+  await dragToCentre(cardCentre(FILE_B));
+  await idle();
+  expect(claims()).toMatchObject(onFile(FILE_B));
+  await act(async () => window.history.back()); await idle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  expectCamera(captured.camera, before);
+});
+
+it('a nudge during preparation keeps Back at the first pan\'s start on a file opened by its URL', async () => {
+  await openFileA();
+  await reopenFromUrl();
+  const before = { ...captured.camera };
+  const held = holdCompiles();
+  await dragToCentre(cardCentre(FILE_B));
+  await idle();
+  expect(held.compile.mock.calls.some(call => call[0] === FILE_B)).toBe(true);
+  const nudge = cardCentre(FILE_B);
+  await dragToCentre({ x: nudge.x + 20 / captured.camera.zoom, y: nudge.y });
+  await idle();
+  await held.release(); await idle();
+  expect(claims()).toMatchObject(onFile(FILE_B));
+  await act(async () => window.history.back()); await idle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  expectCamera(captured.camera, before);
+});

@@ -346,8 +346,9 @@ type ActiveStoryFlight = {
   playAfterArrival: boolean;
 };
 
-/** Where a pan began, and in which scene (CLA-405). */
-type ScanPanStart = { camera: Camera; scene: AtlasScene };
+/** Where a pan began, under which scene root and lens detail (CLA-405). A viewport tile
+ * refresh keeps both; a level change, open inside, restore, story step or zoom handoff does not. */
+type ScanPanStart = { camera: Camera; rootEntityId: string | undefined; detail: SemanticDetail };
 type PendingInspectorCameraFlight = {
   sourceSession: SemanticLensSession;
   targetSession: SemanticLensSession;
@@ -3212,8 +3213,11 @@ export function App() {
   }
 
   function stabilizeSemanticLensForPan(reachedCamera: Camera) {
-    // A start recorded in another scene (a level change or zoom handoff since) is not this pan's.
-    const panStart = panStartCameraRef.current?.scene === sceneRef.current ? panStartCameraRef.current : undefined;
+    // A start recorded under another root or lens detail (a level change or zoom handoff since)
+    // is not this pan's. The scene object itself is not compared: tile refreshes replace it.
+    const recorded = panStartCameraRef.current;
+    const panStart = recorded && recorded.rootEntityId === sceneRef.current.rootEntityId
+      && recorded.detail === semanticLensSessionDetail(semanticLensSessionRef.current) ? recorded : undefined;
     panStartCameraRef.current = undefined;
     if (foregroundSceneRequestRef.current.pending()) return;
     scanViewportInteractionRef.current = 'pan';
@@ -3337,6 +3341,10 @@ export function App() {
     const fence = scanPanFileHandoffFenceRef.current;
     scanPanFileHandoffFenceRef.current = undefined;
     return fence?.();
+  }
+
+  function currentScanPanStart(): ScanPanStart {
+    return { camera: { ...renderedCameraRef.current }, rootEntityId: sceneRef.current.rootEntityId, detail: semanticLensSessionDetail(semanticLensSessionRef.current) };
   }
 
   /** A pan that drops a file handoff still being prepared continues that handoff's pan:
@@ -7026,7 +7034,7 @@ export function App() {
             onCameraFlightCancel={handleDirectCameraInput}
             onCameraPanStart={() => {
               fenceScanPanFileHandoffForPan();
-              panStartCameraRef.current ??= { camera: { ...renderedCameraRef.current }, scene: sceneRef.current };
+              panStartCameraRef.current ??= currentScanPanStart();
               cancelReverseScenePreparation();
             }}
             onCreateRelationship={createRelationship}
@@ -7100,7 +7108,7 @@ export function App() {
           <Minimap camera={camera} onPan={(next, phase) => {
             if (phase === 'start') {
               panSettleCancelRef.current?.();
-              panStartCameraRef.current = { camera: { ...renderedCameraRef.current }, scene: sceneRef.current };
+              panStartCameraRef.current = currentScanPanStart();
             }
             if (levelScenePreparationPending(levelCompileAbortRef.current)) { setCamera(() => next); return; }
             if (phase === 'move') {
