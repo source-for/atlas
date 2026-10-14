@@ -1,6 +1,6 @@
 import { awaitAbortableWork } from './abortableWork';
 import { createStartupLifetime } from './startupLifetime';
-import { StrictMode } from 'react';
+import { StrictMode, type ReactNode } from 'react';
 import { installPerformanceDiagnostics } from './performance/install';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
@@ -12,7 +12,13 @@ import '@fontsource/ibm-plex-mono/latin-600.css';
 import '@okie/theme/tokens.css';
 import './app.css';
 import { ASPECT_PRESET_TARGET, parsePortableAtlas, type PortableAtlas } from '@okie/architecture';
-import { installPublishedAtlasAttribution } from './atlasAttribution';
+import { installPublishedAtlasAttribution, releaseAtlasAttributionReservation, reserveAtlasAttribution } from './atlasAttribution';
+import { AppLoadErrorScreen } from './AppLoadErrorScreen';
+import { BootShell } from './BootShell';
+import { ScanErrorScreen } from './ScanErrorScreen';
+import { bootShellHeaderSlots, bootShellLayout, bootShellRepositoryId, createBootShellOwner, recallRouteRepository, rememberRouteRepository, type BootShellStep } from './bootShellState';
+import { bootNeighborhoodAtlas } from './neighborhoodBoot';
+import type { AppRoute } from './renderer/route';
 import { hostedAtlasBootPlan } from './hostedAtlas';
 import { installPublicAtlasOembedDiscovery } from './oembed';
 import { readDemoQuery } from './renderer/query';
@@ -41,7 +47,6 @@ import {
   fetchScanTrioLoader,
   loadScanFixture,
   loadScanNeighborhoodFixtureFromSearch,
-  ScanFixtureError,
   type ScanFixture,
   type ScanTrioLoader,
 } from './renderer/scanFixture';
@@ -67,19 +72,6 @@ function bootstrapScanAspect(): number {
   return ASPECT_PRESET_TARGET.landscape;
 }
 
-function ScanErrorScreen({ error }: { error: unknown }) {
-  const issues = error instanceof ScanFixtureError ? error.issues : [];
-  const message = error instanceof Error ? error.message : String(error);
-  return <main role="alert" style={{ maxWidth: '720px', margin: '0 auto', padding: '4rem 1.5rem', color: '#eef4f2', fontFamily: 'IBM Plex Sans, ui-sans-serif, system-ui, sans-serif' }}>
-    <h1 style={{ fontSize: '1.4rem', marginBottom: '0.75rem' }}>Scanned snapshot could not be loaded</h1>
-    <p style={{ color: '#b7c3c0' }}>The <code>fixtures/scan/</code> trio failed to load or validate. Nothing is rendered rather than showing an invalid snapshot.</p>
-    {issues.length
-      ? <ul style={{ lineHeight: 1.8 }}>{issues.map((issue, index) => <li key={index}>{issue.path ? <><code style={{ color: '#d9ff70' }}>{issue.path}</code>{' — '}</> : null}{issue.message}</li>)}</ul>
-      : <pre style={{ whiteSpace: 'pre-wrap', color: '#ff9b9b' }}>{message}</pre>}
-    <p style={{ color: '#79dfd4', marginTop: '1.5rem' }}>Regenerate with <code>okie-scan</code>, or load the <a href="?fixture=okie" style={{ color: '#79dfd4' }}>demo</a>.</p>
-  </main>;
-}
-
 async function tryBootScanFixture(
   load: ScanTrioLoader | undefined,
   slug: string | undefined,
@@ -96,25 +88,99 @@ async function tryBootScanFixture(
   }
 }
 
+/**
+ * CLA-268: App's module, requested while the atlas data is still being prepared instead of after it. App reads the
+ * active fixture at import (refreshAppScanFixture re-reads it before mount). The early request and the await before
+ * mount share one import. A failed import cannot be retried in the page (the browser's module map replays the
+ * failure for that URL without refetching), so the error screen's Reload is the recovery.
+ */
+let appModule: Promise<typeof import('./App')> | undefined;
+function loadAppModule(): Promise<typeof import('./App')> {
+  appModule ??= import('./App');
+  return appModule;
+}
+
+/** CLA-268: start the renderer's WASM download/compile (not for the Canvas 2D backend, which never loads it). */
+function prewarmRenderer(): void {
+  if (readDemoQuery(window.location.search).backend === 'canvas2d') return;
+  // A failure here is the renderer's to report: createRenderer awaits the same initialization and falls back.
+  import('./renderer/WasmRendererAdapter').then(module => module.prewarmAtlasWasm()).catch(() => undefined);
+}
+
+/**
+ * CLA-268: the atlas shell skeleton, in App's boxes, naming the boot step in progress. It replaces the old
+ * "Preparing architecture map…" text on every page that loads a published neighbourhood (`/r/…`, embeds of it, and
+ * `?fixture=scan`). Steps only move forward. Every other render into the root goes through `renderRoot`, which takes
+ * the root back from the skeleton first.
+ */
+const BOOT_SHELL_FONTS = ['400 14px "IBM Plex Sans"', '600 14px "IBM Plex Sans"'];
+let bootShellRoute: { route: AppRoute; key: string } | undefined;
+const bootShell = createBootShellOwner({
+  render: ({ step, fontsReady, atlasRepositoryId }) => {
+    if (!bootShellRoute) return;
+    const storage = readLocalStorage();
+    const layout = bootShellLayout(window, window.location.search, { storage, repositoryId: bootShellRepositoryId(window.location.href, atlasRepositoryId) });
+    root.render(<BootShell fontsReady={fontsReady} headerSlots={bootShellHeaderSlots(bootShellRoute.route, layout.embed)} layout={layout} step={step}/>);
+  },
+  fontsLoaded: () => BOOT_SHELL_FONTS.every(font => document.fonts.check(font)),
+  loadFonts: () => Promise.allSettled(BOOT_SHELL_FONTS.map(font => document.fonts.load(font))),
+  aborted: () => startupLifetime.signal.aborted,
+});
+
+function renderRoot(node: ReactNode): void {
+  bootShell.release();
+  root.render(node);
+}
+
+function readLocalStorage(): Storage | undefined {
+  try { return window.localStorage; } catch { return undefined; }
+}
+
+/** Paints the skeleton; the repository, once known, is remembered for this route's next visit. */
+function showBootShell(route: AppRoute, slug: string | undefined, step: BootShellStep, repositoryId?: string): void {
+  const key = `${route.kind}:${slug ?? ''}`;
+  if (bootShellRoute?.key !== key) bootShellRoute = { route, key };
+  if (repositoryId !== undefined) rememberRouteRepository(readLocalStorage(), key, repositoryId);
+  bootShell.show(step, repositoryId ?? (bootShell.owns ? undefined : recallRouteRepository(readLocalStorage(), key)));
+}
+
 async function tryBootNeighborhoodFixture(
   slug: string | undefined,
+  route: AppRoute,
 ): Promise<{ ok: true } | { ok: false; error: unknown }> {
   startupLifetime.assertCurrent();
-  root.render(<main aria-busy="true" role="status" style={{ padding: '4rem 2rem', color: '#eef4f2', fontFamily: 'IBM Plex Sans, sans-serif' }}><h1>Preparing architecture map…</h1><p>Loading the published information and arranging your first view.</p></main>);
+  showBootShell(route, slug, 'data');
   try {
-    const fixture: ScanFixture = await loadScanNeighborhoodFixtureFromSearch(
-      fetchScanNeighborhoodHost(slug),
-      window.location.search,
-      { targetAspect: bootstrapScanAspect() },
-      startupLifetime.signal,
-    );
+    const { fixture, explanations } = await bootNeighborhoodAtlas({
+      slug,
+      host: fetchScanNeighborhoodHost(slug),
+      loadFixture: host => loadScanNeighborhoodFixtureFromSearch(
+        host,
+        window.location.search,
+        { targetAspect: bootstrapScanAspect() },
+        startupLifetime.signal,
+      ),
+      loadExplanations: loadPublishedExplanations,
+      onNeighborhoodArrived: repositoryId => {
+        if (startupLifetime.signal.aborted) return;
+        // The neighbourhood has the link (and the main thread) to itself until here. App's chunk, the explanations and
+        // the renderer's WASM then load during the worker compile instead of after it (measured: holding the WASM
+        // back until App's chunk and the explanations land mounts App ~160 ms sooner on Fast 4G but draws the map
+        // ~150 ms later, so it starts here).
+        void loadAppModule().catch(() => undefined);
+        prewarmRenderer();
+        showBootShell(route, slug, 'view', repositoryId);
+      },
+    });
     startupLifetime.own(() => fixture.disposeSceneWorker());
     setActiveScanFixture(fixture);
+    showBootShell(route, slug, 'opening', fixture.navigation.repositoryId);
     // CLA-149: the Jev block planner (flagged) plans against this exact immutable publication only.
     setBlockPlannerScan(slug && fixture.publication ? { slug, versionId: fixture.publication.versionId } : undefined);
     if (slug && fixture.publication) {
       try {
-        const scopes = await awaitAbortableWork(loadPublishedExplanations(slug, fixture.publication.versionId), startupLifetime.signal);
+        // Requested when the neighbourhood arrived (neighborhoodBoot.ts); still awaited before App mounts.
+        const scopes = await awaitAbortableWork(explanations, startupLifetime.signal);
         startupLifetime.assertCurrent();
         if (scopes) setPublishedPreviewContext(fixture.publication.versionId, scopes);
       } catch {
@@ -134,7 +200,7 @@ async function bootScanFixture(load: ScanTrioLoader | undefined, slug: string | 
   const result = await tryBootScanFixture(load, slug);
   if (!result.ok) {
     setDocumentPage(documentPageFor('error'));
-    root.render(<StrictMode><ScanErrorScreen error={result.error} /></StrictMode>);
+    renderRoot(<StrictMode><ScanErrorScreen error={result.error} onRetry={() => window.location.reload()} /></StrictMode>);
     return false;
   }
   return true;
@@ -165,7 +231,7 @@ let operatorReviewSelection: { runId?: string; draftRevisionId?: string } = {};
 async function mountPortableAtlas(bundle: PortableAtlas, fixture: ScanFixture, notice?: string, resetNavigation = true): Promise<void> {
   const { App, refreshAppScanFixture } = await import('./App');
   // Unmount first: no old App effect may observe the replacement's module state.
-  flushSync(() => root.render(null));
+  flushSync(() => renderRoot(null));
   setActivePortableAtlas(bundle);
   setBlockPlannerScan(undefined);
   setActiveScanFixture(fixture);
@@ -175,14 +241,14 @@ async function mountPortableAtlas(bundle: PortableAtlas, fixture: ScanFixture, n
   }
   portableMountSequence += 1;
   setDocumentPage(documentPageFor('portable'));
-  root.render(<StrictMode key={portableMountSequence}>
+  renderRoot(<StrictMode key={portableMountSequence}>
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
     <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}><App /></div>
     <PortableAtlasControls bundle={bundle} notice={notice}
       onReplace={openPortableFile}
       onForget={async () => {
         const message = await forgetPortableSession(portablePersistence);
-        flushSync(() => root.render(null));
+        flushSync(() => renderRoot(null));
         setActivePortableAtlas(undefined);
         setActiveScanFixture(undefined);
         refreshAppScanFixture();
@@ -204,21 +270,21 @@ async function mountOperatorDraftPreview(draftRevisionId: string, scopes: import
   const prepared = preparePortableAtlas(bundle);
   if (!prepared.fixture) throw new Error(prepared.error ?? 'Draft bundle could not be compiled.');
   const { App, refreshAppScanFixture } = await import('./App');
-  flushSync(() => root.render(null));
+  flushSync(() => renderRoot(null));
   setActivePortableAtlas(bundle);
   setBlockPlannerScan(undefined);
   setDraftPreviewContext(draftRevisionId, scopes);
   setActiveScanFixture(prepared.fixture);
   refreshAppScanFixture();
   setDocumentPage(documentPageFor('preview'));
-  root.render(<StrictMode><div className="operator-preview-shell"><header><span>Operator draft preview · pinned revision {draftRevisionId}</span><button onClick={() => { setActivePortableAtlas(undefined); clearDraftPreviewContext(); setActiveScanFixture(undefined); refreshAppScanFixture(); void mountOperatorWorkspace(); }}>Return to review</button></header><div><App /></div></div></StrictMode>);
+  renderRoot(<StrictMode><div className="operator-preview-shell"><header><span>Operator draft preview · pinned revision {draftRevisionId}</span><button onClick={() => { setActivePortableAtlas(undefined); clearDraftPreviewContext(); setActiveScanFixture(undefined); refreshAppScanFixture(); void mountOperatorWorkspace(); }}>Return to review</button></header><div><App /></div></div></StrictMode>);
 }
 
 async function mountOperatorWorkspace(): Promise<void> {
-  flushSync(() => root.render(null));
+  flushSync(() => renderRoot(null));
   clearDraftPreviewContext();
   setDocumentPage(documentPageFor('operator'));
-  root.render(<StrictMode><OperatorWorkspace initialDraftRevisionId={operatorReviewSelection.draftRevisionId} initialRunId={operatorReviewSelection.runId} onPreview={async (runId, draftRevisionId, scopes, pinned) => { operatorReviewSelection = previewReturnSelection(runId, draftRevisionId, pinned); await mountOperatorDraftPreview(draftRevisionId, scopes); }}/></StrictMode>);
+  renderRoot(<StrictMode><OperatorWorkspace initialDraftRevisionId={operatorReviewSelection.draftRevisionId} initialRunId={operatorReviewSelection.runId} onPreview={async (runId, draftRevisionId, scopes, pinned) => { operatorReviewSelection = previewReturnSelection(runId, draftRevisionId, pinned); await mountOperatorDraftPreview(draftRevisionId, scopes); }}/></StrictMode>);
 }
 
 async function openPortableFile(file: File): Promise<{ ok: true } | { ok: false; message: string }> {
@@ -233,7 +299,7 @@ async function openPortableFile(file: File): Promise<{ ok: true } | { ok: false;
 
 function showPortablePicker(error?: string): void {
   setDocumentPage(documentPageFor('picker'));
-  root.render(<StrictMode><PortableAtlasOpenScreen error={error} onOpen={openPortableFile} /></StrictMode>);
+  renderRoot(<StrictMode><PortableAtlasOpenScreen error={error} onOpen={openPortableFile} /></StrictMode>);
 }
 
 async function bootPortableAtlas(): Promise<void> {
@@ -315,7 +381,7 @@ async function boot() {
   if (plan.kind === 'notFound') {
     document.title = `Page not found · ${SITE_NAME}`;
     setDocumentPage(documentPageFor('landing'));
-    root.render(<StrictMode><NotFoundScreen /></StrictMode>);
+    renderRoot(<StrictMode><NotFoundScreen /></StrictMode>);
     return;
   }
   // A scanned fixture is fetched, validated and compiled BEFORE App is imported,
@@ -331,7 +397,7 @@ async function boot() {
   if (plan.kind === 'landing') {
     const { ScanLandingScreen } = await import('./scanLanding');
     setDocumentPage(documentPageFor('landing'));
-    root.render(<StrictMode><ScanLandingScreen /></StrictMode>);
+    renderRoot(<StrictMode><ScanLandingScreen /></StrictMode>);
     return;
   }
   const { route } = plan;
@@ -341,14 +407,16 @@ async function boot() {
     setDocumentPage(documentPageFor('landing'));
     const copy = mobileNoticeCopy(route);
     await new Promise<void>(resolve => {
-      root.render(<StrictMode><MobileNotice description={copy.description} heading={copy.heading} onContinue={resolve} /></StrictMode>);
+      renderRoot(<StrictMode><MobileNotice description={copy.description} heading={copy.heading} onContinue={resolve} /></StrictMode>);
     });
-    flushSync(() => root.render(null));
+    flushSync(() => renderRoot(null));
     window.scrollTo(0, 0);
   }
   if (route.kind === 'repo') {
     // Public share URL (no login). oEmbed discovery points docs sites at /oembed.
     installPublicAtlasOembedDiscovery(window.location.href);
+    // CLA-268: lay the shell out at its final height (the attribution strip's) from the first frame.
+    reserveAtlasAttribution(document, bootShellLayout(window, window.location.search).embed);
     const plan = hostedAtlasBootPlan(route, { bundledSlugs: availableScanRepoSlugs() });
     let lastError: unknown;
     let atlasReady = false;
@@ -358,7 +426,7 @@ async function boot() {
         break;
       }
       if (step.kind === 'fetch') {
-        const neighborhood = await tryBootNeighborhoodFixture(step.slug);
+        const neighborhood = await tryBootNeighborhoodFixture(step.slug, route);
         if (neighborhood.ok) {
           atlasReady = true;
           break;
@@ -374,14 +442,15 @@ async function boot() {
       lastError = result.error;
     }
     if (!atlasReady) {
+      releaseAtlasAttributionReservation(document);
       setDocumentPage(documentPageFor('error'));
-      root.render(<StrictMode><ScanErrorScreen error={lastError} /></StrictMode>);
+      renderRoot(<StrictMode><ScanErrorScreen error={lastError} onRetry={() => window.location.reload()} /></StrictMode>);
       return;
     }
   } else {
     const query = readDemoQuery(window.location.search);
     if (query.fixture === 'scan') {
-      const neighborhood = await tryBootNeighborhoodFixture(query.scanRepo);
+      const neighborhood = await tryBootNeighborhoodFixture(query.scanRepo, route);
       if (!neighborhood.ok) {
         const bundled = query.scanRepo === undefined || availableScanRepoSlugs().includes(query.scanRepo);
         const load = bundled ? undefined : fetchScanTrioLoader(query.scanRepo);
@@ -390,10 +459,24 @@ async function boot() {
     }
   }
   startupLifetime.assertCurrent();
-  const { App } = await import('./App');
+  let app: Awaited<ReturnType<typeof loadAppModule>>;
+  try {
+    app = await loadAppModule();
+  } catch (error) {
+    // The skeleton must not keep claiming "Opening the map…": say what failed and offer a reload (only a reload
+    // fetches the chunk again).
+    startupLifetime.assertCurrent();
+    releaseAtlasAttributionReservation(document);
+    setDocumentPage(documentPageFor('error'));
+    renderRoot(<StrictMode><AppLoadErrorScreen error={error} onReload={() => window.location.reload()}/></StrictMode>);
+    return;
+  }
+  const { App, refreshAppScanFixture } = app;
   startupLifetime.assertCurrent();
+  // App may have been imported before the fixture was set (CLA-268): read it now, while App is unmounted.
+  refreshAppScanFixture();
   setDocumentPage(documentPageFor('atlas'));
-  root.render(<StrictMode><App /></StrictMode>);
+  renderRoot(<StrictMode><App /></StrictMode>);
   // CLA-266: a published atlas credits its upstream repository, commit and licence; embeds get the compact
   // owner/repo · licence · source line (CLA-328). The result also tells App the atlas is a publication (CLA-329).
   if (route.kind === 'repo') void installPublishedAtlasAttribution(route.slug);

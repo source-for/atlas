@@ -21,7 +21,7 @@ describe('portable bootstrap', () => {
   it('remounts one app and controls root without depending on persistence or reloading', () => {
     expect(main.match(/createRoot\(/g)).toHaveLength(1);
     expect(main).not.toContain('window.location.assign');
-    expect(main).toContain('flushSync(() => root.render(null))');
+    expect(main).toContain('flushSync(() => renderRoot(null))');
     expect(main).toContain('refreshAppScanFixture()');
     expect(main).toContain('<StrictMode key={portableMountSequence}>');
     expect(main).toContain('setActivePortableAtlas(undefined)');

@@ -121,6 +121,14 @@ export function embedButtonVisible(input: EmbedButtonInput): boolean {
   return input.routeIsRepo && (input.published || input.dogfood) && !input.embedded && !input.portable;
 }
 
+/**
+ * CLA-268: while the publication index is still answering, hold the button's place in the header if a publication
+ * would show it, so the header buttons do not move when it arrives. Once settled the button shows or the slot goes.
+ */
+export function embedButtonSlotReserved(input: EmbedButtonInput, settled: boolean): boolean {
+  return !settled && !embedButtonVisible(input) && embedButtonVisible({ ...input, published: true });
+}
+
 /** The visibility input for the live page (pure; the hook feeds it window.location and the publication store). */
 export function embedAvailabilityInput(input: {
   pathname: string;

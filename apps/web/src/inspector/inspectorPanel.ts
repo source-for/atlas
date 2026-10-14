@@ -42,6 +42,27 @@ export function inspectorWidthStorageKey(repositoryId: string): string {
   return `okie:inspector-width:${repositoryId}`;
 }
 
+/**
+ * The inspector's width on App's first render, and on the boot skeleton's (CLA-268): the repository's saved
+ * `okie:inspector-width:<repositoryId>` (clamped to this viewport), else the default. `readStorage` is called inside
+ * the guard: storage can be unavailable in privacy modes, even to read the property.
+ */
+export function initialInspectorWidth(
+  viewportWidth: number,
+  readStorage: () => Pick<Storage, 'getItem'> | undefined,
+  repositoryId: string | undefined,
+): number {
+  let stored = Number.NaN;
+  if (repositoryId !== undefined) {
+    try {
+      stored = Number.parseFloat(readStorage()?.getItem(inspectorWidthStorageKey(repositoryId)) ?? '');
+    } catch {
+      // Storage can be unavailable in privacy modes; use the repository default.
+    }
+  }
+  return clampInspectorWidth(Number.isFinite(stored) ? stored : defaultInspectorWidth(viewportWidth), viewportWidth);
+}
+
 export type InspectorTab = 'overview' | 'source' | 'details';
 export type InspectorIntent = 'auto' | 'source' | 'details';
 

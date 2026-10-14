@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
-import { getPublishedAtlasAttribution, onPublishedAtlasAttribution } from './atlasAttribution';
+import { getPublishedAtlasAttribution, getPublishedAtlasAttributionSettled, onPublishedAtlasAttribution } from './atlasAttribution';
 import { isFramedBrowsingContext } from './embedCanvas';
 import {
   buildEmbedLink,
@@ -8,6 +8,7 @@ import {
   EMBED_OEMBED_NOTE,
   EMBED_SIZE_PRESETS,
   embedAvailabilityInput,
+  embedButtonSlotReserved,
   embedButtonVisible,
   type EmbedSizePresetId,
 } from './embedSnippet';
@@ -71,17 +72,21 @@ function tabStops(root: HTMLElement): HTMLElement[] {
     .filter(element => !(element instanceof HTMLInputElement && element.type === 'radio' && !element.checked));
 }
 
-export type EmbedAvailability = { visible: boolean; displayNames?: PublicAtlasDisplayNames };
+/** `reserved`: the index has not answered yet and a publication would show the button (CLA-268: hold its slot). */
+export type EmbedAvailability = { visible: boolean; reserved: boolean; displayNames?: PublicAtlasDisplayNames };
 
 /** Whether this page offers the embed button; reacts to the publication index resolving after mount. */
 export function useEmbedAtlasAvailability(portable: boolean): EmbedAvailability {
   const attribution = useSyncExternalStore(onPublishedAtlasAttribution, getPublishedAtlasAttribution, getPublishedAtlasAttribution);
+  const settled = useSyncExternalStore(onPublishedAtlasAttribution, getPublishedAtlasAttributionSettled, getPublishedAtlasAttributionSettled);
   const framed = useMemo(() => isFramedBrowsingContext(), []);
   const { pathname, search } = window.location;
   return useMemo(() => {
-    const visible = embedButtonVisible(embedAvailabilityInput({ pathname, search, framed, portable, attribution }));
-    return attribution ? { visible, displayNames: { owner: attribution.owner, repo: attribution.repo } } : { visible };
-  }, [pathname, search, framed, portable, attribution]);
+    const input = embedAvailabilityInput({ pathname, search, framed, portable, attribution });
+    const visible = embedButtonVisible(input);
+    const reserved = embedButtonSlotReserved(input, settled);
+    return attribution ? { visible, reserved, displayNames: { owner: attribution.owner, repo: attribution.repo } } : { visible, reserved };
+  }, [pathname, search, framed, portable, attribution, settled]);
 }
 
 /** Which Copy last ran and how it went (the snippet's and the link's buttons share one status line). */

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { atlasAttributionFor, attributionText, embedAttributionText, getPublishedAtlasAttribution, installPublishedAtlasAttribution, onPublishedAtlasAttribution } from './atlasAttribution';
+import { atlasAttributionFor, attributionText, embedAttributionText, getPublishedAtlasAttribution, installPublishedAtlasAttribution, onPublishedAtlasAttribution, reserveAtlasAttribution } from './atlasAttribution';
 
 const SHA = '4f1c2a9e0b7d6c5a4f3e2d1c0b9a8f7e6d5c4b3a';
 const INDEX = {
@@ -33,6 +33,8 @@ function fakeDocument() {
       children: [],
       dataset: {},
       setAttribute(name: string, value: string) { node.attrs[name] = value; },
+      hasAttribute(name: string) { return name in node.attrs; },
+      removeAttribute(name: string) { delete node.attrs[name]; },
       append(...items: Array<Node | string>) { node.children.push(...items); },
     };
     return node;
@@ -265,5 +267,46 @@ describe('published atlas attribution (CLA-266)', () => {
     unsubscribe();
     await installPublishedAtlasAttribution('pmndrs__zustand', { fetch: fetchIndex, doc: fakeDocument().doc, search: '', framed: false });
     expect(seen).toEqual(['zustand', undefined]);
+  });
+
+  it('CLA-268: holds the strip height from boot and gives it back only when no strip comes', async () => {
+    const fetchIndex = vi.fn(async () => new Response(JSON.stringify(INDEX), { status: 200 })) as unknown as typeof fetch;
+    const published = fakeDocument();
+    reserveAtlasAttribution(published.doc, false);
+    expect(published.root.attrs['data-atlas-attribution']).toBe('');
+    await installPublishedAtlasAttribution('pmndrs__zustand', { fetch: fetchIndex, doc: published.doc, search: '', framed: false });
+    expect(published.root.attrs['data-atlas-attribution']).toBe('');
+
+    const embed = fakeDocument();
+    reserveAtlasAttribution(embed.doc, true);
+    expect(embed.root.attrs['data-atlas-attribution']).toBe('embed');
+
+    const notPublished = fakeDocument();
+    reserveAtlasAttribution(notPublished.doc, false);
+    await installPublishedAtlasAttribution('acme__local', { fetch: fetchIndex, doc: notPublished.doc, search: '', framed: false });
+    expect(notPublished.root.attrs).not.toHaveProperty('data-atlas-attribution');
+
+    const failed = fakeDocument();
+    reserveAtlasAttribution(failed.doc, false);
+    await installPublishedAtlasAttribution('pmndrs__zustand', { fetch: vi.fn(async () => new Response('', { status: 503 })) as unknown as typeof fetch, doc: failed.doc, search: '', framed: false });
+    expect(failed.root.attrs).not.toHaveProperty('data-atlas-attribution');
+
+    const offline = fakeDocument();
+    reserveAtlasAttribution(offline.doc, false);
+    await installPublishedAtlasAttribution('pmndrs__zustand', { fetch: vi.fn(async () => { throw new TypeError('offline'); }) as unknown as typeof fetch, doc: offline.doc, search: '', framed: false });
+    expect(offline.root.attrs).not.toHaveProperty('data-atlas-attribution');
+  });
+
+  it('CLA-268: reports the index lookup as settled whatever it found, so App can stop holding the embed slot', async () => {
+    vi.resetModules();
+    const fresh = await import('./atlasAttribution');
+    const settled: boolean[] = [];
+    const unsubscribe = fresh.onPublishedAtlasAttribution(() => { settled.push(fresh.getPublishedAtlasAttributionSettled()); });
+    expect(fresh.getPublishedAtlasAttributionSettled()).toBe(false);
+    await fresh.installPublishedAtlasAttribution('pmndrs__zustand', { fetch: vi.fn(async () => new Response('', { status: 404 })) as unknown as typeof fetch, doc: fakeDocument().doc, search: '', framed: false });
+    expect(fresh.getPublishedAtlasAttributionSettled()).toBe(true);
+    expect(fresh.getPublishedAtlasAttribution()).toBeUndefined();
+    expect(settled).toEqual([true]);
+    unsubscribe();
   });
 });
