@@ -9,9 +9,8 @@ import { readFrozenEnrichmentPrompt, writeEnrichmentPackets, writePromptEmission
 import { readCodeOwners } from "./codeowners.js";
 import { coverageByCodeIdFromSnapshot } from "./lcov.js";
 import { acquireCommittedTree } from "./pin.js";
-import { scanAcquiredRepository, scanGithubRepository, stableJson, type ScanArtifacts, type ScanOptions } from "./scan.js";
+import { scanAcquiredRepository, scanGithubRepository, scanOutputFiles, stableJson, type ScanArtifacts, type ScanOptions } from "./scan.js";
 import { serializePortableAtlas } from '@okie/architecture';
-import { portableAtlasFromScan } from './portable.js';
 import { runPackageViewer } from './package-viewer.js';
 import { enrichPortableAtlas } from './portable-enrich.js';
 import { parsePortableAtlas } from '@okie/architecture';
@@ -184,23 +183,8 @@ function readEnrichmentDocs(dir: string): Map<string, unknown> {
 /** Writes the six-artifact trio, story catalog, and optional enrichment report. */
 function writeArtifacts(out: string, artifacts: ScanArtifacts, repositoryUrl?: string): void {
   mkdirSync(out, { recursive: true });
-  writeFileSync(`${out}/atlas.okie.json`, serializePortableAtlas(portableAtlasFromScan(artifacts, repositoryUrl)));
-  writeFileSync(`${out}/extraction.json`, stableJson(artifacts.extraction));
-  writeFileSync(`${out}/snapshot.json`, stableJson(artifacts.snapshot));
-  writeFileSync(`${out}/view.json`, stableJson(artifacts.view));
-  writeFileSync(`${out}/story.json`, stableJson(artifacts.story));
-  writeFileSync(`${out}/stories.json`, stableJson(artifacts.catalog));
-  writeFileSync(`${out}/scene.json`, stableJson(artifacts.scene));
-  writeFileSync(`${out}/timeline.json`, stableJson(artifacts.timeline));
-  writeFileSync(`${out}/dependencies.json`, stableJson(artifacts.dependencies));
-  writeFileSync(`${out}/membership-report.json`, stableJson(artifacts.membership));
-  if (artifacts.enrichmentReport) {
-    writeFileSync(`${out}/enrichment-report.json`, stableJson(artifacts.enrichmentReport));
-  }
-  if (artifacts.componentMapReport) {
-    writeFileSync(`${out}/component-map-report.json`, stableJson(artifacts.componentMapReport));
-    if (!artifacts.componentMapReport.accepted) process.exitCode = 1;
-  }
+  for (const [name, text] of Object.entries(scanOutputFiles(artifacts, repositoryUrl))) writeFileSync(`${out}/${name}`, text);
+  if (artifacts.componentMapReport && !artifacts.componentMapReport.accepted) process.exitCode = 1;
 }
 
 /** CLA-263 membership warnings, capped like the folded-shim list (full list in membership-report.json). */
