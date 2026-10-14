@@ -200,11 +200,17 @@ export function renderEmbedAtlasAttribution(doc: Document, attribution: Publishe
 }
 
 let publishedAttribution: PublishedAtlasAttribution | undefined;
+let publishedAttributionSettled = false;
 const publishedListeners = new Set<() => void>();
 
 /** CLA-329: the page's publication attribution once the index has answered (undefined before, or when none). */
 export function getPublishedAtlasAttribution(): PublishedAtlasAttribution | undefined {
   return publishedAttribution;
+}
+
+/** CLA-268: true once this page's index lookup has finished, whatever it found (false while it is in flight). */
+export function getPublishedAtlasAttributionSettled(): boolean {
+  return publishedAttributionSettled;
 }
 
 /** Subscribe to the attribution resolving (useSyncExternalStore-shaped); returns the unsubscribe. */
@@ -214,9 +220,24 @@ export function onPublishedAtlasAttribution(listener: () => void): () => void {
 }
 
 function publishAttribution(attribution: PublishedAtlasAttribution | undefined): void {
-  if (attribution === publishedAttribution) return;
+  if (attribution === publishedAttribution && publishedAttributionSettled) return;
   publishedAttribution = attribution;
+  publishedAttributionSettled = true;
   for (const listener of [...publishedListeners]) listener();
+}
+
+/**
+ * CLA-268: hold the strip's height from boot on a `/r/` page, before `/scan/index.json` has answered, so the shell
+ * (skeleton, then App) is laid out at its final height and nothing moves when the strip arrives. The strip's own
+ * render sets the same attribute; `releaseAtlasAttributionReservation` gives the space back when no strip comes.
+ */
+export function reserveAtlasAttribution(doc: Document, embedded: boolean): void {
+  if (!doc.documentElement.hasAttribute(ATTRIBUTION_ATTRIBUTE)) doc.documentElement.setAttribute(ATTRIBUTION_ATTRIBUTE, embedded ? 'embed' : '');
+}
+
+/** Drop a reservation that no strip filled (not a publication, the index failed, or the atlas did not load). */
+export function releaseAtlasAttributionReservation(doc: Document): void {
+  if (!doc.querySelector('footer.atlas-attribution')) doc.documentElement.removeAttribute(ATTRIBUTION_ATTRIBUTE);
 }
 
 /** Fetch the published index and show the strip for `slug` (compact in embeds; nothing for non-publications). */
@@ -228,21 +249,28 @@ export async function installPublishedAtlasAttribution(
   const framed = options.framed ?? isFramedBrowsingContext();
   const embedded = isEmbedChrome({ framed, embedQuery: isEmbedQueryFlag(search) });
   const fetchImpl = options.fetch ?? fetch;
+  const doc = options.doc ?? document;
   try {
     const response = await fetchImpl('/scan/index.json', { headers: { accept: 'application/json' } });
-    if (!response.ok) return undefined;
+    if (!response.ok) {
+      releaseAtlasAttributionReservation(doc);
+      publishAttribution(undefined);
+      return undefined;
+    }
     const attribution = atlasAttributionFor(await response.json(), slug);
     if (attribution) {
-      const doc = options.doc ?? document;
       if (embedded) renderEmbedAtlasAttribution(doc, attribution);
       else renderAtlasAttribution(doc, attribution);
       // The boot title came from the URL; the row's names (GitHub's casing, else the stored owner/repo) are known
       // only now. They are the names the server put in the share HTML's <title>, so the tab keeps that title.
       doc.title = repoPageTitle(attribution.owner, attribution.repo);
     }
+    else releaseAtlasAttributionReservation(doc);
     publishAttribution(attribution);
     return attribution;
   } catch {
+    releaseAtlasAttributionReservation(doc);
+    publishAttribution(undefined);
     return undefined;
   }
 }

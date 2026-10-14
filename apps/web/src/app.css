@@ -1180,3 +1180,33 @@ html[data-atlas-attribution] .cookie-notice { bottom: var(--atlas-attribution-he
 @media (max-width: 780px) {
   .cookie-notice { padding: 6px 10px; font-size: 11.5px; }
 }
+
+/* CLA-268 boot shell skeleton (BootShell.tsx): App's shell classes in the same boxes, holding no controls, while a
+   published atlas loads. Only the step line is live; the pulse stops under prefers-reduced-motion. */
+.boot-shell .search-trigger,
+.boot-shell .atlas-canvas { cursor: default; }
+.boot-shell .search-trigger:hover { border-color: var(--atlas-line); background: rgba(255, 255, 255, .025); }
+.boot-shell .icon-button { cursor: default; }
+.boot-shell .brand-block { justify-self: start; }
+/* The saved inspector width can arrive with the data on a route's first visit: take it in one step, not an animation. */
+.boot-shell .workspace { transition: none; }
+.boot-menu-summary { width: 34px; height: 28px; border: 1px solid var(--atlas-line); border-radius: 7px; background: rgba(255,255,255,.025); }
+@media (max-width: 780px) {
+  .boot-menu-summary { width: 31px; }
+}
+.boot-shell[data-fonts="pending"] .brand-line { visibility: hidden; }
+.boot-rail-level { width: 32px; height: 34px; display: grid; place-items: center; margin-top: 3px; border-radius: 8px; color: var(--atlas-quiet); font-family: var(--atlas-font-mono); font-size: 10px; font-weight: 700; }
+.boot-tab { display: grid; place-items: center; border-radius: 6px; color: var(--atlas-quiet); font-family: var(--atlas-font-mono); font-size: 11px; font-weight: 650; }
+.boot-tab.active { background: rgba(255,255,255,.045); color: var(--atlas-text); }
+.boot-shell .details-scroll { display: grid; align-content: start; gap: 12px; overflow: hidden; }
+.boot-line { display: block; height: 10px; border-radius: 5px; background: rgba(255,255,255,.05); animation: boot-pulse 1.8s ease-in-out infinite; }
+.boot-line-title { height: 18px; margin-bottom: 6px; }
+.boot-status { position: absolute; z-index: 9; top: 50%; left: 50%; display: flex; align-items: center; gap: 10px; margin: 0; color: var(--atlas-muted); font-size: 13px; transform: translate(-50%, -50%); white-space: nowrap; }
+.boot-status::before { width: 6px; height: 6px; border-radius: 50%; background: var(--atlas-accent); content: ''; animation: boot-pulse 1.8s ease-in-out infinite; }
+@keyframes boot-pulse { 50% { opacity: .4; } }
+@media (prefers-reduced-motion: reduce) {
+  .boot-line,
+  .boot-status::before { animation: none; }
+}
+/* CLA-268: the embed button's place while the publication index answers (App.tsx; embedButtonSlotReserved). */
+.header-slot-reserved { visibility: hidden; }

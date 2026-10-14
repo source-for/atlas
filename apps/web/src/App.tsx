@@ -105,7 +105,7 @@ import { SourceRepoLink } from './sourceRepoLink';
 import { resolveExplanationExcerpt } from './explanation/explanationSource';
 import { getDraftPreviewContext } from './operator/previewContext';
 import { OperatorMenuLink } from './operator/OperatorMenuLink';
-import { buildArchitectureBrief, clampInspectorWidth, defaultInspectorWidth, inspectorAcceptedSummary, inspectorCanShowSource, inspectorDiagramCount, inspectorEntityLead, inspectorCyclomatic, inspectorCoverage, inspectorDuplicates, inspectorUntestedBehaviours, formatCoverageRange, inspectorNotationDetailsView, inspectorNotationScope, inspectorPathOwners, inspectorSecondaryCopy, inspectorTabForEntity, inspectorWidthRange, inspectorWidthStorageKey, presentInspectorNotationDiagnostics, selectedEntityReframePlan, selectedRelationPresentation, type InspectorTab } from './inspector/inspectorSupport';
+import { buildArchitectureBrief, clampInspectorWidth, defaultInspectorWidth, initialInspectorWidth, inspectorAcceptedSummary, inspectorCanShowSource, inspectorDiagramCount, inspectorEntityLead, inspectorCyclomatic, inspectorCoverage, inspectorDuplicates, inspectorUntestedBehaviours, formatCoverageRange, inspectorNotationDetailsView, inspectorNotationScope, inspectorPathOwners, inspectorSecondaryCopy, inspectorTabForEntity, inspectorWidthRange, inspectorWidthStorageKey, presentInspectorNotationDiagnostics, selectedEntityReframePlan, selectedRelationPresentation, type InspectorTab } from './inspector/inspectorSupport';
 import { inspectorHistoryRestorePlan, popInspectorHistory, pushInspectorHistory, type InspectorHistorySubject } from './inspector/inspectorHistory';
 import { createInspectorNeighborhoodRequest, inspectorNavigationIdentity } from './inspector/inspectorNeighborhoodRequest';
 import { readDemoQuery } from './renderer/query';
@@ -1763,15 +1763,8 @@ export function App() {
   const [inspectorHistory, setInspectorHistory] = useState<InspectorHistorySubject[]>([]);
   const [expandedRelationshipGroups, setExpandedRelationshipGroups] = useState<ReadonlySet<string>>(() => new Set());
   const [expandedDetailLists, setExpandedDetailLists] = useState<ReadonlySet<string>>(() => new Set());
-  const [detailsWidth, setDetailsWidth] = useState(() => {
-    let stored = Number.NaN;
-    try {
-      stored = Number.parseFloat(localStorage.getItem(inspectorWidthStorageKey(initialNavigation.repositoryId)) ?? '');
-    } catch {
-      // Storage can be unavailable in privacy modes; use the repository default.
-    }
-    return clampInspectorWidth(Number.isFinite(stored) ? stored : defaultInspectorWidth(window.innerWidth), window.innerWidth);
-  });
+  // CLA-268: the boot skeleton reads the same initializer, so the two agree on the inspector's first width.
+  const [detailsWidth, setDetailsWidth] = useState(() => initialInspectorWidth(window.innerWidth, () => localStorage, initialNavigation.repositoryId));
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -6973,7 +6966,7 @@ export function App() {
           >
             {shareFeedback?.tone === 'success' ? <CheckIcon/> : <ShareIcon/>}
           </button>
-          {embedAtlas.visible && <EmbedAtlasControl displayNames={embedAtlas.displayNames} readPageHref={readCurrentViewHref}/>}
+          {embedAtlas.visible ? <EmbedAtlasControl displayNames={embedAtlas.displayNames} readPageHref={readCurrentViewHref}/> : embedAtlas.reserved && <span aria-hidden="true" className="embed-atlas-control header-slot-reserved" data-testid="embed-slot-reserved"><span className="icon-button embed-atlas-button"/></span>}
           {sourceRepositoryUrl && <SourceRepoLink url={sourceRepositoryUrl}/>}
           {!portableAtlas && askAuth !== undefined && askAuth.publicMode !== true && <details className="diagram-add-menu screenshot-menu account-menu"><summary aria-label={askSignedIn ? `Account menu for @${askAuth?.login}` : 'Sign in with GitHub'} className="avatar-button" data-testid="account-menu" title={askSignedIn ? `@${askAuth?.login}` : 'Sign in with GitHub'}>{accountInitials(askAuth?.login)}</summary><div>{askSignedIn ? <><p>@{askAuth?.login}</p>{askAuth?.accountPath ? <a data-testid="account-page-link" href={askAuth.accountPath}>Account</a> : null}<OperatorMenuLink signedIn={askSignedIn}/><a href={askSignInHref(askAuth?.logoutPath ?? '/api/auth/logout', askReturnPath)}>Sign out</a></> : <><a data-testid="account-signin" href={askSignInHref(askAuth?.loginPath ?? '/api/auth/github', askReturnPath)}>Sign in with GitHub</a>{askAuth?.testLoginPath ? <a data-testid="account-test-login" href={askSignInHref(askAuth.testLoginPath, askReturnPath)}>Use the local test sign-in</a> : null}</>}</div></details>}
         </div>

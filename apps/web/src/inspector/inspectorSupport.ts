@@ -1,6 +1,7 @@
 export {
   clampInspectorWidth,
   defaultInspectorWidth,
+  initialInspectorWidth,
   inspectorAcceptedSummary,
   inspectorDiagramCount,
   inspectorEntityLead,

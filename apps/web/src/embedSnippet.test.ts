@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PublishedAtlasAttribution } from './atlasAttribution';
-import { buildEmbedLink, buildEmbedSnippet, EMBED_SIZE_PRESETS, embedAvailabilityInput, embedButtonVisible, type EmbedButtonInput } from './embedSnippet';
+import { buildEmbedLink, buildEmbedSnippet, EMBED_SIZE_PRESETS, embedAvailabilityInput, embedButtonSlotReserved, embedButtonVisible, type EmbedButtonInput } from './embedSnippet';
 import { buildOembedIframeHtml, OEMBED_SNIPPET_CHROME_NOTE, parsePublicAtlasOembedUrl } from './oembed';
 
 const PAGE = 'https://sourcefor.dev/r/pmndrs/zustand?nav=1&z=0.75&sel=container%3Aapi';
@@ -152,5 +152,20 @@ describe('CLA-329 embed dialog link', () => {
   it('is undefined off an atlas route', () => {
     expect(buildEmbedLink({ pageHref: 'https://sourcefor.dev/new', startAtView: true })).toBeUndefined();
     expect(buildEmbedLink({ pageHref: 'not a url', startAtView: true })).toBeUndefined();
+  });
+});
+
+describe('CLA-268 embed button slot while the publication index is answering', () => {
+  const unpublished: EmbedButtonInput = { routeIsRepo: true, published: false, dogfood: false, embedded: false, portable: false };
+  it.each<[string, Partial<EmbedButtonInput>, boolean, boolean]>([
+    ['/r/ atlas, index pending', {}, false, true],
+    ['/r/ atlas, index answered: not a publication', {}, true, false],
+    ['/r/ atlas, index answered: a publication (the button itself shows)', { published: true }, true, false],
+    ['dogfood shows the button already', { dogfood: true }, false, false],
+    ['not a /r/ route', { routeIsRepo: false }, false, false],
+    ['inside an embed', { embedded: true }, false, false],
+    ['portable viewer', { portable: true }, false, false],
+  ])('%s', (_label, patch, settled, expected) => {
+    expect(embedButtonSlotReserved({ ...unpublished, ...patch }, settled)).toBe(expected);
   });
 });

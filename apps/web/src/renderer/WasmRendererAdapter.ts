@@ -21,6 +21,11 @@ function initializeWasm() {
   return initialization;
 }
 
+/** CLA-268: start the WASM download and compile during boot, so the renderer App creates finds it ready. */
+export function prewarmAtlasWasm(): Promise<unknown> {
+  return initializeWasm();
+}
+
 function protocolIds(items: unknown): ReadonlySet<string> | undefined {
   if (!Array.isArray(items)) return undefined;
   return new Set(items.flatMap(item => typeof (item as { id?: unknown })?.id === 'string' ? [(item as { id: string }).id] : []));
