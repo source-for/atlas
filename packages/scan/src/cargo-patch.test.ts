@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { cargoPatchApplies, cargoPatchPaths, cargoPathDependencies, cargoSourcedDependencies, unfollowedCargoPatches } from "./extract.js";
+import { cargoRequirementMatches } from "./dependency-facts.js";
 import { scanRepository, type ScanArtifacts } from "./scan.js";
 
 // CLA-587: a root `[patch.<source>]` path override (tokio: `[patch.crates-io] tokio =
@@ -390,4 +391,58 @@ test("round 3: git sources are canonicalised like Cargo — case-folded and http
   scanBothModes(gitPatch("https://github.com/Acme/Core.git", "http://github.com/acme/core/"), (mode, artifacts) => {
     assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], `${mode}: github.com is canonicalised`);
   });
+});
+
+// CLA-587 review round 4 (Codex). Each scan case was checked by the reviewer against
+// offline `cargo metadata`.
+
+test("round 4: a dotted key with whitespace around the dot (`core . workspace = true`) keeps its path edge (quick + full)", () => {
+  const root = `${MEMBERS}\n[workspace.dependencies]\ncore = { path = "core" }\n`;
+  scanBothModes(CORE_APP(root, "core . workspace = true\n"), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6"], mode);
+  });
+  assert.deepEqual(cargoPathDependencies("[dependencies]\ncore . workspace = true\n"), [{ name: "core", path: "", line: 2, inherited: true }]);
+});
+
+test("round 4: cargoRequirementMatches follows the semver crate: partial bounds and prerelease admission", () => {
+  for (const [requirement, version, expected] of [
+    ["<=1", "1.4.0", true], ["<1.2", "1.1.9", true], ["<1.2", "1.2.0", false], [">1", "1.9.0", false], [">1", "2.0.0", true],
+    [">=1.2", "1.2.0", true], ["=1.2", "1.2.7", true], ["~1", "1.9.0", true], ["^0", "0.9.0", true], ["^0.0", "0.0.5", true], ["^0.0", "0.1.0", false],
+    ["1", "1.0.0-alpha", false], ["*", "1.0.0-rc.1", false], ["^1.0.0-alpha", "1.0.0-alpha.2", true], [">=1.0.0-alpha", "1.0.1-beta", false],
+    ["1.0.0-beta", "1.0.0-alpha", false], ["1.0.0-alpha.2", "1.0.0-alpha.10", true], [">=1.0.0-alpha, <1.0.0", "1.0.0-rc.1", true],
+    // unchanged behaviour (dependency-facts' existing cases + tokio's six requirements)
+    ["0.7", "0.8.5", false], ["^0.7", "0.7.3", true], ["~1.2", "1.2.9", true], [">=1, <2", "2.0.0", false], ["=1.2.3", "1.2.3", true],
+    ["1.*", "1.9.0", true], ["^1.51.0", "1.53.3", true], ["~2.7.0", "2.7.2", true], ["0.7.0", "0.7.20", true], ["0.1.1", "0.1.19", true],
+  ] as const) {
+    assert.equal(cargoRequirementMatches(requirement, version), expected, `${requirement} vs ${version}`);
+  }
+  assert.equal(cargoRequirementMatches("git junk", "1.0.0"), undefined);
+  assert.equal(cargoRequirementMatches("1", "not-a-version"), undefined);
+});
+
+test("round 4: partial comparator bounds and prereleases gate patches like Cargo (quick + full)", () => {
+  const patched = `${MEMBERS}\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  scanBothModes(CORE_APP(patched, 'core = "<=1"\n', 'version = "1.4.0"'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], `${mode}: <=1 admits 1.4.0`);
+    assert.deepEqual(patchLimitations(artifacts), [], mode);
+  });
+  scanBothModes(CORE_APP(patched, 'core = "1"\n', 'version = "1.0.0-alpha"'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: 1 does not admit the prerelease 1.0.0-alpha`);
+    assert.deepEqual(patchLimitations(artifacts), [
+      "Cargo [patch] not used: version 1.0.0-alpha does not satisfy app/Cargo.toml:6 requires '1'; no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }",
+    ], mode);
+  });
+});
+
+test("round 4: `version = { workspace = true }` inherits [workspace.package] like the dotted form (quick + full)", () => {
+  const inheriting = (version: string): string => `${MEMBERS}\n[workspace.package]\nversion = "${version}"\n\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  for (const spelling of ["version = { workspace = true }", "version.workspace = true"]) {
+    scanBothModes(CORE_APP(inheriting("2.0.0"), 'core = "1"\n', spelling), (mode, artifacts) => {
+      assert.deepEqual(crateEdges(artifacts), [], `${mode} ${spelling}: inherited 2.0.0 does not satisfy ^1`);
+      assert.equal(patchLimitations(artifacts).length, 1, `${mode} ${spelling}`);
+    });
+    scanBothModes(CORE_APP(inheriting("1.4.0"), 'core = "1"\n', spelling), (mode, artifacts) => {
+      assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:8"], `${mode} ${spelling}: inherited 1.4.0 satisfies ^1`);
+    });
+  }
 });
