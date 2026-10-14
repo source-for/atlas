@@ -492,3 +492,21 @@ it('Fit pressed before a pan\'s lens settle fires keeps the fitted view in the U
   expectCamera(captured.camera, fitted);
   expectCamera(urlCamera(), fitted);
 });
+
+it('a nudge while the other file is still being prepared keeps Back at where the first pan began', async () => {
+  await openFileA();
+  const before = { ...captured.camera };
+  const held = holdCompiles();
+  await dragToCentre(cardCentre(FILE_B));
+  await idle();
+  expect(held.compile.mock.calls.some(call => call[0] === FILE_B)).toBe(true);
+  // About 20 px further, still on the other file: this drops the first handoff and starts a second.
+  const nudge = cardCentre(FILE_B);
+  await dragToCentre({ x: nudge.x + 20 / captured.camera.zoom, y: nudge.y });
+  await idle();
+  await held.release(); await idle();
+  expect(claims()).toMatchObject(onFile(FILE_B));
+  await act(async () => window.history.back()); await idle();
+  expect(claims()).toMatchObject(onFile(FILE_A));
+  expectCamera(captured.camera, before);
+});
