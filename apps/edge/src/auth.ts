@@ -156,13 +156,14 @@ function base64UrlEncode(bytes: Uint8Array): string {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+/** Canonical spelling only: atob ignores the unused low bits of the last character, so re-encode and compare. */
 function base64UrlDecode(text: string): Uint8Array | undefined {
-  if (!/^[A-Za-z0-9_-]*$/.test(text)) return undefined;
+  if (!/^[A-Za-z0-9_-]*$/.test(text) || text.length % 4 === 1) return undefined;
   try {
     const binary = atob(text.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (text.length % 4)) % 4));
     const out = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
-    return out;
+    return base64UrlEncode(out) === text ? out : undefined;
   } catch {
     return undefined;
   }

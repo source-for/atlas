@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { contentSecurityPolicy } from '../../web/src/securityHeaders';
 import { PRIVACY_POLICY_VERSION } from '../../web/src/siteMeta';
-import { SESSION_TTL_SECONDS, signSession, type UserRow } from '../src/auth';
+import { SESSION_TTL_SECONDS, signSession, verifySession, type UserRow } from '../src/auth';
 import type { EdgeEnv } from '../src/env';
 import { jsonText } from '../src/http';
 import { edgeEnv, edgeFetch, tamperSignature, type EdgeFetchOptions } from './helpers';
@@ -96,6 +96,18 @@ async function insertUser(githubId: number, login: string, extra: Partial<UserRo
 }
 
 const SESSION = '__Host-sf_session';
+
+const B64URL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+/** atob-style lenient decode: ignores the unused low bits of the last character. */
+function lenientDecode(text: string): string {
+  return atob(text.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (text.length % 4)) % 4));
+}
+
+/** The same bytes spelled differently: flips the lowest bit of the last character, always an unused bit when length % 4 is 2 or 3. */
+function lastCharVariant(part: string): string {
+  return part.slice(0, -1) + B64URL[B64URL.indexOf(part.at(-1)!) ^ 1]!;
+}
 
 beforeEach(async () => {
   // This file's ids only (test/users.test.ts uses >= 900000 in the same database).
@@ -237,6 +249,7 @@ describe('GitHub sign-in (CLA-316)', () => {
       ['wrong state param', good],
       ['tampered payload', `${v}.${tamperedPayload}.${signature}`],
       ['tampered signature', tamperSignature(good)],
+      ['non-canonical signature', `${v}.${good.split('.')[1]}.${lastCharVariant(signature!)}`],
       ['garbage', 'not-a-token'],
       ['expired', good, { now: () => new Date(NOW.getTime() + 11 * 60 * 1000) }],
     ];
@@ -553,5 +566,66 @@ describe('D1 failures (CLA-316)', () => {
     expect(testLogin.status).toBe(503);
     expect(cookieValue(testLogin, 'sf_session')).toBeUndefined();
     expect(await readUserRow(0)).toBeNull();
+  });
+});
+
+describe('canonical base64url tokens (CLA-585)', () => {
+  const claims = (login: string) => ({ sub: '55', login, iat: Math.floor(NOW.getTime() / 1000), exp: Math.floor(NOW.getTime() / 1000) + SESSION_TTL_SECONDS });
+
+  it('rejects a session whose signature has a second spelling of the same bytes', async () => {
+    await insertUser(55, 'alice');
+    const good = await sessionCookieFor(55, 'alice');
+    const [v, payload, signature] = good.split('.');
+    // 32-byte HMAC = 43 characters, the last carrying 2 unused bits.
+    expect(signature).toHaveLength(43);
+    const variant = lastCharVariant(signature!);
+    expect(variant).not.toBe(signature);
+    expect(lenientDecode(variant)).toBe(lenientDecode(signature!));
+    expect(await verifySession(good, KEY, NOW)).toMatchObject({ sub: '55', login: 'alice' });
+    expect(await verifySession(`${v}.${payload}.${variant}`, KEY, NOW)).toBeUndefined();
+    const me = await fetchAt('/api/auth/me', OAUTH, { cookie: `${SESSION}=${v}.${payload}.${variant}` });
+    expect(await me.json()).toMatchObject({ authenticated: false, mode: 'accounts' });
+  });
+
+  it('rejects a session whose payload has a second spelling of the same bytes', async () => {
+    // Pick the first login whose JSON payload leaves unused bits in the last character.
+    const login = ['alice', 'alice1', 'alice12'].find((name) => new TextEncoder().encode(JSON.stringify(claims(name))).length % 3 !== 0)!;
+    const good = await signSession(claims(login), KEY);
+    const [v, payload, signature] = good.split('.');
+    const variant = lastCharVariant(payload!);
+    expect(variant).not.toBe(payload);
+    expect(lenientDecode(variant)).toBe(lenientDecode(payload!));
+    expect(await verifySession(good, KEY, NOW)).toMatchObject({ login });
+    expect(await verifySession(`${v}.${variant}.${signature}`, KEY, NOW)).toBeUndefined();
+  });
+
+  it('rejects padding, whitespace and out-of-alphabet characters in the signature', async () => {
+    const good = await signSession(claims('alice'), KEY);
+    const [v, payload, signature] = good.split('.');
+    const spellings = [
+      `${signature}=`,
+      `${signature}==`,
+      `${signature!.slice(0, 20)} ${signature!.slice(20)}`,
+      `${signature!.slice(0, 20)}\n${signature!.slice(20)}`,
+      `${signature!.slice(0, 20)}\t${signature!.slice(20)}`,
+      `+${signature!.slice(1)}`,
+      `/${signature!.slice(1)}`,
+      signature!.replace(/-/g, '+').replace(/_/g, '/') + (/[-_]/.test(signature!) ? '' : '+'),
+      `${signature!.slice(0, -1)}.`,
+      `${signature!.slice(0, -1)}*`,
+      `${signature}A`,
+    ];
+    for (const spelling of spellings) {
+      expect(spelling).not.toBe(signature);
+      expect(await verifySession(`${v}.${payload}.${spelling}`, KEY, NOW), JSON.stringify(spelling)).toBeUndefined();
+    }
+  });
+
+  it('still verifies every session it signs, across payload lengths', async () => {
+    for (let length = 1; length <= 64; length += 1) {
+      const login = 'a'.repeat(length);
+      const token = await signSession(claims(login), KEY);
+      expect(await verifySession(token, KEY, NOW), login).toMatchObject({ login });
+    }
   });
 });
