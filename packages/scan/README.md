@@ -136,8 +136,9 @@ Discovery generalizes beyond Okie's own layout (validated against third-party cl
   Files belong to the deepest root across crates and JS members (same dir: the crate). A crate
   with no scanned source file (e.g. only `benches/`/`tests/`) is not a container, and fixture
   names (`examples`, `e2e`, …) skip Cargo members exactly like JS members. Without JS members the
-  root container is dropped only when it owns no file and there is no root `package.json` (a Cargo
-  virtual workspace).
+  root container is kept without source of its own only when the root `package.json` declares
+  `exports`/`main`/`types`/`module`/`bin` or runtime `dependencies` (a Cargo virtual workspace or a
+  tooling-only manifest yields no empty root).
 - **Single-package repos** (no workspace members) become **one root container**, named and
   evidenced from the root `package.json` (falling back to the directory name). The synthetic
   `tooling` container only appears when non-member scripts sit beside real workspace members.

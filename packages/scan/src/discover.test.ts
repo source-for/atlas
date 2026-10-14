@@ -589,9 +589,18 @@ test("Cargo virtual workspace without JS members: no empty root container; a roo
     assert.equal(discovery.unitByFile.get("scripts/gen.ts"), "\0tokio", "a root slug equal to a crate dir gets its own key");
     assert.deepEqual(discovery.units.map(unit => `${unit.kind}:${unit.name}`).sort(), ["root:tokio", "rust:tokio"]);
   });
-  withRepo({ "package.json": JSON.stringify({ name: "tokio" }), ...crates }, dir => {
+  // A tooling-only root package.json (name, scripts, devDependencies) declares nothing
+  // the root unit carries: still no empty root, and no duplicate `tokio` container.
+  withRepo({ "package.json": JSON.stringify({ name: "tokio", private: true, scripts: { fmt: "dprint fmt" }, devDependencies: { dprint: "^0.47.0" } }), ...crates }, dir => {
+    assert.deepEqual(discoverRepository(dir).units.map(unit => `${unit.kind}:${unit.dir}`), ["rust:tokio"]);
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
+    const containers = scanRepository(dir, { analysisMode: "quick" }).snapshot.entities.filter(entity => entity.kind === "container");
+    assert.deepEqual(containers.map(entity => `${entity.id} ${entity.name}`), ["container:tokio tokio"]);
+  });
+  // Runtime dependencies are root-unit facts: the source-empty root is kept, on its own key.
+  withRepo({ "package.json": JSON.stringify({ name: "tokio", dependencies: { pg: "^8.0.0" } }), ...crates }, dir => {
     const root = discoverRepository(dir).units.find(unit => unit.kind === "root");
-    assert.equal(root?.dir, "\0tokio", "a root package.json keeps the source-empty root unit, on its own key");
+    assert.equal(root?.dir, "\0tokio");
     assert.equal(root?.packageManifest, "package.json");
   });
   withRepo({ "package.json": JSON.stringify({ name: "tokio" }), ...crates }, dir => {

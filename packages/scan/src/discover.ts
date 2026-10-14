@@ -234,6 +234,23 @@ function hasRootTsconfig(sourceRoot: string): boolean {
   return ["tsconfig.json", "tsconfig.base.json"].some(file => safeRegularFile(sourceRoot, file) !== undefined);
 }
 
+/**
+ * Whether the root package.json declares something the root unit carries even without
+ * source of its own: an entry surface (`exports`/`main`/`types`/`module`/`bin`, which
+ * mark publicApi/entryPoint on crate files) or runtime `dependencies` (externals).
+ * Scripts, devDependencies and a name alone do not.
+ */
+function rootManifestDeclaresFacts(sourceRoot: string): boolean {
+  const text = readRepositoryFile(sourceRoot, "package.json");
+  if (text === undefined) return false;
+  let manifest: Record<string, unknown>;
+  try { manifest = JSON.parse(text) as Record<string, unknown>; } catch { return false; }
+  if (!manifest || typeof manifest !== "object") return false;
+  const declared = (value: unknown): boolean =>
+    typeof value === "string" ? value.trim() !== "" : value !== null && typeof value === "object" && Object.keys(value).length > 0;
+  return ["exports", "main", "types", "module", "bin"].some(key => declared(manifest[key])) || declared(manifest.dependencies);
+}
+
 function readPackageName(sourceRoot: string, dir: string): string | undefined {
   const text = readRepositoryFile(sourceRoot, dir ? `${dir}/package.json` : "package.json");
   if (text === undefined) return undefined;
@@ -584,11 +601,12 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
 
   if (singlePackage) {
     // No JS workspace members: files outside every Rust crate form one root container
-    // derived from the root manifest. It is pruned only when it owns no file AND there
-    // is no root package.json (a Cargo virtual workspace like tokio); a real root
-    // manifest keeps it, so its name/exports/bin facts survive even when all source
-    // lives in crates. Its key never equals a crate dir (a crate `tokio` in a repo
-    // named tokio): NUL can't be a path byte and `slug` drops it.
+    // derived from the root manifest. When it owns no file it is kept only if the root
+    // package.json declares facts the root unit carries (see
+    // `rootManifestDeclaresFacts`); otherwise it is pruned — a Cargo virtual workspace,
+    // or a tooling-only package.json, never yields an empty root container. Its key
+    // never equals a crate dir (a crate `tokio` in a repo named tokio): NUL can't be a
+    // path byte and `slug` drops it.
     const rootPackage = readPackageName(sourceRoot, "");
     const rootName = rootPackage ?? basename(sourceRoot);
     const rootSlug = slug(rootName);
@@ -599,7 +617,7 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
       if (owner?.skipped) continue; // fixture/example crate — dropped
       unitByFile.set(file, owner?.dir ?? rootKey);
     }
-    if (hasRootManifest || sourceCandidates.some(file => unitByFile.get(file) === rootKey)) {
+    if (sourceCandidates.some(file => unitByFile.get(file) === rootKey) || rootManifestDeclaresFacts(sourceRoot)) {
       units.push({
         kind: "root",
         dir: rootKey,
