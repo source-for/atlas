@@ -28,6 +28,8 @@ import {
   collectExtractedArchitecture,
   cyclomaticByIdFromEntities,
   type ClonePair,
+  type ExtractInput,
+  type UnresolvedRelativeImport,
 } from "./extract.js";
 import { mergeEnrichment, type EnrichmentReport } from "./enrich.js";
 import { applyComponentMembership, type ComponentMapInput, type ComponentMapReport } from './component-map.js';
@@ -206,6 +208,8 @@ export interface BuildScanArtifactsParams {
   cyclomaticById?: ReadonlyMap<string, number>;
   /** Clone pairs from the same extract as `baseExtraction`. Recomputed from source when omitted. */
   clonePairs?: readonly ClonePair[];
+  /** Unresolved relative imports from the same extract as `baseExtraction`. Recomputed from source when omitted. */
+  unresolvedRelativeImports?: readonly UnresolvedRelativeImport[];
   /** Optional lcov.info bytes. Conventional `coverage/lcov.info` is read when omitted. */
   lcovText?: string;
   /**
@@ -220,6 +224,14 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
   const { discovery, pin, readFile, repositorySlug, systemName } = params;
   const systemSlug = slug(systemName);
 
+  const extractInput: ExtractInput = {
+    discovery,
+    readFile,
+    systemName,
+    systemSlug,
+    ...(params.languageAnalysis ? { languageAnalysis: params.languageAnalysis } : {}),
+    ...(params.codeSurface ? { codeSurface: params.codeSurface } : {}),
+  };
   const collected = params.baseExtraction
     ? {
       extraction: params.baseExtraction,
@@ -227,15 +239,10 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
         ?? cyclomaticByIdFromEntities(params.baseExtraction.entities, readFile),
       clonePairs: params.clonePairs
         ?? clonePairsFromEntities(params.baseExtraction.entities, readFile),
+      unresolvedRelativeImports: params.unresolvedRelativeImports
+        ?? collectExtractedArchitecture(extractInput).unresolvedRelativeImports,
     }
-    : collectExtractedArchitecture({
-      discovery,
-      readFile,
-      systemName,
-      systemSlug,
-      ...(params.languageAnalysis ? { languageAnalysis: params.languageAnalysis } : {}),
-      ...(params.codeSurface ? { codeSurface: params.codeSurface } : {}),
-    });
+    : collectExtractedArchitecture(extractInput);
   const baseExtraction = collected.extraction;
   const sidecar = loadLcovSidecar(readFile, params.lcovText);
   const coverageByCodeId = coverageByCodeIdFromEntities(baseExtraction.entities, sidecar);
@@ -260,7 +267,10 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
   const nonMemberPaths = new Set(discovery.sourceFiles.filter(path => discovery.unitByFile.get(path) === TOOLING_UNIT_KEY));
   const membership = membershipReport(discovery.summary.reexportAliases, membershipDiagnostics(extraction, readFile, nonMemberPaths));
   const hasMembershipFacts = membership.reexportAliases.length > 0 || membership.diagnostics.length > 0;
-  const acquisitionLimitations = discoveryLimitations(discovery.summary);
+  const scanLimitations = [
+    ...discoveryLimitations(discovery.summary),
+    ...unresolvedImportLimitations(collected.unresolvedRelativeImports),
+  ];
 
   const metadata: ArchitectureExtractionSnapshotMetadata = {
     snapshotId: typedId("snapshot", repositorySlug, pin.commitSha.slice(0, 12)),
@@ -356,7 +366,7 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
       adapters: params.languageAnalysis?.coverage.map(({ indexedFiles: _files, ...coverage }) => coverage) ??
         [...new Set(discovery.sourceFiles.map(path => path.endsWith('.rs') ? 'rust' : 'typescript/javascript'))].map(language => ({ language, tool: language === 'rust' ? 'tree-sitter-rust' : 'typescript', version: 'syntax-v1', coverage: 'syntax' as const, limitations: ['Quick scan: project-wide semantic resolution was not requested.'] })),
       ...(hasMembershipFacts ? { membership } : {}),
-      ...(acquisitionLimitations.length > 0 ? { limitations: acquisitionLimitations } : {}),
+      ...(scanLimitations.length > 0 ? { limitations: scanLimitations } : {}),
     },
     dependencies: buildDependencyFacts({
       commitSha: pin.commitSha,
@@ -383,7 +393,42 @@ export function discoveryLimitations(summary: DiscoverySummary): string[] {
   return [
     ...skippedEntryLimitations(summary.skippedEntries),
     ...(summary.excludedTestDataFiles ? [`${summary.excludedTestDataFiles} source file(s) under testdata/ directories were excluded as test data.`] : []),
+    ...skippedJsLimitations(summary),
   ];
+}
+
+/** At most this many unresolved imports are itemized; the rest are counted. */
+export const UNRESOLVED_IMPORTS_SHOWN = 20;
+
+/**
+ * Relative imports the syntax extraction could not resolve to a scanned file and so
+ * recorded no relation for — their dependency edge is missing from the atlas: a header line, then one
+ * `path:line: 'specifier'` line each (already sorted and deduplicated), capped at
+ * {@link UNRESOLVED_IMPORTS_SHOWN} with a "+N more" line so a broken repo stays
+ * bounded. Scan-level (not per-adapter) because extraction — not an analyzer —
+ * drops the edge, in quick and full mode alike. Empty when every import resolved.
+ */
+export function unresolvedImportLimitations(imports: readonly UnresolvedRelativeImport[]): string[] {
+  if (imports.length === 0) return [];
+  const shown = imports.slice(0, UNRESOLVED_IMPORTS_SHOWN).map(item => `Unresolved relative import ${item.path}:${item.line}: '${item.specifier}'`);
+  const hidden = imports.length - shown.length;
+  return [
+    `${imports.length} relative import(s) did not resolve to a scanned source file; no relation was recorded for them.`,
+    ...shown,
+    ...(hidden > 0 ? [`+${hidden} more unresolved relative import(s) not itemized.`] : []),
+  ];
+}
+
+/** The TypeScript-repo `.js` exclusions, by reason (empty when none were skipped). */
+function skippedJsLimitations(summary: DiscoverySummary): string[] {
+  const byReason = summary.skippedJsByReason;
+  if (!summary.skippedJsFiles || !byReason) return [];
+  const parts = [
+    byReason.testOrVendorDirectory ? `${byReason.testOrVendorDirectory} under a test/fixture/vendor directory` : "",
+    byReason.minified ? `${byReason.minified} minified (*.min.js)` : "",
+    byReason.compiledSibling ? `${byReason.compiledSibling} compiled output beside a .ts/.tsx source` : "",
+  ].filter(Boolean);
+  return [`${summary.skippedJsFiles} .js file(s) in this TypeScript repository were not scanned: ${parts.join("; ")}.`];
 }
 
 /** Runs the local scan pipeline against an already-acquired committed tree. */
@@ -469,7 +514,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
     if (discovery.sourceFiles.length === 0) {
       throw new Error(
         `No scannable source files in ${source.owner}/${source.repo} at ${commit.sha.slice(0, 12)}. ` +
-        "The scanner extracts .ts/.tsx/.mts/.cts/.mjs/.cjs/.jsx/.rs (and .js only for a pure-JS repo); " +
+        "The scanner extracts .ts/.tsx/.mts/.cts/.js/.mjs/.cjs/.jsx/.rs (in a TypeScript repo, test/vendor, minified and compiled .js are left out); " +
         "this looks like a repository with no TypeScript, JavaScript, or Rust sources.",
       );
     }
@@ -478,6 +523,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
     let baseExtraction: ArchitectureExtraction | undefined;
     let cyclomaticById: ReadonlyMap<string, number> | undefined;
     let clonePairs: readonly ClonePair[] | undefined;
+    let unresolvedRelativeImports: readonly UnresolvedRelativeImport[] | undefined;
     let enrichmentDocs = options.enrichmentDocs;
     if ((!enrichmentDocs || enrichmentDocs.size === 0) && options.enrichWithPackets) {
       const collected = collectExtractedArchitecture({
@@ -491,6 +537,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
       baseExtraction = collected.extraction;
       cyclomaticById = collected.cyclomaticById;
       clonePairs = collected.clonePairs;
+      unresolvedRelativeImports = collected.unresolvedRelativeImports;
       const sidecar = loadLcovSidecar(readFile, options.lcovText);
       const coverageByCodeId = coverageByCodeIdFromEntities(baseExtraction.entities, sidecar);
       // The live provider must see the same accepted component interpretation
@@ -519,6 +566,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
       ...(baseExtraction ? { baseExtraction } : {}),
       ...(cyclomaticById ? { cyclomaticById } : {}),
       ...(clonePairs && clonePairs.length ? { clonePairs } : {}),
+      ...(unresolvedRelativeImports ? { unresolvedRelativeImports } : {}),
       ...(options.lcovText ? { lcovText: options.lcovText } : {}),
     });
     return { source, commitSha: commit.sha, artifacts };

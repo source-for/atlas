@@ -125,12 +125,23 @@ deterministically from **third-party runtime dependencies that are service bound
 
 Discovery generalizes beyond Okie's own layout (validated against third-party clones):
 
-- **Single-package repos** (no pnpm workspace) become **one root container**, named and
+- **Workspace members** are read from `pnpm-workspace.yaml` `packages:` **and** the root
+  `package.json` `workspaces` (array form, or yarn classic's `{ "packages": [...] }`; `nohoist`
+  ignored). When both exist the members are the **union** of their include globs, minus the union
+  of every `!negation` (applied after all includes). Globs: `*` (within one segment) and `**`
+  (one or more segments); `?`, `[...]` and `{a,b}` are not supported.
+- **Rust crates** come from the root `Cargo.toml` `[workspace] members` (globs or paths) minus
+  `exclude`; a matched directory counts only with a tracked `Cargo.toml`. Without declared
+  members the conventional `crates/<name>/Cargo.toml` layout is used.
+- **Single-package repos** (no workspace members) become **one root container**, named and
   evidenced from the root `package.json` (falling back to the directory name). The synthetic
   `tooling` container only appears when non-member scripts sit beside real workspace members.
-- **Extensions:** `.ts/.tsx/.mts/.cts/.mjs/.cjs/.jsx/.rs` are always scanned. `.js` is scanned
-  **only for a genuinely pure-JS repo** (no root tsconfig *and* no TypeScript source) — otherwise
-  `.js` files are skipped and **counted in the scan summary**, never dropped silently.
+- **Extensions:** `.ts/.tsx/.mts/.cts/.js/.mjs/.cjs/.jsx/.rs` are scanned. In a TypeScript repo
+  (root tsconfig *or* any TypeScript source) a `.js` file is left out when it sits under a
+  `test/`, `tests/`, `fixture(s)/`, `__fixtures__/`, `vendor/` or `third_party/` directory
+  (whole segment), is `*.min.js`, or is compiled output beside a same-stem `.ts`/`.tsx` in its
+  directory (a `.d.ts` alone does not count). Those are **counted by reason in
+  `analysis.limitations`**, never dropped silently. A pure-JS repo scans every `.js`.
 - **Excluded** (a named, tested list): `*.d.ts`, `dist/`, `*.test.*`, `*.spec.*`, `*.bench.*`,
   `__tests__/`, `__mocks__/`, `testdata/` (conventional test-data dirs; count reported in
   `analysis.limitations`), Rust `tests/` / `benches/` / `examples/` / `*_qa.rs`.
@@ -138,7 +149,8 @@ Discovery generalizes beyond Okie's own layout (validated against third-party cl
   by default (with a summary count); pass `--include-members` to scan them.
 - **System name** comes from the root `package.json` `name` (fallback: directory basename).
 
-The scan prints a summary of everything it left out (skipped `.js` count, skipped members) so
+The scan prints a summary of everything it left out (skipped `.js` by reason, skipped members,
+unresolved relative imports) so
 omissions are always visible. Large repos currently stress the *scene compile* (edge routing),
 not the deterministic extraction — scoped compilation is tracked separately.
 

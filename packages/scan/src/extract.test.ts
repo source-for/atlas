@@ -898,3 +898,37 @@ test("switch lexical declarations shadow outer calls across every case", () => {
   assert.equal(result.relations.some(r => r.from.endsWith(":run") && r.to.endsWith(":target")), false);
   assert.ok(result.relations.some(r => r.from.endsWith(":outside") && r.to.endsWith(":target") && r.kind === "calls"));
 });
+
+// CLA-578: a relative import that resolves to no file and no unit is reported, never silent.
+test("unresolved relative imports are recorded with path, line and specifier: sorted, deduplicated", () => {
+  const files: Record<string, string> = {
+    "pkg/b/src/z.ts": "import { gone } from './missing.js';\nexport const z = gone;\n",
+    "pkg/a/src/index.ts": [
+      "import { ok } from './ok.js';",
+      "import data from '../../../generated/data.json';",
+      "import { gone } from './missing.js';",
+      "import { gone as again } from './missing.js';",
+      "import { gone as same } from './missing.js'; import type { T } from './missing.js';",
+      "import { b } from '../../b/src/z.js';",
+      "import asset from './logo.svg';",
+      "export const all = [ok, data, gone, again, same, b, asset];",
+    ].join("\n"),
+    "pkg/a/src/ok.ts": "export const ok = 1;\n",
+  };
+  const paths = ["pkg/a/src/index.ts", "pkg/a/src/ok.ts", "pkg/b/src/z.ts"];
+  const units = [
+    { kind: "member" as const, dir: "pkg/a", name: "a", evidencePath: "pkg/a" },
+    { kind: "member" as const, dir: "pkg/b", name: "b", evidencePath: "pkg/b" },
+  ];
+  const discovery: Discovery = { sourceFiles: paths, units, unitByFile: new Map(paths.map(path => [path, path.slice(0, 5)])), unitByPackageName: new Map(), summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] } };
+  const collect = (order: string[]) => collectExtractedArchitecture({ discovery: { ...discovery, sourceFiles: order }, readFile: path => files[path]!, systemName: "Acme", systemSlug: "acme" });
+  const collected = collect(paths);
+  assert.deepEqual(collected.unresolvedRelativeImports, [
+    { path: "pkg/a/src/index.ts", line: 2, specifier: "../../../generated/data.json" },
+    { path: "pkg/a/src/index.ts", line: 3, specifier: "./missing.js" },
+    { path: "pkg/a/src/index.ts", line: 4, specifier: "./missing.js" },
+    { path: "pkg/a/src/index.ts", line: 5, specifier: "./missing.js" },
+    { path: "pkg/b/src/z.ts", line: 1, specifier: "./missing.js" },
+  ], "resolved files and in-unit assets (./logo.svg lands in pkg/a) are not reported; one entry per (path, line, specifier)");
+  assert.deepEqual(collect([...paths].reverse()).unresolvedRelativeImports, collected.unresolvedRelativeImports, "independent of discovery order");
+});

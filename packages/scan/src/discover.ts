@@ -51,10 +51,16 @@ export const TOOLING_UNIT_KEY = "\0tooling";
 export interface DiscoverySummary {
   /** No workspace members — the whole repo is one container. */
   singlePackage: boolean;
-  /** `.js` files scanned (true) or skipped as a TypeScript repo (false). */
+  /**
+   * True for a pure-JS repo (every `.js` scanned). False for a TypeScript repo (root
+   * tsconfig or any TS source), where `.js` is scanned except the files
+   * {@link jsSkipReason} leaves out.
+   */
   includedJs: boolean;
-  /** `.js` files skipped because the repo has a root tsconfig (never silent). */
+  /** `.js` files left out of a TypeScript repo, all reasons together (never silent). */
   skippedJsFiles: number;
+  /** `skippedJsFiles` split by reason. Present only when `skippedJsFiles` is non-zero. */
+  skippedJsByReason?: SkippedJsByReason;
   /** Workspace members skipped as fixtures/examples/playgrounds/e2e. */
   skippedMembers: string[];
   /**
@@ -77,6 +83,16 @@ export interface DiscoverySummary {
    * directory (see `isTestDataPath`). Present only when non-zero.
    */
   excludedTestDataFiles?: number;
+}
+
+/** Why a `.js` file in a TypeScript repo was not scanned; see {@link jsSkipReason}. */
+export interface SkippedJsByReason {
+  /** Under a `test`/`tests`/`fixture(s)`/`__fixtures__`/`vendor`/`third_party` directory. */
+  testOrVendorDirectory: number;
+  /** A `*.min.js` bundle. */
+  minified: number;
+  /** Compiled output: a `foo.ts` or `foo.tsx` sits in the same directory. */
+  compiledSibling: number;
 }
 
 /** A re-export shim folded into the component of the file it re-exports. */
@@ -118,7 +134,7 @@ export interface DiscoverOptions {
   limits?: Partial<ScanSizeLimits>;
 }
 
-// Always scanned. `.js` is added only for pure-JS repos (no root tsconfig).
+// Always scanned. `.js` is added for every repo; a TypeScript repo filters it (`jsSkipReason`).
 const ALWAYS_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".jsx", ".rs"] as const;
 
 // Members that are test scaffolding, not architecture.
@@ -165,6 +181,25 @@ function hasExtension(path: string, includeJs: boolean): boolean {
   return includeJs && path.endsWith(".js");
 }
 
+// Whole directory segments only: `contest/` or `vendored-ui/` do not match.
+const JS_SKIP_DIRECTORY = /(^|\/)(test|tests|fixture|fixtures|__fixtures__|vendor|third_party)\//;
+
+/**
+ * Why a `.js` file in a TypeScript repo is not scanned, or undefined to scan it. In a
+ * TS repo hand-written `.js` is source (config, scripts, legacy modules), but three
+ * kinds of `.js` are not: test/fixture/vendored copies, minified bundles, and compiled
+ * output committed beside its `.ts`/`.tsx` source. A `.d.ts` beside a `.js` does not
+ * make it compiled — typings for hand-written JS are common, so that `.js` is kept.
+ * The first matching reason wins, in the order listed. Pure-JS repos never call this.
+ */
+function jsSkipReason(path: string, trackedFiles: ReadonlySet<string>): keyof SkippedJsByReason | undefined {
+  if (JS_SKIP_DIRECTORY.test(path)) return "testOrVendorDirectory";
+  if (path.endsWith(".min.js")) return "minified";
+  const stem = path.slice(0, -".js".length);
+  if (trackedFiles.has(`${stem}.ts`) || trackedFiles.has(`${stem}.tsx`)) return "compiledSibling";
+  return undefined;
+}
+
 /**
  * Reads a repository-relative config/source file only when it is a regular file
  * reached without any symlink (never follows a link outside — or inside — the root).
@@ -190,7 +225,8 @@ function readPackageName(sourceRoot: string, dir: string): string | undefined {
   }
 }
 
-function workspaceGlobs(sourceRoot: string): string[] {
+/** `packages:` entries of `pnpm-workspace.yaml` (a list of quoted or bare scalars). */
+function pnpmWorkspaceGlobs(sourceRoot: string): string[] {
   const text = readRepositoryFile(sourceRoot, "pnpm-workspace.yaml");
   if (text === undefined) return [];
   const globs: string[] = [];
@@ -208,10 +244,58 @@ function workspaceGlobs(sourceRoot: string): string[] {
 }
 
 /**
- * pnpm workspace glob -> anchored RegExp over a POSIX directory path. `*` matches a
- * single path segment (pnpm's `packages/*` = direct children); `**` matches one or
- * more segments. Kept deliberately small — it only has to cover the pnpm glob shapes
- * that appear in a `pnpm-workspace.yaml` packages list.
+ * Root `package.json` `workspaces` (npm, yarn, bun): the array form `["packages/*"]`
+ * or yarn classic's object form `{ "packages": [...] }`. `nohoist` is ignored; any
+ * other shape or an unparsable manifest declares nothing.
+ */
+function packageJsonWorkspaceGlobs(sourceRoot: string): string[] {
+  const text = readRepositoryFile(sourceRoot, "package.json");
+  if (text === undefined) return [];
+  let workspaces: unknown;
+  try { workspaces = (JSON.parse(text) as { workspaces?: unknown }).workspaces; } catch { return []; }
+  const list = Array.isArray(workspaces)
+    ? workspaces
+    : workspaces && typeof workspaces === "object" ? (workspaces as { packages?: unknown }).packages : undefined;
+  return Array.isArray(list) ? list.filter((glob): glob is string => typeof glob === "string") : [];
+}
+
+/** Workspace member patterns: `include` globs and `!`-negated `exclude` globs. */
+interface WorkspacePatterns {
+  include: string[];
+  exclude: string[];
+}
+
+/** `./a/b/` -> `a/b`; the empty string for the repository root itself. */
+function normalizeWorkspacePattern(pattern: string): string {
+  return pattern.trim().replace(/^(\.\/)+/, "").replace(/\/+$/, "");
+}
+
+/**
+ * The JS workspace member patterns. When a repo declares members in more than one
+ * place (`pnpm-workspace.yaml` AND root `package.json` `workspaces`), the members are
+ * the UNION of every declaration's include globs, minus the union of every `!`
+ * negation: both files are package-manager views of the same member set, so a member
+ * either one names is real, and an exclusion either one states is applied after all
+ * includes (order-independent, unlike pnpm's own last-match-wins). Patterns naming the
+ * root itself (`.`) are dropped — the root manifest is never a member.
+ */
+function workspacePatterns(sourceRoot: string): WorkspacePatterns {
+  const include = new Set<string>();
+  const exclude = new Set<string>();
+  for (const raw of [...pnpmWorkspaceGlobs(sourceRoot), ...packageJsonWorkspaceGlobs(sourceRoot)]) {
+    const negated = raw.trim().startsWith("!");
+    const pattern = normalizeWorkspacePattern(negated ? raw.trim().slice(1) : raw);
+    if (!pattern || pattern === ".") continue;
+    (negated ? exclude : include).add(pattern);
+  }
+  return { include: [...include].sort(compareText), exclude: [...exclude].sort(compareText) };
+}
+
+/**
+ * Workspace glob -> anchored RegExp over a POSIX directory path. `*` matches within a
+ * single path segment (`packages/*` = direct children); `**` matches one or more
+ * segments. Unsupported, matched literally: `?`, `[...]` classes, `{a,b}` braces and
+ * extglobs — none appear in the workspace lists this has to read.
  */
 function workspaceGlobToRegExp(glob: string): RegExp {
   const source = glob.split("/").map(segment =>
@@ -222,8 +306,76 @@ function workspaceGlobToRegExp(glob: string): RegExp {
   return new RegExp(`^${source}$`);
 }
 
-function isWorkspaceMemberDir(dir: string, globs: readonly string[]): boolean {
-  return globs.some(glob => workspaceGlobToRegExp(glob).test(dir));
+function isWorkspaceMemberDir(dir: string, patterns: WorkspacePatterns): boolean {
+  const matches = (glob: string): boolean => workspaceGlobToRegExp(glob).test(dir);
+  return patterns.include.some(matches) && !patterns.exclude.some(matches);
+}
+
+/** Strips a TOML `#` comment that is not inside a basic or literal string. */
+function stripTomlComment(line: string): string {
+  let quote: string | undefined;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]!;
+    if (quote) {
+      if (char === "\\" && quote === '"') index += 1;
+      else if (char === quote) quote = undefined;
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === "#") return line.slice(0, index);
+  }
+  return line;
+}
+
+/**
+ * `members` and `exclude` of the root `Cargo.toml` `[workspace]` table. A small,
+ * tolerant reader for just that table (no TOML dependency): comments are stripped,
+ * arrays may span lines, strings may be `"basic"` or `'literal'`. Not read: dotted
+ * keys (`workspace.members = …` at top level), inline-table `workspace = { … }`,
+ * and escapes inside strings beyond `\"`.
+ */
+export function cargoWorkspaceMembers(manifestText: string): { members: string[]; exclude: string[] } {
+  const lines = manifestText.split(/\r?\n/).map(stripTomlComment);
+  const body: string[] = [];
+  let inWorkspace = false;
+  for (const line of lines) {
+    // Any table or array-of-tables header ends the `[workspace]` body.
+    const header = /^\s*\[(\[?)\s*([^\]]+?)\s*\]/.exec(line);
+    if (header) inWorkspace = !header[1] && header[2] === "workspace";
+    else if (inWorkspace) body.push(line);
+  }
+  const text = body.join("\n");
+  const arrayOf = (key: string): string[] => {
+    const match = new RegExp(`(?:^|\\n)\\s*${key}\\s*=\\s*\\[([^\\]]*)\\]`).exec(text);
+    if (!match) return [];
+    return [...match[1]!.matchAll(/"((?:[^"\\]|\\.)*)"|'([^']*)'/g)].map(item => (item[1] ?? item[2]!).replace(/\\"/g, '"'));
+  };
+  return { members: arrayOf("members"), exclude: arrayOf("exclude") };
+}
+
+/**
+ * Rust crate directories. With a root `Cargo.toml` `[workspace] members` list, a crate
+ * is a directory matched by a member glob (or path), not under an `exclude` path, that
+ * has a tracked `Cargo.toml`. Without declared members, the conventional
+ * `crates/<name>/Cargo.toml` layout is used (unchanged behaviour). The root itself
+ * (`.`) is never a crate unit.
+ */
+function rustCrateDirectories(sourceRoot: string, allFiles: readonly string[]): string[] {
+  const manifestDirs = allFiles
+    .filter(path => path.endsWith("/Cargo.toml"))
+    .map(manifest => manifest.slice(0, -"/Cargo.toml".length));
+  const manifest = readRepositoryFile(sourceRoot, "Cargo.toml");
+  const declared = manifest === undefined ? { members: [], exclude: [] } : cargoWorkspaceMembers(manifest);
+  const members = declared.members.map(normalizeWorkspacePattern).filter(pattern => pattern && pattern !== ".");
+  if (members.length === 0) return manifestDirs.filter(dir => /^crates\/[^/]+$/.test(dir)).sort(compareText);
+  const excluded = declared.exclude.map(normalizeWorkspacePattern).filter(Boolean);
+  const isExcluded = (dir: string): boolean =>
+    excluded.some(pattern => dir === pattern || dir.startsWith(`${pattern}/`) || workspaceGlobToRegExp(pattern).test(dir));
+  return manifestDirs
+    .filter(dir => members.some(pattern => workspaceGlobToRegExp(pattern).test(dir)) && !isExcluded(dir))
+    .sort(compareText);
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /**
@@ -355,26 +507,33 @@ function walkExtractedTree(root: string, limits: ScanSizeLimits): { files: strin
  */
 export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[], options: DiscoverOptions = {}): Discovery {
   const candidates = allFiles.filter(path => hasExtension(path, true));
-  // `.js` is scanned only for a genuinely pure-JS repo: no root tsconfig AND no TS
-  // source anywhere (a monorepo can be TS without a root tsconfig).
+  // A pure-JS repo (no root tsconfig AND no TS source anywhere — a monorepo can be TS
+  // without a root tsconfig) scans every `.js`. A TS repo scans `.js` too, except the
+  // test/vendor, minified and compiled-sibling files `jsSkipReason` names (counted).
   const hasTypeScriptSource = candidates.some(path => /\.(ts|tsx|mts|cts)$/.test(path) && !isExcludedPath(path));
   const includedJs = !hasRootTsconfig(sourceRoot) && !hasTypeScriptSource;
-  const sourceCandidates = candidates.filter(path => hasExtension(path, includedJs) && !isExcludedPath(path));
-  const skippedJsFiles = includedJs ? 0 : candidates.filter(path => path.endsWith(".js") && !isExcludedPath(path)).length;
+  const trackedFiles = new Set(allFiles);
+  const skippedJsByReason: SkippedJsByReason = { testOrVendorDirectory: 0, minified: 0, compiledSibling: 0 };
+  const sourceCandidates = candidates.filter(path => {
+    if (isExcludedPath(path)) return false;
+    if (includedJs || !path.endsWith(".js")) return true;
+    const reason = jsSkipReason(path, trackedFiles);
+    if (reason) skippedJsByReason[reason] += 1;
+    return reason === undefined;
+  });
+  const skippedJsFiles = skippedJsByReason.testOrVendorDirectory + skippedJsByReason.minified + skippedJsByReason.compiledSibling;
   // Only files the testdata rule newly excludes (a testdata `.d.ts` / `*.test.ts` was already out).
-  const excludedTestDataFiles = candidates.filter(path => hasExtension(path, includedJs) && isTestDataPath(path) && !isExcludedFile(path)).length;
+  const excludedTestDataFiles = candidates.filter(path => isTestDataPath(path) && !isExcludedFile(path)).length;
 
-  const globs = workspaceGlobs(sourceRoot);
+  const patterns = workspacePatterns(sourceRoot);
   const memberDirs = new Set<string>();
   for (const path of allFiles) {
     if (!path.endsWith("/package.json") && path !== "package.json") continue;
     if (path === "package.json") continue; // the root manifest is not a workspace member
     const dir = path.slice(0, -"/package.json".length);
-    if (isWorkspaceMemberDir(dir, globs)) memberDirs.add(dir);
+    if (isWorkspaceMemberDir(dir, patterns)) memberDirs.add(dir);
   }
-  const rustCrateDirs = allFiles
-    .filter(path => /^crates\/[^/]+\/Cargo\.toml$/.test(path))
-    .map(manifest => manifest.replace(/\/Cargo\.toml$/, "")).sort();
+  const rustCrateDirs = rustCrateDirectories(sourceRoot, allFiles);
   const rustCrateOf = (file: string): string | undefined => mostSpecificRoot(file, rustCrateDirs);
 
   const allMembers = [...memberDirs].sort();
@@ -445,6 +604,7 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
       singlePackage,
       includedJs,
       skippedJsFiles,
+      ...(skippedJsFiles > 0 ? { skippedJsByReason } : {}),
       skippedMembers,
       ...(reexportAliases.length > 0 ? { reexportAliases } : {}),
       ...(hasSkippedEntries(options.skippedEntries) ? { skippedEntries: { ...options.skippedEntries } } : {}),

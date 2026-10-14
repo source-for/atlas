@@ -1048,10 +1048,52 @@ function attachObservedLanguageTags(
  */
 export interface ExtractedArchitecture {
   extraction: ArchitectureExtraction;
+  /**
+   * Relative imports that resolved to no scanned source file and recorded no relation
+   * (see {@link UnresolvedRelativeImport}). Sorted by path, line, specifier; deduplicated. Scan-time
+   * evidence of a gap (rendered into `analysis.limitations`), never extraction input.
+   */
+  unresolvedRelativeImports: readonly UnresolvedRelativeImport[];
   /** Entity id → McCabe cyclomatic. Only function-like `kind: "code"` entities. */
   cyclomaticById: ReadonlyMap<string, number>;
   /** Clone pairs between existing function-like code ids. Never invents ids. */
   clonePairs: readonly ClonePair[];
+}
+
+/**
+ * Whether a relative specifier names a source module (no extension, or a JS/TS one)
+ * rather than an asset. A same-unit asset import (`./app.css`, `./logo.svg`) is
+ * expected not to resolve to a scanned file; a same-unit `./missing.js` is a gap.
+ */
+function isSourceModuleSpecifier(specifier: string): boolean {
+  const last = specifier.slice(specifier.lastIndexOf("/") + 1);
+  if (last === "." || last === ".." || !last.includes(".")) return true;
+  return /\.(?:[cm]?[jt]s|[jt]sx)$/.test(last);
+}
+
+/**
+ * A relative import that resolved to no discovered file and so recorded no relation:
+ * its target is outside every unit, or is a source module of its own unit.
+ */
+export interface UnresolvedRelativeImport {
+  path: string;
+  /** 1-based line of the import. */
+  line: number;
+  specifier: string;
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** Sorted (path, line, specifier) and deduplicated — independent of discovery order. */
+function canonicalUnresolvedImports(imports: readonly UnresolvedRelativeImport[]): UnresolvedRelativeImport[] {
+  const sorted = [...imports].sort((left, right) =>
+    compareText(left.path, right.path) || left.line - right.line || compareText(left.specifier, right.specifier));
+  return sorted.filter((item, index) => {
+    const previous = sorted[index - 1];
+    return !previous || previous.path !== item.path || previous.line !== item.line || previous.specifier !== item.specifier;
+  });
 }
 
 export function extractArchitecture(input: ExtractInput): ArchitectureExtraction {
@@ -1175,6 +1217,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
   const fileScans: FileScan[] = [];
 
   const unitDirs = discovery.units.map(unit => unit.dir);
+  const unresolvedRelativeImports: UnresolvedRelativeImport[] = [];
 
   for (const file of discovery.sourceFiles) {
     const unitDir = discovery.unitByFile.get(file)!;
@@ -1250,6 +1293,10 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
           const targetUnit = resolveRelativeUnitImport(file, dependency.specifier, unitDirs);
           if (targetUnit && targetUnit !== unitDir) {
             addRelation(unitDir, targetUnit, typedId("relation", unitDir, targetUnit), `unit:${unitDir}->${targetUnit}`, evidence);
+          } else if (!targetUnit || isSourceModuleSpecifier(dependency.specifier)) {
+            // The edge is lost, so say so (never silent): the target is outside every
+            // unit, or names a source module of its own unit that was not discovered.
+            unresolvedRelativeImports.push({ path: file, line: dependency.startLine, specifier: dependency.specifier });
           }
         }
       } else {
@@ -1513,6 +1560,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
     },
     cyclomaticById,
     clonePairs: clonePairsFromBuckets(cloneBuckets),
+    unresolvedRelativeImports: canonicalUnresolvedImports(unresolvedRelativeImports),
   };
 }
 
