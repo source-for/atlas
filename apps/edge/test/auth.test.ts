@@ -591,11 +591,15 @@ describe('canonical base64url tokens (CLA-585)', () => {
     // Pick the first login whose JSON payload leaves unused bits in the last character.
     const login = ['alice', 'alice1', 'alice12'].find((name) => new TextEncoder().encode(JSON.stringify(claims(name))).length % 3 !== 0)!;
     const good = await signSession(claims(login), KEY);
-    const [v, payload, signature] = good.split('.');
+    const [v, payload] = good.split('.');
     const variant = lastCharVariant(payload!);
     expect(variant).not.toBe(payload);
     expect(lenientDecode(variant)).toBe(lenientDecode(payload!));
     expect(await verifySession(good, KEY, NOW)).toMatchObject({ login });
+    // A valid, canonical signature over the variant text, so only canonical payload decoding can reject it.
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`session:${v}.${variant}`)));
+    const signature = btoa(String.fromCharCode(...mac)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     expect(await verifySession(`${v}.${variant}.${signature}`, KEY, NOW)).toBeUndefined();
   });
 
