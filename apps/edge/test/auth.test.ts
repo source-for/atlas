@@ -104,6 +104,13 @@ function lenientDecode(text: string): string {
   return atob(text.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (text.length % 4)) % 4));
 }
 
+/** `v1.<payload>.<sig>` with a valid, canonical HMAC over whatever payload text is given, so only payload decoding can reject it. */
+async function signedWithPayload(payload: string): Promise<string> {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`session:v1.${payload}`)));
+  return `v1.${payload}.${btoa(String.fromCharCode(...mac)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`;
+}
+
 /** The same bytes spelled differently: flips the lowest bit of the last character, always an unused bit when length % 4 is 2 or 3. */
 function lastCharVariant(part: string): string {
   return part.slice(0, -1) + B64URL[B64URL.indexOf(part.at(-1)!) ^ 1]!;
@@ -591,36 +598,41 @@ describe('canonical base64url tokens (CLA-585)', () => {
     // Pick the first login whose JSON payload leaves unused bits in the last character.
     const login = ['alice', 'alice1', 'alice12'].find((name) => new TextEncoder().encode(JSON.stringify(claims(name))).length % 3 !== 0)!;
     const good = await signSession(claims(login), KEY);
-    const [v, payload] = good.split('.');
-    const variant = lastCharVariant(payload!);
+    const payload = good.split('.')[1]!;
+    const variant = lastCharVariant(payload);
     expect(variant).not.toBe(payload);
-    expect(lenientDecode(variant)).toBe(lenientDecode(payload!));
+    expect(lenientDecode(variant)).toBe(lenientDecode(payload));
     expect(await verifySession(good, KEY, NOW)).toMatchObject({ login });
-    // A valid, canonical signature over the variant text, so only canonical payload decoding can reject it.
-    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`session:${v}.${variant}`)));
-    const signature = btoa(String.fromCharCode(...mac)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    expect(await verifySession(`${v}.${variant}.${signature}`, KEY, NOW)).toBeUndefined();
+    expect(await verifySession(await signedWithPayload(payload), KEY, NOW)).toMatchObject({ login });
+    expect(await verifySession(await signedWithPayload(variant), KEY, NOW)).toBeUndefined();
+  });
+
+  it('rejects padding, whitespace and out-of-alphabet characters in a validly signed payload', async () => {
+    // '?' puts a _ in the payload (so / can stand in) and the length leaves unused bits (so padding applies).
+    const login = 'al?ce';
+    const payload = (await signSession(claims(login), KEY)).split('.')[1]!;
+    expect(payload).toMatch(/_/);
+    expect(payload.length % 4).not.toBe(0);
+    const padding = '='.repeat((4 - (payload.length % 4)) % 4);
+    const spellings = [
+      `${payload}${padding}`,
+      `${payload.slice(0, 20)} ${payload.slice(20)}`,
+      `${payload.slice(0, 20)}\n${payload.slice(20)}`,
+      `${payload.slice(0, 20)}\t${payload.slice(20)}`,
+      payload.replace(/-/g, '+').replace(/_/g, '/'),
+      `${payload.slice(0, 20)}*${payload.slice(20)}`,
+      `${payload.slice(0, 20)}!${payload.slice(20)}`,
+    ];
+    expect(await verifySession(await signedWithPayload(payload), KEY, NOW)).toMatchObject({ login });
+    for (const spelling of spellings) {
+      expect(spelling).not.toBe(payload);
+      expect(await verifySession(await signedWithPayload(spelling), KEY, NOW), JSON.stringify(spelling)).toBeUndefined();
+    }
   });
 
   it('rejects padding, whitespace and out-of-alphabet characters in the signature', async () => {
-    const good = await signSession(claims('alice'), KEY);
-    const [v, payload, signature] = good.split('.');
-    const spellings = [
-      `${signature}=`,
-      `${signature}==`,
-      `${signature!.slice(0, 20)} ${signature!.slice(20)}`,
-      `${signature!.slice(0, 20)}\n${signature!.slice(20)}`,
-      `${signature!.slice(0, 20)}\t${signature!.slice(20)}`,
-      `+${signature!.slice(1)}`,
-      `/${signature!.slice(1)}`,
-      signature!.replace(/-/g, '+').replace(/_/g, '/') + (/[-_]/.test(signature!) ? '' : '+'),
-      `${signature!.slice(0, -1)}.`,
-      `${signature!.slice(0, -1)}*`,
-      `${signature}A`,
-    ];
-    for (const spelling of spellings) {
-      expect(spelling).not.toBe(signature);
+    const [v, payload, signature] = (await signSession(claims('alice'), KEY)).split('.');
+    for (const spelling of [`${signature}=`, `${signature!.slice(0, 20)} ${signature!.slice(20)}`, `+${signature!.slice(1)}`, `${signature!.slice(0, -1)}*`]) {
       expect(await verifySession(`${v}.${payload}.${spelling}`, KEY, NOW), JSON.stringify(spelling)).toBeUndefined();
     }
   });

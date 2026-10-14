@@ -158,7 +158,7 @@ function base64UrlEncode(bytes: Uint8Array): string {
 
 /** Canonical spelling only: atob ignores the unused low bits of the last character, so re-encode and compare. */
 function base64UrlDecode(text: string): Uint8Array | undefined {
-  if (!/^[A-Za-z0-9_-]*$/.test(text) || text.length % 4 === 1) return undefined;
+  if (!/^[A-Za-z0-9_-]*$/.test(text)) return undefined;
   try {
     const binary = atob(text.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (text.length % 4)) % 4));
     const out = new Uint8Array(binary.length);
