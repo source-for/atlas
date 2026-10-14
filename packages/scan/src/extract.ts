@@ -668,6 +668,93 @@ export interface CargoPathDependency {
   workspace?: true;
 }
 
+/** A dependency declared without `path`/`workspace` — resolved from a registry or git. */
+export interface CargoSourcedDependency {
+  /** The package name Cargo resolves (`package = "…"` when renamed, else the key). */
+  name: string;
+  /** 1-based line of the declaration (evidence anchor). */
+  line: number;
+  /**
+   * The `[patch.<source>]` key that would override it: the `registry = "…"` name, the
+   * `git = "…"` URL, or `crates-io` for a plain version requirement.
+   */
+  source: string;
+  /** Declared in `[workspace.dependencies]`. */
+  workspace?: true;
+}
+
+type CargoDeclaration = (CargoPathDependency & { sourced?: undefined }) | (CargoSourcedDependency & { sourced: true });
+
+const CARGO_INLINE_STRING = (key: string): RegExp => new RegExp(String.raw`(?:^|[{,\s])${key}\s*=\s*"([^"]+)"`);
+
+/** The `[patch.<source>]` key a non-path declaration resolves through (see {@link CargoSourcedDependency.source}). */
+function cargoDependencySource(fields: { git?: string; registry?: string }): string {
+  return fields.git ?? fields.registry ?? "crates-io";
+}
+
+/**
+ * Every non-dev/build dependency declaration of a Cargo manifest, in source order:
+ * path and `workspace = true` declarations (see {@link cargoPathDependencies}) and
+ * registry/git-sourced ones (`foo = "1"`, `foo = { version = "1" }`,
+ * `[dependencies.foo] version = "1"`), which a root `[patch.*]` table can redirect.
+ */
+function cargoDependencyDeclarations(manifestText: string): CargoDeclaration[] {
+  const dependencies: CargoDeclaration[] = [];
+  const lines = manifestText.split(/\r?\n/);
+  let inDependencySection = false;
+  let workspaceTable = false;
+  let subsection: { name: string; line: number; located: boolean; fields: { git?: string; registry?: string; package?: string } } | undefined;
+  const closeSubsection = (): void => {
+    if (subsection && !subsection.located) {
+      dependencies.push({ sourced: true, name: subsection.fields.package ?? subsection.name, line: subsection.line, source: cargoDependencySource(subsection.fields), ...(workspaceTable ? { workspace: true as const } : {}) });
+    }
+    subsection = undefined;
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    const header = /^\s*\[(.+)\]\s*$/.exec(line);
+    if (header) {
+      closeSubsection();
+      const section = header[1]!;
+      const isDependencies = /(^|\.)dependencies(\.|$)/.test(section)
+        && !/dev-dependencies|build-dependencies/.test(section);
+      inDependencySection = isDependencies;
+      workspaceTable = /^\s*workspace\./.test(section);
+      const named = /(?:^|\.)dependencies\.("[^"]+"|'[^']+'|[A-Za-z0-9_-]+)\s*$/.exec(section);
+      subsection = isDependencies && named ? { name: named[1]!.replace(/^["']|["']$/g, ""), line: index + 1, located: false, fields: {} } : undefined;
+      continue;
+    }
+    if (!inDependencySection) continue;
+    const scope = workspaceTable ? { workspace: true as const } : {};
+    if (subsection) {
+      const pathValue = /^\s*path\s*=\s*"([^"]+)"/.exec(line);
+      const field = /^\s*(git|registry|package)\s*=\s*"([^"]+)"/.exec(line);
+      if (pathValue) { subsection.located = true; dependencies.push({ name: subsection.name, path: pathValue[1]!, line: index + 1, ...scope }); }
+      else if (/^\s*workspace\s*=\s*true\b/.test(line)) { subsection.located = true; dependencies.push({ name: subsection.name, path: "", line: index + 1, inherited: true, ...scope }); }
+      else if (field) subsection.fields[field[1] as "git" | "registry" | "package"] = field[2]!;
+      continue;
+    }
+    // The key follows `{` directly or a `,`/space inside the table (never `typed-path`).
+    const inline = /^\s*([A-Za-z0-9_-]+)\s*=\s*\{(?:[^}]*[,\s])?path\s*=\s*"([^"]+)"/.exec(line);
+    if (inline) { dependencies.push({ name: inline[1]!, path: inline[2]!, line: index + 1, ...scope }); continue; }
+    const inherited = /^\s*([A-Za-z0-9_-]+)\s*(?:=\s*\{(?:[^}]*[,\s])?|\.\s*)workspace\s*=\s*true\b/.exec(line);
+    if (inherited) { dependencies.push({ name: inherited[1]!, path: "", line: index + 1, inherited: true, ...scope }); continue; }
+    const version = /^\s*([A-Za-z0-9_-]+)\s*=\s*"[^"]*"/.exec(line);
+    if (version) { dependencies.push({ sourced: true, name: version[1]!, line: index + 1, source: "crates-io", ...scope }); continue; }
+    const table = /^\s*([A-Za-z0-9_-]+)\s*=\s*(\{.*)$/.exec(line);
+    if (table) {
+      const fields = {
+        ...(CARGO_INLINE_STRING("git").exec(table[2]!) ? { git: CARGO_INLINE_STRING("git").exec(table[2]!)![1]! } : {}),
+        ...(CARGO_INLINE_STRING("registry").exec(table[2]!) ? { registry: CARGO_INLINE_STRING("registry").exec(table[2]!)![1]! } : {}),
+      };
+      const renamed = CARGO_INLINE_STRING("package").exec(table[2]!)?.[1];
+      dependencies.push({ sourced: true, name: renamed ?? table[1]!, line: index + 1, source: cargoDependencySource(fields), ...scope });
+    }
+  }
+  closeSubsection();
+  return dependencies;
+}
+
 /**
  * `path = "…"` dependencies from a Cargo manifest — the deterministic edge source
  * for otherwise-opaque Rust crates (R1 parses no .rs, but the workspace wiring is
@@ -678,39 +765,107 @@ export interface CargoPathDependency {
  * with `inherited` and an empty path; `[workspace.dependencies]` entries carry `workspace`.
  */
 export function cargoPathDependencies(manifestText: string): CargoPathDependency[] {
-  const dependencies: CargoPathDependency[] = [];
+  return cargoDependencyDeclarations(manifestText).flatMap(({ sourced, ...dependency }) => sourced ? [] : [dependency as CargoPathDependency]);
+}
+
+/**
+ * Registry/git-sourced dependencies (no `path`, no `workspace = true`) from the same
+ * sections as {@link cargoPathDependencies}. On their own they are external crates;
+ * a root `[patch.<source>]` path override turns one into an in-repo crate edge.
+ */
+export function cargoSourcedDependencies(manifestText: string): CargoSourcedDependency[] {
+  return cargoDependencyDeclarations(manifestText).flatMap(({ sourced, ...dependency }) => sourced ? [dependency as CargoSourcedDependency] : []);
+}
+
+/** One `path` override in a `[patch.<source>]` table of the root Cargo manifest. */
+export interface CargoPatchPath {
+  /** The `<source>` key: a registry name (`crates-io`) or a git URL, unquoted. */
+  source: string;
+  /** The patched package name. */
+  name: string;
+  /** The `path` value, as written (relative to the root manifest). */
+  path: string;
+  /** 1-based line of the declaration (evidence anchor). */
+  line: number;
+}
+
+/**
+ * `path` overrides in `[patch.<source>]` tables — `[patch.crates-io] tokio = { path =
+ * "tokio" }` and the `[patch.crates-io.tokio] path = "tokio"` subsection form. Cargo
+ * honours `[patch]` only in the workspace root manifest, so only that one is read.
+ * Overrides without `path` (a git or registry redirect) are not returned.
+ */
+export function cargoPatchPaths(manifestText: string): CargoPatchPath[] {
+  const patches: CargoPatchPath[] = [];
   const lines = manifestText.split(/\r?\n/);
-  let inDependencySection = false;
-  let subsectionName: string | undefined;
-  let workspaceTable = false;
+  let table: { source: string; name?: string } | undefined;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
-    const header = /^\s*\[(.+)\]\s*$/.exec(line);
+    const header = /^\s*\[([^\[\]]+)\]\s*$/.exec(line);
     if (header) {
-      const section = header[1]!;
-      const isDependencies = /(^|\.)dependencies(\.|$)/.test(section)
-        && !/dev-dependencies|build-dependencies/.test(section);
-      inDependencySection = isDependencies;
-      workspaceTable = /^\s*workspace\./.test(section);
-      const subsection = /(?:^|\.)dependencies\.("[^"]+"|'[^']+'|[A-Za-z0-9_-]+)\s*$/.exec(section);
-      subsectionName = isDependencies && subsection ? subsection[1]!.replace(/^["']|["']$/g, "") : undefined;
+      const parts = /^\s*patch\s*\.\s*("[^"]+"|'[^']+'|[A-Za-z0-9_-]+)\s*(?:\.\s*("[^"]+"|'[^']+'|[A-Za-z0-9_-]+)\s*)?$/.exec(header[1]!);
+      const unquote = (text: string): string => text.replace(/^["']|["']$/g, "");
+      table = parts ? { source: unquote(parts[1]!), ...(parts[2] !== undefined ? { name: unquote(parts[2]) } : {}) } : undefined;
       continue;
     }
-    if (!inDependencySection) continue;
-    const scope = workspaceTable ? { workspace: true as const } : {};
-    if (subsectionName) {
+    if (!table) continue;
+    if (table.name !== undefined) {
       const pathValue = /^\s*path\s*=\s*"([^"]+)"/.exec(line);
-      if (pathValue) dependencies.push({ name: subsectionName, path: pathValue[1]!, line: index + 1, ...scope });
-      else if (/^\s*workspace\s*=\s*true\b/.test(line)) dependencies.push({ name: subsectionName, path: "", line: index + 1, inherited: true, ...scope });
+      if (pathValue) patches.push({ source: table.source, name: table.name, path: pathValue[1]!, line: index + 1 });
       continue;
     }
-    // The key follows `{` directly or a `,`/space inside the table (never `typed-path`).
-    const inline = /^\s*([A-Za-z0-9_-]+)\s*=\s*\{(?:[^}]*[,\s])?path\s*=\s*"([^"]+)"/.exec(line);
-    if (inline) { dependencies.push({ name: inline[1]!, path: inline[2]!, line: index + 1, ...scope }); continue; }
-    const inherited = /^\s*([A-Za-z0-9_-]+)\s*(?:=\s*\{(?:[^}]*[,\s])?|\.\s*)workspace\s*=\s*true\b/.exec(line);
-    if (inherited) dependencies.push({ name: inherited[1]!, path: "", line: index + 1, inherited: true, ...scope });
+    const inline = /^\s*("[^"]+"|[A-Za-z0-9_-]+)\s*=\s*\{(?:[^}]*[,\s])?path\s*=\s*"([^"]+)"/.exec(line);
+    if (inline) patches.push({ source: table.source, name: inline[1]!.replace(/^"|"$/g, ""), path: inline[2]!, line: index + 1 });
   }
-  return dependencies;
+  return patches;
+}
+
+/**
+ * The scanned crate a root `[patch]` path names, or undefined: a path that leaves the
+ * repository (`../tokio`) or names no crate unit is never followed (see
+ * {@link unfollowedCargoPatches}). Exact crate-root match, unlike import resolution.
+ */
+export function cargoPatchTargetDir(patch: CargoPatchPath, crateDirs: ReadonlySet<string>): string | undefined {
+  const target = repositoryPathOf(patch.path);
+  return target !== undefined && crateDirs.has(target) ? target : undefined;
+}
+
+/** A root-relative path as a repository path; undefined when it leaves the root. */
+function repositoryPathOf(path: string): string | undefined {
+  const stack: string[] = [];
+  for (const part of path.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") { if (stack.length === 0) return undefined; stack.pop(); }
+    else stack.push(part);
+  }
+  return stack.join("/");
+}
+
+/** A root `[patch.*]` path override that became no crate edge, and why. */
+export interface UnfollowedCargoPatch extends CargoPatchPath {
+  /** `outside-repository`: resolves above the source root (never read); `no-crate`: names no scanned crate. */
+  reason: "outside-repository" | "no-crate";
+}
+
+/**
+ * Root `[patch.*]` path overrides the scan did not follow, in manifest order. Empty
+ * when every override names a scanned crate (or there is none).
+ */
+export function unfollowedCargoPatches(rootManifest: string, crateDirs: ReadonlySet<string>): UnfollowedCargoPatch[] {
+  return cargoPatchPaths(rootManifest).flatMap(patch => cargoPatchTargetDir(patch, crateDirs) !== undefined ? [] : [{
+    ...patch,
+    reason: repositoryPathOf(patch.path) === undefined ? "outside-repository" as const : "no-crate" as const,
+  }]);
+}
+
+/** A git URL as Cargo compares `[patch."<url>"]` keys: no trailing `/` or `.git`, case-folded. */
+function cargoSourceKey(source: string): string {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(source) ? source.toLowerCase().replace(/\/+$/, "").replace(/\.git$/, "") : source;
+}
+
+/** Whether a `[patch.<patchSource>]` table overrides a dependency resolved from `dependencySource`. */
+export function cargoPatchApplies(patchSource: string, dependencySource: string): boolean {
+  return cargoSourceKey(patchSource) === cargoSourceKey(dependencySource);
 }
 
 /** Maps a bare `@okie/*` specifier to the owning workspace-member unit dir, or undefined. */
@@ -1611,26 +1766,54 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
   let rootManifest = "";
   try { if (discovery.units.some(unit => unit.kind === "rust")) rootManifest = readFile("Cargo.toml") ?? ""; } catch { /* no root manifest */ }
   const workspacePaths = new Map(cargoPathDependencies(rootManifest).flatMap(dependency => dependency.workspace && !dependency.inherited ? [[dependency.name, dependency.path] as const] : []));
+  // A root `[patch.<source>]` path override (tokio: `[patch.crates-io] tokio = { path =
+  // "tokio" }`) makes every registry/git dependency on that package — declared in the
+  // crate or inherited from a path-less `[workspace.dependencies]` entry — resolve to
+  // the in-repo crate, so it is a crate edge too. Out-of-repo / non-crate patch paths
+  // are reported (`unfollowedCargoPatches`), never followed.
+  const crateDirs = new Set(discovery.units.flatMap(unit => unit.kind === "rust" ? [unit.dir] : []));
+  const patchTargets = cargoPatchPaths(rootManifest).flatMap(patch => {
+    const targetDir = cargoPatchTargetDir(patch, crateDirs);
+    return targetDir ? [{ ...patch, targetDir }] : [];
+  });
+  const workspaceSources = new Map(cargoSourcedDependencies(rootManifest).flatMap(dependency => dependency.workspace ? [[dependency.name, dependency] as const] : []));
+  const patchTargetOf = (name: string, source: string): (CargoPatchPath & { targetDir: string }) | undefined =>
+    patchTargets.find(patch => patch.name === name && cargoPatchApplies(patch.source, source));
   for (const unit of discovery.units) {
     if (unit.kind !== "rust") continue;
     const manifestPath = `${unit.dir}/Cargo.toml`;
     let manifestText: string;
     try { manifestText = readFile(manifestPath); } catch { continue; }
-    for (const dependency of cargoPathDependencies(manifestText)) {
-      if (dependency.workspace) continue;
-      const inheritedPath = dependency.inherited ? workspacePaths.get(dependency.name) : undefined;
-      if (dependency.inherited && inheritedPath === undefined) continue;
-      const targetDir = inheritedPath !== undefined
-        ? resolveRelativeUnitImport("Cargo.toml", inheritedPath, unitDirs)
-        : resolveRelativeUnitImport(`${unit.dir}/Cargo.toml`, dependency.path, unitDirs);
-      if (!targetDir || targetDir === unit.dir) continue;
+    const addCrateEdge = (targetDir: string, line: number, patch?: CargoPatchPath): void => {
+      if (targetDir === unit.dir) return;
       addRelation(
         unit.dir,
         targetDir,
         typedId("relation", unit.dir, targetDir),
         `unit:${unit.dir}->${targetDir}`,
-        { source: { path: manifestPath, startLine: dependency.line, endLine: dependency.line } },
+        { source: { path: manifestPath, startLine: line, endLine: line } },
       );
+      if (patch) addRelation(unit.dir, targetDir, typedId("relation", unit.dir, targetDir), `unit:${unit.dir}->${targetDir}`,
+        { source: { path: "Cargo.toml", startLine: patch.line, endLine: patch.line } });
+    };
+    for (const dependency of cargoPathDependencies(manifestText)) {
+      if (dependency.workspace) continue;
+      const inheritedPath = dependency.inherited ? workspacePaths.get(dependency.name) : undefined;
+      if (dependency.inherited && inheritedPath === undefined) {
+        const workspaceEntry = workspaceSources.get(dependency.name);
+        const patch = workspaceEntry && patchTargetOf(workspaceEntry.name, workspaceEntry.source);
+        if (patch) addCrateEdge(patch.targetDir, dependency.line, patch);
+        continue;
+      }
+      const targetDir = inheritedPath !== undefined
+        ? resolveRelativeUnitImport("Cargo.toml", inheritedPath, unitDirs)
+        : resolveRelativeUnitImport(`${unit.dir}/Cargo.toml`, dependency.path, unitDirs);
+      if (targetDir) addCrateEdge(targetDir, dependency.line);
+    }
+    for (const dependency of cargoSourcedDependencies(manifestText)) {
+      if (dependency.workspace) continue;
+      const patch = patchTargetOf(dependency.name, dependency.source);
+      if (patch) addCrateEdge(patch.targetDir, dependency.line, patch);
     }
   }
 

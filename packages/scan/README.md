@@ -139,6 +139,12 @@ Discovery generalizes beyond Okie's own layout (validated against third-party cl
   root container is kept without source of its own only when the root `package.json` declares
   `exports`/`main`/`types`/`module`/`bin` or runtime `dependencies` (a Cargo virtual workspace or a
   tooling-only manifest yields no empty root).
+- **Crate edges** come from `Cargo.toml` `path` dependencies (inline, `[dependencies.x]`,
+  inherited `workspace = true`) and from root **`[patch.<source>]` path overrides**: a crate that
+  depends on `foo` by registry version or git URL gets a `foo` crate edge when the root manifest
+  patches that source's `foo` to an in-repo crate (tokio's `[patch.crates-io] tokio = { path =
+  "tokio" }`); the edge cites both lines. A patch path outside the repository is never followed,
+  and one naming no scanned crate records nothing — both are listed in `analysis.limitations`.
 - **Declarations without a name** — a syntax error the parser recovers from with a missing
   identifier (`export default interface {}`, `enum {}` in babel's parser fixtures) — become code
   entities named `default` (a default export) or `anonymous <kind>`, never a blank name. A name

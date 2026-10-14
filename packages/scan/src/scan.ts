@@ -31,6 +31,7 @@ import {
   type ClonePair,
   type ExtractInput,
   type UnresolvedRelativeImport,
+  unfollowedCargoPatches,
 } from "./extract.js";
 import { mergeEnrichment, type EnrichmentReport } from "./enrich.js";
 import { applyComponentMembership, type ComponentMapInput, type ComponentMapReport } from './component-map.js';
@@ -272,6 +273,7 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
   const scanLimitations = [
     ...discoveryLimitations(discovery.summary),
     ...unresolvedImportLimitations(collected.unresolvedRelativeImports),
+    ...cargoPatchLimitations(discovery, readFile),
   ];
 
   const metadata: ArchitectureExtractionSnapshotMetadata = {
@@ -436,6 +438,24 @@ export function unresolvedImportLimitations(imports: readonly UnresolvedRelative
     ...shown,
     ...(hidden > 0 ? [`+${hidden} more unresolved relative import(s) not itemized.`] : []),
   ];
+}
+
+/**
+ * Root `Cargo.toml` `[patch.*]` path overrides that recorded no crate edge: one line
+ * each — out-of-repository paths are reported, never followed. Read the same way
+ * extraction reads the root manifest; empty without Rust crates or such overrides.
+ */
+export function cargoPatchLimitations(discovery: Discovery, readFile: (path: string) => string): string[] {
+  const crateDirs = new Set(discovery.units.flatMap(unit => unit.kind === "rust" ? [unit.dir] : []));
+  if (crateDirs.size === 0) return [];
+  let rootManifest = "";
+  try { rootManifest = readFile("Cargo.toml") ?? ""; } catch { return []; }
+  return unfollowedCargoPatches(rootManifest, crateDirs).map(patch => {
+    const where = `Cargo.toml:${patch.line}: [patch.${displayText(patch.source)}] ${displayText(patch.name)} = { path = '${displayText(patch.path)}' }`;
+    return patch.reason === "outside-repository"
+      ? `Cargo [patch] path resolves outside the repository; not followed, no crate edge recorded: ${where}`
+      : `Cargo [patch] path names no scanned crate; no crate edge recorded: ${where}`;
+  });
 }
 
 /** The TypeScript-repo `.js` exclusions, by reason (empty when none were skipped). */
