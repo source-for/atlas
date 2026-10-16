@@ -37,6 +37,18 @@ export function pushInspectorHistory(
   return [...history, subject].slice(-inspectorHistoryLimit);
 }
 
+/**
+ * Undoes a push of `subject` made on `before`, while `subject` is still on top. Restoring
+ * `before` (not just dropping the top) brings back an entry the push's limit evicted.
+ */
+export function withdrawInspectorHistory(
+  current: InspectorHistorySubject[],
+  before: readonly InspectorHistorySubject[],
+  subject: InspectorHistorySubject,
+): InspectorHistorySubject[] {
+  return current.at(-1) === subject ? [...before] : current;
+}
+
 export function popInspectorHistory(history: readonly InspectorHistorySubject[]): {
   history: InspectorHistorySubject[];
   subject?: InspectorHistorySubject;
