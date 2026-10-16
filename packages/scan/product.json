@@ -1,0 +1,4 @@
+{
+  "packageName": "@sourcefor/atlas",
+  "bin": "sourcefor-atlas"
+}

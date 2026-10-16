@@ -16,6 +16,8 @@ import { enrichPortableAtlas } from './portable-enrich.js';
 import { parsePortableAtlas } from '@okie/architecture';
 import { applyComponentMembership, type ComponentMapInput } from './component-map.js';
 import { runConsumersQuery } from './consumers-cli.js';
+import { product, productVersion } from './product.js';
+import { rustParserUnavailable } from './analyzers.js';
 
 interface CliArgs {
   source: string;
@@ -34,13 +36,17 @@ interface CliArgs {
 }
 
 function printUsage(): void {
+  const pad = " ".repeat(product.bin.length);
   process.stdout.write([
-    "okie-scan — deterministic repository scan (R1 local + R3 GitHub) + enrichment machinery (R2a)",
+    `${product.bin} ${productVersion()} — architecture atlas from a repository's committed source (${product.packageName})`,
     "",
-    "Usage: okie-scan [--source <path | gh:owner/repo[@ref]>] [--out <dir>]",
-    "                 [--system-name <name>] [--repo <slug>] [--max-tarball-mb <n>]",
-    "                 [--emit-packets <dir>] [--emit-prompt <dir>] [--enrich-from <dir>]",
-    "                 [--revision <rev>] [--component-map <path>] [--include-members] [--public-api] [--lcov <path>]",
+    `Usage: ${product.bin} [--source <path | gh:owner/repo[@ref]>] [--out <dir>]`,
+    `       ${pad} [--system-name <name>] [--repo <slug>] [--max-tarball-mb <n>]`,
+    `       ${pad} [--emit-packets <dir>] [--emit-prompt <dir>] [--enrich-from <dir>]`,
+    `       ${pad} [--revision <rev>] [--component-map <path>] [--include-members] [--public-api] [--lcov <path>]`,
+    `       ${product.bin} export --bundle <atlas.okie.json> --out <empty-dir> [--viewer <built-dir>]`,
+    `       ${product.bin} enrich --bundle <atlas.okie.json> --docs <enrichment-dir> --out <atlas.okie.json>`,
+    `       ${product.bin} consumers <dependency> --bundle <atlas.okie.json> [--ecosystem npm|cargo] [--json] [--runtime-only]`,
     "",
     "  --source <src>      local git working tree, or gh:owner/repo[@ref] (default: cwd)",
     "  --out <dir>         output directory (default: <source>/fixtures/scan for a local",
@@ -52,10 +58,9 @@ function printUsage(): void {
     "  --full / --quick    semantic analyzers (default) or syntax-only scan; limits are recorded",
     "  --include-source   include full referenced files in atlas.okie.json (snippets are always retained)",
     "  --repository-url <https-url>  explicit public repository URL to embed for a local scan",
-    "  export --bundle <file> --viewer <built-dir> --out <empty-dir>  package a static atlas",
-    "  enrich --bundle <atlas.okie.json> --docs <enrichment-dir> --out <atlas.okie.json>",
-    "  consumers <dependency> --bundle <atlas.okie.json> [--ecosystem npm|cargo] [--json] [--runtime-only]",
-    "                      who declares/imports/references a dependency (declarations alone are not use)",
+    "  export              package a static atlas site (default viewer: the one bundled with this CLI)",
+    "  enrich              merge agent-written enrichment docs into a portable atlas",
+    "  consumers           who declares/imports/references a dependency (declarations alone are not use)",
     "  --max-tarball-mb    cap on a gh: tarball download (default: 150)",
     "  --emit-packets <d>  (local only) write bounded, redacted enrichment packets to <d>",
     "  --emit-prompt <d>   (local only) write packets plus concatenated prompts to <d>",
@@ -183,8 +188,12 @@ function readEnrichmentDocs(dir: string): Map<string, unknown> {
 /** Writes the six-artifact trio, story catalog, and optional enrichment report. */
 function writeArtifacts(out: string, artifacts: ScanArtifacts, repositoryUrl?: string): void {
   mkdirSync(out, { recursive: true });
-  for (const [name, text] of Object.entries(scanOutputFiles(artifacts, repositoryUrl))) writeFileSync(`${out}/${name}`, text);
+  const generator = { name: product.packageName, version: productVersion() };
+  for (const [name, text] of Object.entries(scanOutputFiles(artifacts, repositoryUrl, generator))) writeFileSync(`${out}/${name}`, text);
   if (artifacts.componentMapReport && !artifacts.componentMapReport.accepted) process.exitCode = 1;
+  // A missing native parser degrades Rust to `unavailable` (recorded in the atlas); say so once, never fail.
+  const noRustParser = artifacts.analysis.adapters.some(adapter => adapter.language === "rust") ? rustParserUnavailable() : undefined;
+  if (noRustParser) process.stderr.write(`${product.bin}: warning: Rust is not mapped. ${noRustParser}\n`);
 }
 
 /** CLA-263 membership warnings, capped like the folded-shim list (full list in membership-report.json). */
@@ -231,7 +240,7 @@ function summaryLines(artifacts: ScanArtifacts): string {
   const mappingNote = !mapping ? "" : mapping.accepted
     ? `  component map: accepted (${mapping.mappedComponents} components, ${mapping.mappedPaths} files; see component-map-report.json)\n`
     : `  component map: REJECTED; retained original file graph (see component-map-report.json)\n${mapping.reasons.map(reason => `    ${reason}\n`).join('')}`;
-  return `okie-scan: ${snapshot.entities.length} entities, ${snapshot.relations.length} relations\n` +
+  return `${product.bin}: ${snapshot.entities.length} entities, ${snapshot.relations.length} relations\n` +
     `  commit ${pin.commitSha}\n  tree   ${pin.treeHash}\n` +
     modeNote + membersNote + limitationsNote + aliasNote + coverageNote + flowNote + enrichedNote + systemScopeNote + mappingNote;
 }
@@ -275,7 +284,7 @@ function readComponentMap(path: string): ComponentMapInput {
 async function runGithubScan(args: CliArgs): Promise<void> {
   const github = args.github!;
   if (args.emitPacketsDir || args.emitPromptDir) {
-    process.stderr.write("okie-scan: --emit-packets/--emit-prompt is local-only (needs the working tree); skipping for gh source.\n");
+    process.stderr.write(`${product.bin}: --emit-packets/--emit-prompt is local-only (needs the working tree); skipping for gh source.\n`);
   }
   const scanOptions = {
     ...args.options,
@@ -347,7 +356,7 @@ function runPortableEnrichment(args: readonly string[]): void {
     const key = args[index];
     const value = args[index + 1];
     if (!key || !["--bundle", "--docs", "--out"].includes(key) || !value || value.startsWith("--")) {
-      throw new Error("Usage: okie-scan enrich --bundle <atlas.okie.json> --docs <enrichment-dir> --out <atlas.okie.json>");
+      throw new Error(`Usage: ${product.bin} enrich --bundle <atlas.okie.json> --docs <enrichment-dir> --out <atlas.okie.json>`);
     }
     values.set(key, value);
   }
@@ -372,9 +381,9 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   if (error instanceof GithubAcquisitionError) {
-    process.stderr.write(`okie-scan: ${error.message}\n`);
+    process.stderr.write(`${product.bin}: ${error.message}\n`);
     process.exit(1);
   }
-  process.stderr.write(`okie-scan: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`${product.bin}: ${error instanceof Error ? error.message : String(error)}\n`);
   process.exit(1);
 });

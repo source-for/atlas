@@ -5,13 +5,17 @@ Turns a pinned git working tree into an evidence-backed `ArchitectureSnapshot` (
 renderable view/story/scene/timeline) by walking TypeScript **syntax only** — no type
 checker, no `node_modules`, no network.
 
+Packaged and installed as `@sourcefor/atlas` with one executable, `sourcefor-atlas` (names in
+[`product.json`](product.json); install steps in [`docs/portable-atlas.md`](../../docs/portable-atlas.md)).
+From this checkout, `pnpm --filter @okie/scan scan --source <path> …` runs the same CLI from source.
+
 ```
-okie-scan --source <path> [--out <dir>] [--system-name <name>] [--repo <slug>]
-okie-scan --source <path> --emit-packets <dir>
-okie-scan --source <path> --emit-prompt <dir>
-okie-scan --source <path> --enrich-from <dir>
-okie-scan --source <path> --lcov <path>
-okie-scan --source <path> --component-map <path>
+sourcefor-atlas --source <path> [--out <dir>] [--system-name <name>] [--repo <slug>]
+sourcefor-atlas --source <path> --emit-packets <dir>
+sourcefor-atlas --source <path> --emit-prompt <dir>
+sourcefor-atlas --source <path> --enrich-from <dir>
+sourcefor-atlas --source <path> --lcov <path>
+sourcefor-atlas --source <path> --component-map <path>
 ```
 
 Defaults: `--source` = cwd, `--out` = `<source>/fixtures/scan` (gitignored). Outputs
@@ -204,7 +208,7 @@ order, filesystem order, and iteration order cannot affect the bytes.
 
 ## GitHub acquisition (R3 — paste a repo, get an atlas)
 
-`okie-scan --source gh:owner/repo[@ref]` scans a public repository with no local clone:
+`sourcefor-atlas --source gh:owner/repo[@ref]` scans a public repository with no local clone:
 
 1. **Resolve** the ref to an immutable commit via the GitHub REST API (unauthenticated).
    No ref → the repo's `default_branch`. Falls back to the `gh` CLI transparently on a
@@ -253,7 +257,7 @@ them; hallucinated ids and out-of-scope entities reject that scope and it stays
 deterministic. Recorded regrouping / actor documents still merge when they satisfy
 the gate.
 
-- `okie-scan --emit-packets <dir>` writes one bounded, **redacted** packet per code-bearing
+- `sourcefor-atlas --emit-packets <dir>` writes one bounded, **redacted** packet per code-bearing
   container (`container__<id>.json`) plus a content-addressed `manifest.json`. A packet contains
   only that container's scope — its file-components, code entities (id/name/symbol/line ranges),
   touching relations, and capped file headers. Never a byte from outside the scope. It also writes
@@ -261,7 +265,7 @@ the gate.
   file-components exceed `MAX_COMPONENTS_PER_PACKET` (`maxListItems − 3` = 61) emits additional
   remainder packets (`container__<id>.2.json`, …) covering the leftover scanner ids. The cap
   does not drop files. Empty components (no top-level declaration) still have no packet rows.
-- `okie-scan --emit-prompt <dir>` is concat sugar on that same loop (local working tree only). It
+- `sourcefor-atlas --emit-prompt <dir>` is concat sugar on that same loop (local working tree only). It
   writes the **same packet files** as `--emit-packets`, plus one `<packet>.prompt.md` per packet.
   Each prompt is the frozen [`enrichment-prompt.md`](./enrichment-prompt.md) bytes, then the packet
   JSON, then an appendix (scanned `commitSha` / `treeHash`, packet filename, file tree, ownership
@@ -272,7 +276,7 @@ the gate.
   (`enrichment-prompt.md`) is not rewritten. v3 may name **untested behaviours** in
   `untestedBehaviours` grounded in those ranges + `nearbyTests`. Without ranges, omit that
   field — do not invent coverage or a CRAP headline. Hallucinated ranges fail the merge gate.
-- `okie-scan --enrich-from <dir>` reads one `ArchitectureExtraction` per packet (and, optionally,
+- `sourcefor-atlas --enrich-from <dir>` reads one `ArchitectureExtraction` per packet (and, optionally,
   one keyed by the **system id**) and merges the accepted ones, emitting `enrichment-report.json`.
   Write each document with the **same filename as the packet**, including remainder
   `container__<id>.2.json`. Multiple accepted summary docs for one container **union** their

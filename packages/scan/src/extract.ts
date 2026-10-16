@@ -1,4 +1,5 @@
-import ts from "typescript";
+import type TS from "typescript";
+import { ts } from "./analyzers.js";
 import {
   ARCHITECTURE_EXTRACTION_LIMITS,
   CYCLOMATIC_FLAG_THRESHOLD,
@@ -71,7 +72,7 @@ export interface TopLevelDeclaration {
   /** Exported from its module (direct modifier, `export {…}` list, `export default`/`export =`). */
   exported: boolean;
   /** The declaring statement/declarator — the subtree symbol references are walked in. */
-  node: ts.Node;
+  node: TS.Node;
   /**
    * The parser recovered a MISSING identifier (a syntax error), so `name` is the
    * {@link declarationName} fallback, not text in the source.
@@ -85,19 +86,19 @@ export interface ModuleImport {
   endLine: number;
 }
 
-function scriptKind(path: string): ts.ScriptKind {
+function scriptKind(path: string): TS.ScriptKind {
   if (path.endsWith(".tsx")) return ts.ScriptKind.TSX;
   if (path.endsWith(".jsx")) return ts.ScriptKind.JSX;
   if (path.endsWith(".mjs") || path.endsWith(".cjs") || path.endsWith(".js")) return ts.ScriptKind.JS;
   return ts.ScriptKind.TS; // .ts, .mts, .cts
 }
 
-export function parseSource(path: string, text: string): ts.SourceFile {
+export function parseSource(path: string, text: string): TS.SourceFile {
   return ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, scriptKind(path));
 }
 
 /** Local names exported indirectly: `export { a, b as c }` (no specifier), `export default x`, `export = x`. */
-function indirectlyExportedNames(sourceFile: ts.SourceFile): Set<string> {
+function indirectlyExportedNames(sourceFile: TS.SourceFile): Set<string> {
   const names = new Set<string>();
   for (const statement of sourceFile.statements) {
     if (ts.isExportDeclaration(statement) && !statement.moduleSpecifier
@@ -112,24 +113,24 @@ function indirectlyExportedNames(sourceFile: ts.SourceFile): Set<string> {
   return names;
 }
 
-function hasExportModifier(statement: ts.Statement): boolean {
+function hasExportModifier(statement: TS.Statement): boolean {
   return ts.canHaveModifiers(statement)
     ? (ts.getModifiers(statement) ?? []).some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword)
     : false;
 }
 
 type NamedTopLevelDeclaration =
-  | ts.FunctionDeclaration | ts.ClassDeclaration | ts.InterfaceDeclaration | ts.TypeAliasDeclaration
-  | ts.EnumDeclaration | ts.ModuleDeclaration | ts.VariableDeclaration;
+  | TS.FunctionDeclaration | TS.ClassDeclaration | TS.InterfaceDeclaration | TS.TypeAliasDeclaration
+  | TS.EnumDeclaration | TS.ModuleDeclaration | TS.VariableDeclaration;
 
-const ANONYMOUS_DECLARATION_LABEL: ReadonlyArray<[(node: ts.Node) => boolean, string]> = [
-  [ts.isFunctionDeclaration, "function"],
-  [ts.isClassDeclaration, "class"],
-  [ts.isInterfaceDeclaration, "interface"],
-  [ts.isTypeAliasDeclaration, "type"],
-  [ts.isEnumDeclaration, "enum"],
-  [ts.isModuleDeclaration, "namespace"],
-  [ts.isVariableDeclaration, "variable"],
+const ANONYMOUS_DECLARATION_LABEL: ReadonlyArray<[(node: TS.Node) => boolean, string]> = [
+  [node => ts.isFunctionDeclaration(node), "function"],
+  [node => ts.isClassDeclaration(node), "class"],
+  [node => ts.isInterfaceDeclaration(node), "interface"],
+  [node => ts.isTypeAliasDeclaration(node), "type"],
+  [node => ts.isEnumDeclaration(node), "enum"],
+  [node => ts.isModuleDeclaration(node), "namespace"],
+  [node => ts.isVariableDeclaration(node), "variable"],
 ];
 
 /**
@@ -176,11 +177,11 @@ export function entityDisplayName(kind: string, name: string): string {
  * declaration carries `exported` so a public-API scan (`codeSurface: 'public'`)
  * can keep only the module's export surface.
  */
-export function topLevelDeclarations(sourceFile: ts.SourceFile): TopLevelDeclaration[] {
+export function topLevelDeclarations(sourceFile: TS.SourceFile): TopLevelDeclaration[] {
   const declarations: TopLevelDeclaration[] = [];
   const indirect = indirectlyExportedNames(sourceFile);
   const lineOf = (position: number): number => sourceFile.getLineAndCharacterOfPosition(position).line + 1;
-  const push = (name: string, node: ts.Node, direct: boolean): void => {
+  const push = (name: string, node: TS.Node, direct: boolean): void => {
     const named = node as NamedTopLevelDeclaration;
     const recovered = !(named.name && ts.isIdentifier(named.name) && named.name.text.trim());
     declarations.push({
@@ -220,7 +221,7 @@ export interface NamedImportBinding {
  * Import bindings with a syntactically known export identity. Namespace members are
  * resolved only for direct property access (`ns.symbol`), never computed access.
  */
-export function namedImportBindings(sourceFile: ts.SourceFile): Map<string, NamedImportBinding> {
+export function namedImportBindings(sourceFile: TS.SourceFile): Map<string, NamedImportBinding> {
   const bindings = new Map<string, NamedImportBinding>();
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
@@ -248,7 +249,7 @@ export function namedImportBindings(sourceFile: ts.SourceFile): Map<string, Name
 }
 
 /** True when this identifier occurrence NAMES a declaration/member rather than referencing a value or type. */
-function isDeclarationName(node: ts.Identifier): boolean {
+function isDeclarationName(node: TS.Identifier): boolean {
   const parent = node.parent;
   if (ts.isPropertyAccessExpression(parent) && parent.name === node) return true;
   if (ts.isQualifiedName(parent) && parent.right === node) return true;
@@ -266,7 +267,7 @@ function isDeclarationName(node: ts.Identifier): boolean {
     || ts.isPropertySignature(parent) || ts.isMethodSignature(parent)
     || ts.isGetAccessorDeclaration(parent) || ts.isSetAccessorDeclaration(parent)
     || ts.isTypeParameterDeclaration(parent) || ts.isNamespaceImport(parent) || ts.isImportClause(parent));
-  return declares && (parent as { name?: ts.Node }).name === node;
+  return declares && (parent as { name?: TS.Node }).name === node;
 }
 
 export interface SymbolReference {
@@ -276,7 +277,7 @@ export interface SymbolReference {
   member?: string;
 }
 
-function hasBindingName(node: ts.Node, name: string): boolean {
+function hasBindingName(node: TS.Node, name: string): boolean {
   if (ts.isIdentifier(node)) return node.text === name;
   if (ts.isObjectBindingPattern(node) || ts.isArrayBindingPattern(node)) {
     return node.elements.some(element => ts.isBindingElement(element) && hasBindingName(element.name, name));
@@ -284,8 +285,8 @@ function hasBindingName(node: ts.Node, name: string): boolean {
   return false;
 }
 
-function functionHasVarBinding(scope: ts.SignatureDeclaration, name: string): boolean {
-  const visit = (current: ts.Node): boolean => {
+function functionHasVarBinding(scope: TS.SignatureDeclaration, name: string): boolean {
+  const visit = (current: TS.Node): boolean => {
     if (current !== scope && ts.isFunctionLike(current)) return false;
     if (ts.isVariableDeclaration(current) && ts.isVariableDeclarationList(current.parent)
       && (current.parent.flags & ts.NodeFlags.BlockScoped) === 0 && hasBindingName(current.name, name)) return true;
@@ -295,9 +296,9 @@ function functionHasVarBinding(scope: ts.SignatureDeclaration, name: string): bo
 }
 
 /** True when a nested lexical binding hides a top-level/import candidate. */
-function isLexicallyShadowed(node: ts.Identifier, boundary: ts.Node): boolean {
+function isLexicallyShadowed(node: TS.Identifier, boundary: TS.Node): boolean {
   const name = node.text;
-  for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
+  for (let current: TS.Node | undefined = node.parent; current; current = current.parent) {
     if (ts.isFunctionLike(current) && (current.parameters.some(parameter => hasBindingName(parameter.name, name))
       || functionHasVarBinding(current, name))) return true;
     if ((ts.isFunctionExpression(current) || ts.isClassExpression(current)) && current.name?.text === name) return true;
@@ -319,15 +320,15 @@ function isLexicallyShadowed(node: ts.Identifier, boundary: ts.Node): boolean {
   return false;
 }
 
-function isTypeOnlyReference(node: ts.Identifier, boundary: ts.Node): boolean {
-  for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
+function isTypeOnlyReference(node: TS.Identifier, boundary: TS.Node): boolean {
+  for (let current: TS.Node | undefined = node.parent; current; current = current.parent) {
     if (ts.isTypeNode(current) || ts.isTypeQueryNode(current)) return true;
     if (current === boundary) break;
   }
   return false;
 }
 
-function isDirectCallExpression(node: ts.Expression): boolean {
+function isDirectCallExpression(node: TS.Expression): boolean {
   const parent = node.parent;
   return ts.isCallExpression(parent) && parent.expression === node;
 }
@@ -338,14 +339,14 @@ function isDirectCallExpression(node: ts.Expression): boolean {
  * call position; all other proven references remain generic `uses` evidence.
  */
 export function symbolReferencesIn(
-  sourceFile: ts.SourceFile,
+  sourceFile: TS.SourceFile,
   declaration: TopLevelDeclaration,
   candidates: ReadonlySet<string>,
   namespaceCandidates: ReadonlySet<string> = new Set(),
 ): SymbolReference[] {
   const references: SymbolReference[] = [];
   const lineOf = (position: number): number => sourceFile.getLineAndCharacterOfPosition(position).line + 1;
-  const visit = (node: ts.Node): void => {
+  const visit = (node: TS.Node): void => {
     if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
       && namespaceCandidates.has(node.expression.text) && !isLexicallyShadowed(node.expression, declaration.node)) {
       references.push({
@@ -380,7 +381,7 @@ export function symbolReferencesIn(
  */
 export { CYCLOMATIC_FLAG_THRESHOLD };
 
-function isLogicalDecisionOperator(kind: ts.SyntaxKind): boolean {
+function isLogicalDecisionOperator(kind: TS.SyntaxKind): boolean {
   return kind === ts.SyntaxKind.AmpersandAmpersandToken
     || kind === ts.SyntaxKind.BarBarToken
     || kind === ts.SyntaxKind.QuestionQuestionToken
@@ -395,7 +396,7 @@ function isLogicalDecisionOperator(kind: ts.SyntaxKind): boolean {
  * (they are not L4 nodes yet; their complexity is omitted rather than folded in).
  * Type-level conditionals (`T extends U ? A : B`) are not runtime branches.
  */
-function isNestedFunctionBoundary(node: ts.Node): boolean {
+function isNestedFunctionBoundary(node: TS.Node): boolean {
   return ts.isFunctionDeclaration(node)
     || ts.isFunctionExpression(node)
     || ts.isArrowFunction(node)
@@ -407,9 +408,9 @@ function isNestedFunctionBoundary(node: ts.Node): boolean {
     || ts.isClassExpression(node);
 }
 
-export function cyclomaticComplexity(node: ts.Node): number {
+export function cyclomaticComplexity(node: TS.Node): number {
   let complexity = 1;
-  const visit = (current: ts.Node): void => {
+  const visit = (current: TS.Node): void => {
     if (ts.isIfStatement(current)
       || ts.isWhileStatement(current)
       || ts.isDoStatement(current)
@@ -433,7 +434,7 @@ export function cyclomaticComplexity(node: ts.Node): number {
 }
 
 /** The executable function AST to score, or undefined for types/classes/constants/bodyless decls. */
-export function functionLikeBody(node: ts.Node): ts.Node | undefined {
+export function functionLikeBody(node: TS.Node): TS.Node | undefined {
   if (ts.isFunctionDeclaration(node)) return node.body ? node : undefined;
   if (ts.isFunctionExpression(node) || ts.isArrowFunction(node)) return node;
   if (ts.isVariableDeclaration(node) && node.initializer
@@ -459,11 +460,11 @@ export function cyclomaticIsFlagged(complexity: number): boolean {
  */
 export const MIN_CLONE_TOKENS = 20;
 
-function isNormalizedCloneIdentifier(kind: ts.SyntaxKind): boolean {
+function isNormalizedCloneIdentifier(kind: TS.SyntaxKind): boolean {
   return kind === ts.SyntaxKind.Identifier || kind === ts.SyntaxKind.PrivateIdentifier;
 }
 
-function isNormalizedCloneLiteral(kind: ts.SyntaxKind): boolean {
+function isNormalizedCloneLiteral(kind: TS.SyntaxKind): boolean {
   return kind === ts.SyntaxKind.NumericLiteral
     || kind === ts.SyntaxKind.BigIntLiteral
     || kind === ts.SyntaxKind.StringLiteral
@@ -475,7 +476,7 @@ function isNormalizedCloneLiteral(kind: ts.SyntaxKind): boolean {
 }
 
 /** Identifier-normalized token stream of a function-like body (Type-2). */
-export function cloneTokenSequence(node: ts.Node, sourceFile: ts.SourceFile): string[] {
+export function cloneTokenSequence(node: TS.Node, sourceFile: TS.SourceFile): string[] {
   const tokens: string[] = [];
   const start = node.getStart(sourceFile);
   const end = node.getEnd();
@@ -501,9 +502,9 @@ export function cloneTokenSequence(node: ts.Node, sourceFile: ts.SourceFile): st
 }
 
 /** Structural AST kind sequence of a function-like body. */
-export function cloneAstSequence(node: ts.Node): number[] {
+export function cloneAstSequence(node: TS.Node): number[] {
   const kinds: number[] = [];
-  const visit = (current: ts.Node): void => {
+  const visit = (current: TS.Node): void => {
     kinds.push(current.kind);
     ts.forEachChild(current, visit);
   };
@@ -544,11 +545,11 @@ function clonePairsFromBuckets(buckets: ReadonlyMap<string, readonly string[]>):
 }
 
 /** Static `import ... from` and `export ... from` module specifiers with line spans. */
-export function moduleImports(sourceFile: ts.SourceFile): ModuleImport[] {
+export function moduleImports(sourceFile: TS.SourceFile): ModuleImport[] {
   const imports: ModuleImport[] = [];
   const lineOf = (position: number): number => sourceFile.getLineAndCharacterOfPosition(position).line + 1;
   for (const statement of sourceFile.statements) {
-    let specifier: ts.Expression | undefined;
+    let specifier: TS.Expression | undefined;
     if (ts.isImportDeclaration(statement)) specifier = statement.moduleSpecifier;
     else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier) specifier = statement.moduleSpecifier;
     if (specifier && ts.isStringLiteral(specifier)) {
@@ -574,10 +575,10 @@ export function moduleImports(sourceFile: ts.SourceFile): ModuleImport[] {
  * Deliberately excluded (no syntactic module identity): type-level `import('…')`
  * (an `ImportTypeNode`, not a call) and computed/non-literal specifiers.
  */
-export function dynamicImports(sourceFile: ts.SourceFile): ModuleImport[] {
+export function dynamicImports(sourceFile: TS.SourceFile): ModuleImport[] {
   const imports: ModuleImport[] = [];
   const lineOf = (position: number): number => sourceFile.getLineAndCharacterOfPosition(position).line + 1;
-  const visit = (node: ts.Node): void => {
+  const visit = (node: TS.Node): void => {
     if (ts.isCallExpression(node)
       && node.expression.kind === ts.SyntaxKind.ImportKeyword
       && node.arguments.length > 0
@@ -1504,7 +1505,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
 
   interface FileScan {
     file: string;
-    sourceFile: ts.SourceFile;
+    sourceFile: TS.SourceFile;
     kept: TopLevelDeclaration[];
     /** Declaration name → its entity naturalKey (first declaration wins on overloads). */
     keyByName: Map<string, string>;
@@ -1518,7 +1519,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
     specifier?: string;
     exportedName?: string;
   }
-  const moduleExportBindings = (sourceFile: ts.SourceFile): { bindings: Map<string, ExportBinding>; stars: string[] } => {
+  const moduleExportBindings = (sourceFile: TS.SourceFile): { bindings: Map<string, ExportBinding>; stars: string[] } => {
     const bindings = new Map<string, ExportBinding>();
     const stars: string[] = [];
     for (const statement of sourceFile.statements) {
@@ -1985,8 +1986,8 @@ export function cyclomaticByIdFromEntities(
   entities: readonly ArchitectureExtractionEntity[],
   readFile: (repoRelativePath: string) => string,
 ): Map<string, number> {
-  const parsed = new Map<string, ts.SourceFile | undefined>();
-  const sourceOf = (path: string): ts.SourceFile | undefined => {
+  const parsed = new Map<string, TS.SourceFile | undefined>();
+  const sourceOf = (path: string): TS.SourceFile | undefined => {
     if (parsed.has(path)) return parsed.get(path);
     try {
       const sourceFile = parseSource(path, readFile(path));
@@ -2073,8 +2074,8 @@ export function clonePairsFromEntities(
   entities: readonly ArchitectureExtractionEntity[],
   readFile: (repoRelativePath: string) => string,
 ): ClonePair[] {
-  const parsed = new Map<string, ts.SourceFile | undefined>();
-  const sourceOf = (path: string): ts.SourceFile | undefined => {
+  const parsed = new Map<string, TS.SourceFile | undefined>();
+  const sourceOf = (path: string): TS.SourceFile | undefined => {
     if (parsed.has(path)) return parsed.get(path);
     try {
       const sourceFile = parseSource(path, readFile(path));

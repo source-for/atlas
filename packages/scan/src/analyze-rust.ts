@@ -2,10 +2,10 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
-import Parser from "tree-sitter";
-import Rust from "tree-sitter-rust";
+import type Parser from "tree-sitter";
 import { PositionEncoding, SymbolRole, type Occurrence } from "@scip-code/scip";
 import type { AnalysisDefinition, AnalysisExternalReference, AnalysisLocation, LanguageAnalysis } from "./language-analysis.js";
+import { rustParser, rustParserUnavailable } from "./analyzers.js";
 import { decodeScipIndex } from "./scip.js";
 import { cachedScipIndex, rustAnalyzerVersion, rustcIdentity, rustInputDigest } from "./scip-cache.js";
 import { createScanScratch, operatorCargoHome, rustToolchainPin, scanSpawnSync, scanWorkDir, type ScanScratch } from "./scan-env.js";
@@ -15,20 +15,10 @@ import { labelledPrefix, pathPrefixRewriter } from "./path-prefixes.js";
 type Point = { row: number; column: number };
 type OccurrenceRange = { start: Point; end: Point };
 
-let parser: Parser | undefined;
-
 const OUTLINE_ITEMS = new Set([
   "function_item", "struct_item", "enum_item", "trait_item", "mod_item", "type_item",
   "const_item", "static_item", "union_item", "macro_definition",
 ]);
-
-function rustParser(): Parser {
-  if (!parser) {
-    parser = new Parser();
-    parser.setLanguage(Rust as Parser.Language);
-  }
-  return parser;
-}
 
 function canonical<T>(items: Iterable<T>): T[] {
   return [...items].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
@@ -375,6 +365,8 @@ export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly strin
     result.coverage.push({ language: "rust", tool: "rust-analyzer", version: "unavailable", coverage: "unavailable", indexedFiles: [], limitations: [limitation] });
     return result;
   };
+  const noParser = rustParserUnavailable();
+  if (noParser) return unavailable(noParser);
   const refusal = unsafeRustProjectJson(root);
   if (refusal) return unavailable(refusal);
   const ancestors = inspectRustAncestors(root, options.ancestorFs ? { fs: options.ancestorFs } : {});

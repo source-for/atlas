@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
 import { formatDependencyConsumerReport, parsePortableAtlas, queryDependencyConsumers, sanitizeControlCharacters, type DependencyEcosystem } from "@okie/architecture";
+import { product } from "./product.js";
 import { stableJson } from "./scan.js";
 
-export const CONSUMERS_USAGE = "Usage: okie-scan consumers <dependency> --bundle <atlas.okie.json> [--ecosystem npm|cargo] [--json] [--runtime-only]";
+export const CONSUMERS_USAGE = `Usage: ${product.bin} consumers <dependency> --bundle <atlas.okie.json> [--ecosystem npm|cargo] [--json] [--runtime-only]`;
 
 /**
- * `okie-scan consumers`: answer "who uses <dependency>?" from a bundle's captured
+ * `sourcefor-atlas consumers`: answer "who uses <dependency>?" from a bundle's captured
  * dependency facts. Exit 0 even with no consumers; throws on bad arguments or bundle.
  */
 export function runConsumersQuery(args: readonly string[], read: (path: string) => string = path => readFileSync(path, "utf8")): string {
