@@ -102,6 +102,10 @@ test("CLA-606 review: ANTHROPIC_CUSTOM_HEADERS is named in the ignored-variables
   assert.doesNotMatch(ignoredGenericLlmEnvNotice({ ANTHROPIC_CUSTOM_HEADERS: "x-api-key: okie-test-header-fake" }) ?? "", /okie-test-header-fake/);
 });
 
+test("CLA-606 review 2: ANTHROPIC_LOG and ANTHROPIC_PROFILE are named in the ignored-variables notice", () => {
+  assert.match(ignoredGenericLlmEnvNotice({ ANTHROPIC_LOG: "debug", ANTHROPIC_PROFILE: "work" }) ?? "", /ignoring ANTHROPIC_LOG, ANTHROPIC_PROFILE \(/);
+});
+
 test("CLA-606 review: the anthropic startup line and label show the real destination host", () => {
   const custom = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_BASE_URL: "https://custom-gateway.example.test", OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY, OKIE_LLM_MODEL: "claude-x" });
   assert.equal(enrichmentProviderLabel(custom), "custom-gateway.example.test");

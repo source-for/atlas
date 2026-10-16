@@ -1163,6 +1163,62 @@ test("CLA-606: ANTHROPIC_CUSTOM_HEADERS cannot add or override credentials or he
   }
 });
 
+test("CLA-606 review 2: env custom headers that collide with SDK defaults never reach the request; SDK defaults survive", async () => {
+  const optedKey = "okie-test-cla606-anthropic-opted-fake";
+  const seen: Array<Record<string, string | string[] | undefined>> = [];
+  const fake = await listenFakeGateway((request, response) => {
+    seen.push(request.headers);
+    response.writeHead(400, { "content-type": "application/json" });
+    response.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "fake" } }));
+  });
+  const saved = process.env.ANTHROPIC_CUSTOM_HEADERS;
+  process.env.ANTHROPIC_CUSTOM_HEADERS = "Anthropic-Version: 1999-01-01\ncontent-type: text/plain\nX-Okie-Leak: yes";
+  try {
+    const hook = createDefaultEnricherFactory("auto", { OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_BASE_URL: fake.baseUrl.replace(/\/v1$/, ""), OKIE_LLM_API_KEY: optedKey, OKIE_LLM_MODEL: "claude-test" })(() => {});
+    assert.ok(hook);
+    await hook(packets()).catch(() => undefined);
+    assert.ok(seen.length > 0);
+    for (const headers of seen) {
+      assert.equal(headers["anthropic-version"], "2023-06-01");
+      assert.equal(headers["content-type"], "application/json");
+      assert.equal(headers["x-okie-leak"], undefined);
+      assert.equal(headers["x-api-key"], optedKey);
+    }
+    assert.equal(process.env.ANTHROPIC_CUSTOM_HEADERS, "Anthropic-Version: 1999-01-01\ncontent-type: text/plain\nX-Okie-Leak: yes", "the env itself is left as it was");
+  } finally {
+    if (saved === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS; else process.env.ANTHROPIC_CUSTOM_HEADERS = saved;
+    await fake.close();
+  }
+});
+
+test("CLA-606 review 2: ANTHROPIC_LOG cannot make the SDK log the key, URL or packets", async () => {
+  const optedKey = "okie-test-cla606-anthropic-logged-fake";
+  const fake = await listenFakeGateway((_request, response) => {
+    response.writeHead(400, { "content-type": "text/plain" });
+    response.end(`bad key ${optedKey}`);
+  });
+  const saved = process.env.ANTHROPIC_LOG;
+  process.env.ANTHROPIC_LOG = "debug";
+  const methods = ["debug", "info", "warn", "error", "log"] as const;
+  const originals = methods.map(name => console[name]);
+  const logged: string[] = [];
+  for (const name of methods) console[name] = (...args: unknown[]) => { logged.push(args.map(arg => typeof arg === "string" ? arg : JSON.stringify(arg)).join(" ")); };
+  try {
+    const baseUrl = fake.baseUrl.replace(/\/v1$/, "");
+    const hook = createDefaultEnricherFactory("auto", { OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_BASE_URL: baseUrl, OKIE_LLM_API_KEY: optedKey, OKIE_LLM_MODEL: "claude-test" })(() => {});
+    assert.ok(hook);
+    await hook(packets()).catch(() => undefined);
+    const text = logged.join("\n");
+    assert.ok(!text.includes(optedKey), "the key reached console");
+    assert.ok(!text.includes(baseUrl), "the base URL reached console");
+    assert.ok(!text.includes("container:pkg-a"), "packet content reached console");
+  } finally {
+    methods.forEach((name, index) => { console[name] = originals[index]!; });
+    if (saved === undefined) delete process.env.ANTHROPIC_LOG; else process.env.ANTHROPIC_LOG = saved;
+    await fake.close();
+  }
+});
+
 test("a planted secret in source does not appear in the outbound chatCompletions JSON body", async () => {
   const planted = "gho_okieTestPlantedSecretCla25xxxx";
   const fakeKey = "okie-test-llm-key-cla25-fake";

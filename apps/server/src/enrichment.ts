@@ -652,20 +652,31 @@ function gatewayGenerator(
 }
 
 /**
- * CLA-606: an Anthropic SDK client whose only credential is the opted-in key. `authToken: null` stops it adding
- * ANTHROPIC_AUTH_TOKEN; the SDK also merges ANTHROPIC_CUSTOM_HEADERS from the environment (after the auth headers, and
- * under our explicit `defaultHeaders`), so every header name found there is pinned: `x-api-key` back to our key,
- * everything else removed (`null`). Parsed the way SDK 0.112 parses it: one `name: value` per line.
+ * CLA-606: an Anthropic SDK client configured only by Okie. Every input the SDK 0.112 constructor would otherwise take
+ * from the environment is passed explicitly (`apiKey`, `authToken: null`, `baseURL`, `webhookKey: null`,
+ * `logLevel: "off"` plus a silent logger), and the constructor runs with every `ANTHROPIC_*` variable hidden, so env-only
+ * inputs with no option (ANTHROPIC_CUSTOM_HEADERS) never reach it and the SDK's own default headers stay intact. The
+ * credential chain (ANTHROPIC_PROFILE, ANTHROPIC_CONFIG_DIR, ANTHROPIC_IDENTITY_TOKEN*, …) only runs without an apiKey,
+ * so it never runs here. As a final guard the client's fetch sets `x-api-key` to the opted-in key and drops
+ * `authorization` on every outgoing request.
  */
-export function isolatedAnthropicClient(options: { apiKey: string; baseUrl: string }, env: NodeJS.Dict<string> = process.env): Anthropic {
-  const defaultHeaders: Record<string, string | null> = {};
-  for (const line of (env.ANTHROPIC_CUSTOM_HEADERS ?? "").split("\n")) {
-    const colon = line.indexOf(":");
-    if (colon < 0) continue;
-    const name = line.slice(0, colon).trim();
-    defaultHeaders[name] = name.toLowerCase() === "x-api-key" ? options.apiKey : null;
+export function isolatedAnthropicClient(options: { apiKey: string; baseUrl: string }): Anthropic {
+  const { apiKey, baseUrl } = options;
+  const guardedFetch: typeof fetch = (input, init) => {
+    const headers = new Headers(init?.headers);
+    headers.set("x-api-key", apiKey);
+    headers.delete("authorization");
+    return globalThis.fetch(input, { ...init, headers });
+  };
+  const silent = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
+  // The constructor is synchronous, so hiding and restoring the variables cannot interleave with other code.
+  const hidden = Object.keys(process.env).filter(name => name.startsWith("ANTHROPIC_")).map(name => [name, process.env[name]] as const);
+  for (const [name] of hidden) delete process.env[name];
+  try {
+    return new Anthropic({ apiKey, authToken: null, baseURL: baseUrl, webhookKey: null, logLevel: "off", logger: silent, fetch: guardedFetch });
+  } finally {
+    for (const [name, value] of hidden) process.env[name] = value;
   }
-  return new Anthropic({ apiKey: options.apiKey, authToken: null, baseURL: options.baseUrl, defaultHeaders });
 }
 
 function defaultGenerator(
