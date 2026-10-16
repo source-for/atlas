@@ -1131,6 +1131,38 @@ test("CLA-606: the anthropic provider passes OKIE_LLM_API_KEY and its base URL e
   }
 });
 
+test("CLA-606: ANTHROPIC_CUSTOM_HEADERS cannot add or override credentials or headers on the anthropic provider", async () => {
+  const optedKey = "okie-test-cla606-anthropic-opted-fake";
+  const seen: Array<Record<string, string | string[] | undefined>> = [];
+  const fake = await listenFakeGateway((request, response) => {
+    seen.push(request.headers);
+    response.writeHead(400, { "content-type": "application/json" });
+    response.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "fake" } }));
+  });
+  const saved = process.env.ANTHROPIC_CUSTOM_HEADERS;
+  // The SDK reads this from process.env in its constructor and merges it after the auth headers.
+  process.env.ANTHROPIC_CUSTOM_HEADERS = "x-api-key: okie-test-cla606-header-key-fake\nAuthorization: Bearer okie-test-cla606-header-token-fake\nX-Okie-Leak: yes";
+  try {
+    const hook = createDefaultEnricherFactory("auto", {
+      OKIE_LLM_PROVIDER: "anthropic",
+      OKIE_LLM_BASE_URL: fake.baseUrl.replace(/\/v1$/, ""),
+      OKIE_LLM_API_KEY: optedKey,
+      OKIE_LLM_MODEL: "claude-test",
+    })(() => {});
+    assert.ok(hook);
+    await hook(packets()).catch(() => undefined);
+    assert.ok(seen.length > 0);
+    for (const headers of seen) {
+      assert.equal(headers["x-api-key"], optedKey);
+      assert.equal(headers.authorization, undefined);
+      assert.equal(headers["x-okie-leak"], undefined);
+    }
+  } finally {
+    if (saved === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS; else process.env.ANTHROPIC_CUSTOM_HEADERS = saved;
+    await fake.close();
+  }
+});
+
 test("a planted secret in source does not appear in the outbound chatCompletions JSON body", async () => {
   const planted = "gho_okieTestPlantedSecretCla25xxxx";
   const fakeKey = "okie-test-llm-key-cla25-fake";

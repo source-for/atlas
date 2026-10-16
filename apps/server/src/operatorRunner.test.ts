@@ -10,7 +10,8 @@ import { createOperatorBudgetLedger } from "./operatorBudget.js";
 import { createOperatorRunner } from "./operatorRunner.js";
 import { OperatorStore } from "./operatorStore.js";
 import { OperatorWorkflow } from "./operatorWorkflow.js";
-import { LlmGatewayError } from "./llmGateway.js";
+import { LlmGatewayError, resolveLlmGatewayConfig } from "./llmGateway.js";
+import { runOperatorEnrichment } from "./operatorEnrichment.js";
 import { LlmRateLimiter } from "./llmRateLimiter.js";
 
 test("runner writes parseable deterministic and immutable enriched drafts", async () => {
@@ -278,6 +279,38 @@ test("without a gateway the run records an unavailable event, no attempt rows, a
     assert.equal(state.attempts.length, 0); assert.equal(draft.coverage.notRun, draft.coverage.total - draft.coverage.belowCap!, "every in-scope scope is not run; code scopes stay below cap");
     assert.equal(state.events.filter(event => event.type === "enrichment.unavailable").length, 1);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("CLA-606 review: CLI --llm-provider off with a conflicting env still runs deterministically (no env re-resolution)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "okie-runner-cli-off-"));
+  // The env alone would fail loudly (openrouter + a foreign base URL); main.ts resolved it with the CLI value "off".
+  const conflicting = { OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_BASE_URL: "https://custom.example.test/v1", OKIE_LLM_API_KEY: "okie-test-cla606-fake", OKIE_LLM_MODEL: "env/model" };
+  const saved = Object.fromEntries(Object.keys(conflicting).map(name => [name, process.env[name]]));
+  Object.assign(process.env, conflicting);
+  try {
+    const gatewayConfig = resolveLlmGatewayConfig(process.env, {}, "off");
+    assert.equal(gatewayConfig.keySource, "none");
+    const store = new OperatorStore(root); const run = store.createRun({ idempotencyKey: "cli-off", source: { repositoryId: "o/r", owner: "o", repo: "r", slug: "o-r" } }).run;
+    await createOperatorRunner({ store, publication: new OperatorPublicationService(store), gatewayConfig, githubClient: publicClient, scan: async () => ({ commitSha: "abc", artifacts: scanned() }) }).enqueue({ kind: "run", runId: run.runId, githubAccess: access });
+    const state = store.snapshot();
+    assert.notEqual(state.runs.find(value => value.runId === run.runId)?.state, "failed");
+    assert.equal(state.events.filter(event => event.type === "enrichment.unavailable").length, 1);
+    assert.equal(state.attempts.length, 0);
+  } finally {
+    for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("CLA-606 review: runOperatorEnrichment without a gateway never re-resolves the provider from env", async () => {
+  const saved = { OKIE_LLM_PROVIDER: process.env.OKIE_LLM_PROVIDER, OKIE_LLM_BASE_URL: process.env.OKIE_LLM_BASE_URL };
+  Object.assign(process.env, { OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_BASE_URL: "https://custom.example.test/v1" });
+  try {
+    const result = await runOperatorEnrichment({ draftRevisionId: "d", scopes: [], store: { async createAttempt() {}, async updateAttempt() {} } as never });
+    assert.equal(result.stopped, "unavailable");
+  } finally {
+    for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+  }
 });
 
 test("a retry refused by an exhausted budget mints no draft, persists no stale marks, and explains why", async () => {

@@ -651,6 +651,23 @@ function gatewayGenerator(
   };
 }
 
+/**
+ * CLA-606: an Anthropic SDK client whose only credential is the opted-in key. `authToken: null` stops it adding
+ * ANTHROPIC_AUTH_TOKEN; the SDK also merges ANTHROPIC_CUSTOM_HEADERS from the environment (after the auth headers, and
+ * under our explicit `defaultHeaders`), so every header name found there is pinned: `x-api-key` back to our key,
+ * everything else removed (`null`). Parsed the way SDK 0.112 parses it: one `name: value` per line.
+ */
+export function isolatedAnthropicClient(options: { apiKey: string; baseUrl: string }, env: NodeJS.Dict<string> = process.env): Anthropic {
+  const defaultHeaders: Record<string, string | null> = {};
+  for (const line of (env.ANTHROPIC_CUSTOM_HEADERS ?? "").split("\n")) {
+    const colon = line.indexOf(":");
+    if (colon < 0) continue;
+    const name = line.slice(0, colon).trim();
+    defaultHeaders[name] = name.toLowerCase() === "x-api-key" ? options.apiKey : null;
+  }
+  return new Anthropic({ apiKey: options.apiKey, authToken: null, baseURL: options.baseUrl, defaultHeaders });
+}
+
 function defaultGenerator(
   options: EnricherOptions,
   passModelId: string | undefined,
@@ -661,9 +678,7 @@ function defaultGenerator(
     return gatewayGenerator(options.gateway, passModelId, remainingTokens);
   }
   if (passModelId && options.anthropic) {
-    // authToken: null so the SDK cannot add ANTHROPIC_AUTH_TOKEN from the environment.
-    const client = new Anthropic({ apiKey: options.anthropic.apiKey, authToken: null, baseURL: options.anthropic.baseUrl });
-    return anthropicGenerator(client, passModelId, { timeoutMs, remainingTokens });
+    return anthropicGenerator(isolatedAnthropicClient(options.anthropic), passModelId, { timeoutMs, remainingTokens });
   }
   const reason = passModelId ? "no LLM provider configured" : "empty model id";
   return async () => {

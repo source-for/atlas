@@ -26,7 +26,7 @@ export type LlmProvider = typeof LLM_PROVIDERS[number];
  */
 export const IGNORED_GENERIC_LLM_ENV = [
   "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "OPENROUTER_MODEL", "OPENAI_MODEL",
+  "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "OPENAI_BASE_URL", "OPENROUTER_MODEL", "OPENAI_MODEL",
 ] as const;
 
 /** Documented default model id in OpenRouter's `provider/model` form. Not a table. */
@@ -465,6 +465,14 @@ function resolveModelId(env: NodeJS.Dict<string>, local: LlmGatewayLocalConfig):
   return DEFAULT_GATEWAY_MODEL_ID;
 }
 
+/**
+ * The model id alone (local overlay, then OKIE_LLM_MODEL, else the default). Unlike `resolveLlmGatewayConfig` it never
+ * validates or re-resolves the provider, so a no-gateway fallback cannot disagree with the CLI `--llm-provider` value.
+ */
+export function resolveLlmModelId(env: NodeJS.Dict<string> = process.env, local: LlmGatewayLocalConfig = {}): string {
+  return resolveModelId(env, local);
+}
+
 /** Non-empty after trim. Okie does not validate against a model table. */
 export function isUsableModelId(modelId: string | undefined): boolean {
   return Boolean(trimToUndefined(modelId));
@@ -583,12 +591,12 @@ export function safeGatewayProvider(baseUrl: string): string | undefined {
 }
 
 /**
- * Provider label for job/UI. The Anthropic provider is named "anthropic"; a gateway uses the
- * hostname only; nothing when egress is off. Never a URL, never a key.
+ * Provider label for job/UI: the hostname packets are actually sent to (`openrouter.ai`, `api.anthropic.com`, or a
+ * custom base URL's host); nothing when egress is off. Never a URL, never a key.
  */
 export function enrichmentProviderLabel(config: LlmGatewayConfig): string | undefined {
   if (config.keySource === "none") return undefined;
-  const raw = config.keySource === "anthropic" ? "anthropic" : safeGatewayProvider(config.baseUrl);
+  const raw = safeGatewayProvider(config.baseUrl);
   if (!raw) return undefined;
   if (/https?:\/\//i.test(raw) || raw.includes("@") || raw.includes("/")) return undefined;
   const redacted = redactGatewayText(raw, config.apiKey);

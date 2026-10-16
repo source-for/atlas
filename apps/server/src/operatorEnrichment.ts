@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { scrubGithubTokens, scrubProviderIdentifiers } from "@okie/scan";
 import { parseChatCompletionDocument } from "./enrichment.js";
-import { classifyLlmGatewayFailure, LlmGatewayError, resolveLlmGatewayConfig, type GatewayUsage, type LlmChatCompletionResult } from "./llmGateway.js";
+import { classifyLlmGatewayFailure, LlmGatewayError, resolveLlmModelId, type GatewayUsage, type LlmChatCompletionResult } from "./llmGateway.js";
 
 /**
  * CLA-134's runtime boundary.  This deliberately does not own draft storage or
@@ -111,6 +111,8 @@ export interface OperatorEnrichmentRunOptions {
   scopes: readonly OperatorEnrichmentScope[];
   store: OperatorEnrichmentStore;
   gateway?: OperatorEnrichmentGateway;
+  /** The configured model id when there is no gateway (the runner passes its resolved config's; CLA-606). */
+  modelId?: string;
   limits?: Partial<OperatorEnrichmentLimits>;
   now?: () => number;
   nextAttemptId?: () => string;
@@ -598,7 +600,7 @@ export function operatorInputHash(input: { modelId: string; reasoning: "off" | "
 export async function runOperatorEnrichment(options: OperatorEnrichmentRunOptions): Promise<OperatorEnrichmentRunResult> {
   const limits = { ...DEFAULT_LIMITS, ...options.limits };
   const now = options.now ?? Date.now;
-  const modelId = options.gateway?.modelId ?? resolveLlmGatewayConfig().modelId;
+  const modelId = options.gateway?.modelId ?? options.modelId ?? resolveLlmModelId();
   const maxKind = options.maxKind ?? "component";
   const inCap = (scope: OperatorEnrichmentScope): boolean => maxKind === "code" || scope.kind !== "code";
   const byId = new Map(options.scopes.map(scope => [scope.scopeId, scope]));

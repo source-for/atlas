@@ -97,6 +97,23 @@ test("CLA-606: OPENROUTER_* / OPENAI_* / ANTHROPIC_* names are never read, even 
   assert.equal(ignoredGenericLlmEnvNotice({ OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY, OPENAI_API_KEY: " " }), undefined);
 });
 
+test("CLA-606 review: ANTHROPIC_CUSTOM_HEADERS is named in the ignored-variables notice", () => {
+  assert.match(ignoredGenericLlmEnvNotice({ ANTHROPIC_CUSTOM_HEADERS: "x-api-key: okie-test-header-fake" }) ?? "", /ignoring ANTHROPIC_CUSTOM_HEADERS \(/);
+  assert.doesNotMatch(ignoredGenericLlmEnvNotice({ ANTHROPIC_CUSTOM_HEADERS: "x-api-key: okie-test-header-fake" }) ?? "", /okie-test-header-fake/);
+});
+
+test("CLA-606 review: the anthropic startup line and label show the real destination host", () => {
+  const custom = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_BASE_URL: "https://custom-gateway.example.test", OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY, OKIE_LLM_MODEL: "claude-x" });
+  assert.equal(enrichmentProviderLabel(custom), "custom-gateway.example.test");
+  assert.match(describeLlmStartup(custom, { serverMode: "default" }), /^LLM enrichment: on → custom-gateway\.example\.test \(model claude-x\)/);
+  const tokenized = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_BASE_URL: TOKENIZED_GATEWAY_URL, OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY });
+  const line = describeLlmStartup(tokenized, { serverMode: "default" });
+  assert.match(line, /^LLM enrichment: on → example\.invalid /);
+  for (const secret of [FAKE_URL_USERINFO, FAKE_URL_QUERY, FAKE_ANTHROPIC_KEY, "https://"]) assert.ok(!line.includes(secret), secret);
+  const standard = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY });
+  assert.match(describeLlmStartup(standard, { serverMode: "default" }), /^LLM enrichment: on → api\.anthropic\.com /);
+});
+
 test("CLA-606: provider values, CLI precedence, and off reasons", () => {
   assert.equal(llmProviderArg(["--llm-provider", "openrouter"]), "openrouter");
   assert.equal(llmProviderArg(["--llm-provider=anthropic", "--dotenv"]), "anthropic");
@@ -126,7 +143,7 @@ test("CLA-606: the anthropic provider reads OKIE_LLM_API_KEY, never builds a gat
   assert.equal(config.apiKey, FAKE_ANTHROPIC_KEY);
   assert.equal(config.baseUrl, "https://api.anthropic.com");
   assert.equal(createLlmGatewayClient(config), undefined, "Anthropic keys must not be sent to the OpenAI-compatible gateway");
-  assert.equal(enrichmentProviderLabel(config), "anthropic");
+  assert.equal(enrichmentProviderLabel(config), "api.anthropic.com");
   assert.equal(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_BASE_URL: "https://proxy.test", OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY }).baseUrl, "https://proxy.test");
 });
 
@@ -137,7 +154,7 @@ test("CLA-606: one startup line per state, host only, never the key", () => {
   assert.match(describeLlmStartup(on, { serverMode: "default", scanEnrich: "off" }), /^LLM enrichment: on → openrouter\.ai .*scan enrichment off \(OKIE_SCAN_ENRICH=0\)/);
   assert.equal(describeLlmStartup(resolveLlmGatewayConfig({}), { serverMode: "default" }), "LLM enrichment: off (no --llm-provider / OKIE_LLM_PROVIDER)");
   const anthropic = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY, OKIE_LLM_MODEL: "claude-x" });
-  assert.match(describeLlmStartup(anthropic, { serverMode: "default" }), /^LLM enrichment: on → anthropic \(model claude-x\); scan enrichment only; Ask and operator enrichment need/);
+  assert.match(describeLlmStartup(anthropic, { serverMode: "default" }), /^LLM enrichment: on → api\.anthropic\.com \(model claude-x\); scan enrichment only; Ask and operator enrichment need/);
   assert.match(describeLlmStartup(anthropic, { serverMode: "public-readonly" }), /^LLM enrichment: off \(anthropic serves scan enrichment only/);
   const compatible = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_BASE_URL: TOKENIZED_GATEWAY_URL, OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY });
   const line = describeLlmStartup(compatible, { serverMode: "default" });

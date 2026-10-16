@@ -52,7 +52,7 @@ Any other value stops the server at startup.
 | Base URL | `OKIE_LLM_BASE_URL` | per provider, above |
 | Model id | `OKIE_LLM_MODEL` | `xiaomi/mimo-v2.6-pro` |
 
-`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `OPENROUTER_MODEL` and `OPENAI_MODEL` are **ignored**. If any is set, the server prints one `LLM notice: ignoring …` line naming the variables (never their values) and how to opt in. A provider without `OKIE_LLM_API_KEY`, or the key without a provider, stays off and the startup line says why. The Anthropic SDK is given the key and base URL explicitly, so it never picks up `ANTHROPIC_*` variables or an `ant auth login` profile (profile auth is gone).
+`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS`, `OPENAI_BASE_URL`, `OPENROUTER_MODEL` and `OPENAI_MODEL` are **ignored**. If any is set, the server prints one `LLM notice: ignoring …` line naming the variables (never their values) and how to opt in. A provider without `OKIE_LLM_API_KEY`, or the key without a provider, stays off and the startup line says why. The Anthropic SDK is given the key and base URL explicitly, so it never picks up `ANTHROPIC_*` variables (including headers from `ANTHROPIC_CUSTOM_HEADERS`) or an `ant auth login` profile (profile auth is gone). Startup lines and job labels name the host packets actually go to (`api.anthropic.com`, or your base URL's host).
 
 Every start prints one state line, in both server modes, with the host only (never a URL or key):
 
