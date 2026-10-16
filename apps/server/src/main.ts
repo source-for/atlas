@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_MAX_TARBALL_BYTES } from "@okie/scan";
@@ -6,8 +7,10 @@ import { createGlobalEnrichmentSpend, resolveGlobalEnrichmentCap } from "./globa
 import { createScanJobQueue, createSubmitLimiter } from "./jobs.js";
 import { resolveListenHost } from "./localDefaults.js";
 import {
-  describeEnrichmentMode,
+  describeLlmStartup,
   createLlmGatewayClient,
+  ignoredGenericLlmEnvNotice,
+  llmProviderArg,
   loadOperatorDotenv,
   resolveLlmGatewayConfig,
   resolveLlmGatewayLocalConfig,
@@ -53,13 +56,16 @@ import type { OperatorWorkflowJob } from "./operatorWorkflow.js";
  *
  * CLA-266: OKIE_SERVER_MODE=public-readonly is the container behind the edge Worker (see publicReadonly.ts): only
  * Ask, the block planner, GET /scan/* and /healthz, over published atlases mirrored from OKIE_PUBLISHED_STORE_URL.
+ *
+ * CLA-606: LLM egress is opt-in. `--llm-provider <openrouter|openai-compatible|anthropic|off>` (or
+ * OKIE_LLM_PROVIDER) plus OKIE_LLM_API_KEY; generic provider keys are ignored. Repo-root `.env` is loaded
+ * only with `--dotenv` (or OKIE_DOTENV=1).
  */
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const repoRoot = resolve(here, "../../..");
-loadOperatorDotenv(repoRoot);
-const llmLocal = resolveLlmGatewayLocalConfig(repoRoot);
-const llm = resolveLlmGatewayConfig(process.env, llmLocal);
+const argv = process.argv.slice(2);
+const dotenvLoaded = loadOperatorDotenv(repoRoot, argv);
 const mode = resolveServerMode();
 const port = Number.parseInt(process.env.OKIE_SERVER_PORT ?? "4180", 10);
 const bind = resolveListenHost();
@@ -68,6 +74,25 @@ const log = (line: string): void => {
   process.stdout.write(`[okie-server] ${line}\n`);
 };
 
+// A misconfigured provider stops the server here, before it listens.
+let llmLocal: ReturnType<typeof resolveLlmGatewayLocalConfig>;
+let llm: ReturnType<typeof resolveLlmGatewayConfig>;
+try {
+  llmLocal = resolveLlmGatewayLocalConfig(repoRoot);
+  llm = resolveLlmGatewayConfig(process.env, llmLocal, llmProviderArg(argv));
+} catch (error) {
+  process.stderr.write(`[okie-server] LLM configuration error: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(1);
+}
+
+/** The LLM state, once per start in both modes: the ignored-names notice (only when one is set), .env hint, one state line. */
+function logLlmStartup(line: string): void {
+  const notice = ignoredGenericLlmEnvNotice(process.env);
+  if (notice) log(notice);
+  if (!dotenvLoaded && existsSync(join(repoRoot, ".env"))) log("repo-root .env not loaded (pass --dotenv or set OKIE_DOTENV=1 to load it)");
+  log(line);
+}
+
 if (mode === "public-readonly") startPublicReadonly(); else startDefault();
 
 function startPublicReadonly(): void {
@@ -75,7 +100,7 @@ function startPublicReadonly(): void {
   runtime.server.listen(port, bind, () => {
     log(`listening on http://${bind}:${port} (public-readonly; trusted proxy ${resolveTrustedProxy() ?? "none"})`);
     log(`published store: ${runtime.mirror ? "mirrored" : "none (OKIE_PUBLISHED_STORE_URL unset)"}`);
-    log(`ask gateway: ${llm.keySource === "gateway" ? "configured" : "not configured"}; enrichment off`);
+    logLlmStartup(describeLlmStartup(llm, { serverMode: "public-readonly" }));
   });
   if (runtime.mirror) {
     const mirror = runtime.mirror;
@@ -99,6 +124,7 @@ function startDefault(): void {
     scanRoot,
     enrich,
     llmLocal,
+    llm,
     maxTarballBytes: DEFAULT_MAX_TARBALL_BYTES,
     globalSpend,
     log,
@@ -177,7 +203,7 @@ function startDefault(): void {
         : "GitHub OAuth unconfigured";
     log(`listening on http://${bind}:${port} (loopback default; ${authMode}; no operator gh)`);
     log(`scan root: ${scanRoot}`);
-    log(`enrichment: ${describeEnrichmentMode(enrich, llm)}`);
+    logLlmStartup(describeLlmStartup(llm, { serverMode: "default", scanEnrich: enrich }));
     log(`incremental: cron ${incrementalAutomation.config.cronToken ? "on" : "off"}, webhook ${incrementalAutomation.config.webhookSecret ? "on" : "off"}, auto-publish ${incrementalAutomation.config.autoPublish ? "on" : "off"}`);
   });
 }

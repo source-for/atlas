@@ -8,7 +8,7 @@ import { runOperatorEnrichment, type OperatorEnrichmentAttempt, type OperatorEnr
 import { OperatorStore } from "./operatorStore.js";
 
 /** CLA-264: a dropped connection keeps its root cause and is retried once (after a short delay) through budget admission. */
-const config = resolveLlmGatewayConfig({ OPENAI_BASE_URL: "https://example.gateway/v1", OPENROUTER_API_KEY: "test-gateway-cla264-not-a-real-credential", OPENROUTER_MODEL: "acme/fast" });
+const config = resolveLlmGatewayConfig({ OKIE_LLM_BASE_URL: "https://example.gateway/v1", OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: "test-gateway-cla264-not-a-real-credential", OKIE_LLM_MODEL: "acme/fast" });
 const socketDrop = () => new TypeError("fetch failed", { cause: { code: "UND_ERR_SOCKET" } });
 const okBody = (allowed: unknown) => JSON.stringify({ choices: [{ message: { content: JSON.stringify({ summary: "Handles x.", keyPoints: ["Start at `a.ts`.", "Watch the cache."], evidence: allowed }) } }], usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5, cost: 0.001 } });
 const scope: OperatorEnrichmentScope = { scopeId: "component:a", name: "a.ts", kind: "component", facts: {}, allowedEvidence: [{ entityId: "component:a", path: "a.ts" }] };

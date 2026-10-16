@@ -40,12 +40,14 @@ export interface ScanServiceOptions {
   scanRoot: string;
   maxTarballBytes?: number;
   /**
-   * "auto": enrich when a gateway or Anthropic key is visible; "force": attempt even
-   * without one (profile-based auth the sniff can't see); "off": deterministic only.
+   * "auto" / "force": enrich when an LLM provider is opted in with OKIE_LLM_API_KEY (CLA-606: "force",
+   * i.e. OKIE_SCAN_ENRICH=1, never enables egress by itself); "off": deterministic only.
    */
   enrich?: "auto" | "force" | "off";
   /** Env dict for gateway resolution (tests). Defaults to process.env. */
   env?: NodeJS.Dict<string>;
+  /** The resolved LLM config (main.ts passes the one that honours `--llm-provider`). Default: resolved from `env`. */
+  llm?: LlmGatewayConfig;
   /** Non-secret local overlay (base URL / model id). */
   llmLocal?: LlmGatewayLocalConfig;
   /** Injectable enrichment factory (tests). Returning undefined skips enrichment. */
@@ -102,25 +104,21 @@ function publishEnrichmentStatus(
 }
 
 function skipNote(config: LlmGatewayConfig): string {
-  if (config.keySource === "none") {
-    return "no LLM credentials visible (set OKIE_LLM_API_KEY / OPENROUTER_API_KEY / OPENAI_API_KEY; ANTHROPIC_API_KEY remains a fallback, or OKIE_SCAN_ENRICH=1 for profile auth)";
-  }
-  return "no LLM credentials visible";
+  // "no LLM credentials" is what publishedEnrichmentStatus classifies as `no-key`.
+  return `no LLM credentials configured (${config.offReason ?? "no provider"})`;
 }
 
 const EMPTY_MODEL_NOTE = "empty model id; enrichment not started";
 
-function shouldAttemptEnrichment(mode: "auto" | "force", config: LlmGatewayConfig): boolean {
-  return mode === "force" || hasLlmCredentials(config);
+/** CLA-606: "force" (OKIE_SCAN_ENRICH=1) never enables egress by itself; it needs the provider opt-in and key too. */
+function shouldAttemptEnrichment(config: LlmGatewayConfig): boolean {
+  return hasLlmCredentials(config);
 }
 
 /** Provider host + model id when enrichment was attempted. Never a key or URL. */
-function enrichmentIdentity(
-  config: LlmGatewayConfig,
-  mode: "auto" | "force",
-): Pick<ScanJobEnrichment, "modelId" | "provider"> {
+function enrichmentIdentity(config: LlmGatewayConfig): Pick<ScanJobEnrichment, "modelId" | "provider"> {
   const modelId = enrichmentModelId(config);
-  const provider = enrichmentProviderLabel(config, mode);
+  const provider = enrichmentProviderLabel(config);
   return {
     ...(modelId ? { modelId } : {}),
     ...(provider ? { provider } : {}),
@@ -128,24 +126,22 @@ function enrichmentIdentity(
 }
 
 /**
- * Default factory for the live enricher. Auto mode skips when no gateway or
- * Anthropic key is visible so the deterministic atlas still publishes. The
- * OpenAI-compatible client is constructed here when a gateway key is present
- * (with the configured per-request timeout). Packet HTTP POSTs each bounded
- * packet to `chatCompletions`; `ANTHROPIC_*` stays on the Anthropic SDK.
- * The hook still runs only inside `scanGithubRepository`'s checkout window.
+ * Default factory for the live enricher. It skips (in both modes) unless an LLM provider is opted in
+ * with OKIE_LLM_API_KEY (CLA-606), so the deterministic atlas still publishes. The OpenAI-compatible
+ * client is constructed here for a gateway provider (with the configured per-request timeout) and
+ * packet HTTP POSTs each bounded packet to `chatCompletions`; the `anthropic` provider gets its key and
+ * base URL passed explicitly. The hook still runs only inside `scanGithubRepository`'s checkout window.
  */
 export function createDefaultEnricherFactory(
-  mode: "auto" | "force",
+  _mode: "auto" | "force",
   env: NodeJS.Dict<string> = process.env,
   local: LlmGatewayLocalConfig = {},
   globalSpend?: GlobalEnrichmentSpend,
+  resolved?: LlmGatewayConfig,
 ): (onProgress: (note: string) => void) => EnrichmentHook | undefined {
   return onProgress => {
-    const config = resolveLlmGatewayConfig(env, local);
-    // Profile-based Anthropic auth (`ant auth login`) is invisible to the sniff —
-    // OKIE_SCAN_ENRICH=1 forces the attempt for that setup.
-    if (mode === "auto" && !hasLlmCredentials(config)) return undefined;
+    const config = resolved ?? resolveLlmGatewayConfig(env, local);
+    if (!hasLlmCredentials(config)) return undefined;
     if (!isUsableModelId(config.modelId)) {
       return async () => {
         throw new Error(EMPTY_MODEL_NOTE);
@@ -167,6 +163,7 @@ export function createDefaultEnricherFactory(
         } : {}),
         ...(globalCap ? { maxConcurrent: 1 } : {}),
         ...(gateway ? { gateway } : {}),
+        ...(config.keySource === "anthropic" && config.apiKey ? { anthropic: { apiKey: config.apiKey, baseUrl: config.baseUrl } } : {}),
       });
     } catch {
       return undefined;
@@ -189,9 +186,10 @@ export function createScanJobRunner(options: ScanServiceOptions): JobRunner {
   const llmLocal = options.llmLocal ?? {};
   const globalSpend = options.globalSpend;
   const enricherFactory = options.enricherFactory
-    ?? (enrichMode === "off" ? () => undefined : createDefaultEnricherFactory(enrichMode, env, llmLocal, globalSpend));
+    ?? (enrichMode === "off" ? () => undefined : createDefaultEnricherFactory(enrichMode, env, llmLocal, globalSpend, options.llm));
   const githubClientOverride = options.githubClient;
-  const redact = (line: string): string => redactGatewayErrorText(line, resolveLlmGatewayConfig(env, llmLocal).apiKey);
+  const llmConfig = (): LlmGatewayConfig => options.llm ?? resolveLlmGatewayConfig(env, llmLocal);
+  const redact = (line: string): string => redactGatewayErrorText(line, llmConfig().apiKey);
 
   const clientForJob = (job: ScanJob): GithubClient => {
     if (githubClientOverride) return githubClientOverride;
@@ -255,9 +253,9 @@ export function createScanJobRunner(options: ScanServiceOptions): JobRunner {
         return;
       }
 
-      const config = resolveLlmGatewayConfig(env, llmLocal);
-      const identity = enrichmentIdentity(config, enrichMode);
-      if (shouldAttemptEnrichment(enrichMode, config) && !isUsableModelId(config.modelId)) {
+      const config = llmConfig();
+      const identity = enrichmentIdentity(config);
+      if (shouldAttemptEnrichment(config) && !isUsableModelId(config.modelId)) {
         update({
           enrichment: { state: "failed", note: EMPTY_MODEL_NOTE, ...identity },
         });

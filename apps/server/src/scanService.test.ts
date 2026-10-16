@@ -135,17 +135,20 @@ test("auto enricher factory skips without a key and constructs a client when a g
   const skipped = createDefaultEnricherFactory("auto", {})(() => {});
   assert.equal(skipped, undefined);
 
+  // CLA-606: a generic ANTHROPIC_API_KEY is ignored; the anthropic provider needs the opt-in and OKIE_LLM_API_KEY.
   const anthropicOnly = createDefaultEnricherFactory("auto", { ANTHROPIC_API_KEY: "okie-test-anthropic-key-cla20-fake" })(() => {});
-  assert.ok(anthropicOnly);
+  assert.equal(anthropicOnly, undefined);
+  const anthropic = createDefaultEnricherFactory("auto", { OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_API_KEY: "okie-test-anthropic-key-cla20-fake" })(() => {});
+  assert.ok(anthropic);
 
-  const gateway = createDefaultEnricherFactory("auto", { OPENROUTER_API_KEY: FAKE_GATEWAY_KEY })(() => {});
+  const gateway = createDefaultEnricherFactory("auto", { OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY })(() => {});
   assert.ok(gateway);
 });
 
 test("auto enricher factory fails closed on an empty model id instead of substituting the default", async () => {
   const hook = createDefaultEnricherFactory("auto", {
-    OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
-    OPENROUTER_MODEL: "  ",
+    OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
+    OKIE_LLM_MODEL: "  ",
   })(() => {});
   assert.ok(hook);
   await assert.rejects(() => hook({
@@ -207,7 +210,7 @@ test("no LLM key skips enrichment and still publishes the deterministic atlas", 
     assert.equal(job.stage, "complete");
     assert.equal(job.atlasReady, true);
     assert.equal(job.enrichment.state, "skipped");
-    assert.match(job.enrichment.note ?? "", /no LLM credentials visible/);
+    assert.match(job.enrichment.note ?? "", /no LLM credentials configured/);
     assert.equal(job.enrichment.modelId, undefined);
     assert.equal(job.enrichment.provider, undefined);
     assert.doesNotMatch(job.enrichment.note ?? "", /ANTHROPIC_API_KEY=\S+/);
@@ -269,7 +272,7 @@ test("job logs redact a gateway key if a provider error echoes it", async () => 
     const queue = createScanJobQueue(createScanJobRunner({
       scanRoot,
       enrich: "auto",
-      env: { OPENROUTER_API_KEY: FAKE_GATEWAY_KEY },
+      env: { OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY },
       githubClient: client,
       log: line => logs.push(line),
       enricherFactory: () => async () => {
@@ -381,7 +384,7 @@ test("empty model id fails enrichment only; deterministic atlas still publishes"
     const queue = createScanJobQueue(createScanJobRunner({
       scanRoot,
       enrich: "auto",
-      env: { OPENROUTER_API_KEY: FAKE_GATEWAY_KEY, OPENROUTER_MODEL: "" },
+      env: { OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY, OKIE_LLM_MODEL: "" },
       githubClient: githubClientForTarball(commitSha, fixture.tgz),
       log: line => logs.push(line),
     }));
@@ -417,7 +420,7 @@ test("invalid model id fails enrichment only; deterministic atlas still publishe
     const queue = createScanJobQueue(createScanJobRunner({
       scanRoot,
       enrich: "auto",
-      env: { OPENROUTER_API_KEY: FAKE_GATEWAY_KEY, OPENROUTER_MODEL: "not-a-real-model" },
+      env: { OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY, OKIE_LLM_MODEL: "not-a-real-model" },
       githubClient: githubClientForTarball(commitSha, fixture.tgz),
       log: line => logs.push(line),
       enricherFactory: () => async () => {
@@ -454,7 +457,7 @@ test("gateway 429 fails enrichment only; deterministic atlas still publishes", a
     const queue = createScanJobQueue(createScanJobRunner({
       scanRoot,
       enrich: "auto",
-      env: { OPENROUTER_API_KEY: FAKE_GATEWAY_KEY },
+      env: { OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY },
       githubClient: githubClientForTarball(commitSha, fixture.tgz),
       log: line => logs.push(line),
       enricherFactory: () => async () => {
@@ -493,7 +496,7 @@ test("off and rejected enrichment publish the same overview story; accepted summ
     const queue = createScanJobQueue(createScanJobRunner({
       scanRoot,
       enrich: enricherFactory ? "auto" : "off",
-      env: enricherFactory ? { OPENROUTER_API_KEY: FAKE_GATEWAY_KEY } : {},
+      env: enricherFactory ? { OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY } : {},
       githubClient: githubClientForTarball(commitSha, fixture.tgz),
       log: line => logs.push(line),
       ...(enricherFactory ? { enricherFactory } : {}),
@@ -618,7 +621,7 @@ test("job.error and logs scrub gateway error strings (gh token + operator key)",
     const queue = createScanJobQueue(createScanJobRunner({
       scanRoot,
       enrich: "off",
-      env: { OPENROUTER_API_KEY: FAKE_GATEWAY_KEY },
+      env: { OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY },
       githubClient: client,
       log: line => logs.push(line),
     }));
@@ -652,7 +655,7 @@ test("enrichment notes and logs strip tokenized gateway URLs", async () => {
     const queue = createScanJobQueue(createScanJobRunner({
       scanRoot,
       enrich: "auto",
-      env: { OPENROUTER_API_KEY: FAKE_GATEWAY_KEY, OKIE_LLM_BASE_URL: tokenized },
+      env: { OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY, OKIE_LLM_BASE_URL: tokenized },
       githubClient: githubClientForTarball(commitSha, fixture.tgz),
       log: line => logs.push(line),
       enricherFactory: () => async () => {
@@ -678,7 +681,7 @@ test("enrichment notes and logs strip tokenized gateway URLs", async () => {
   }
 });
 
-test("force enrichment without a visible key records provider anthropic, not openrouter.ai", async () => {
+test("CLA-606: force enrichment (OKIE_SCAN_ENRICH=1) without the opt-in skips: no profile-auth attempt, no provider", async () => {
   const fixture = makeTarball("acme-app-cla29bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", {
     "package.json": JSON.stringify({ name: "acme-app" }),
     "src/index.ts": "export const ping = () => 'pong';\n",
@@ -689,20 +692,16 @@ test("force enrichment without a visible key records provider anthropic, not ope
     const queue = createScanJobQueue(createScanJobRunner({
       scanRoot,
       enrich: "force",
-      env: {},
+      env: { ANTHROPIC_API_KEY: "okie-test-anthropic-key-cla20-fake" },
       githubClient: githubClientForTarball(commitSha, fixture.tgz),
-      enricherFactory: () => async () => {
-        throw new Error("profile auth unavailable");
-      },
     }));
     queue.submit({ owner: "acme", repo: "app", slug: "acme__app" });
     await queue.idle();
     const job = queue.list()[0]!;
     assert.equal(job.stage, "complete");
-    assert.equal(job.enrichment.state, "failed");
-    assert.equal(job.enrichment.provider, "anthropic");
-    assert.equal(job.enrichment.modelId, DEFAULT_GATEWAY_MODEL_ID);
-    assert.notEqual(job.enrichment.provider, "openrouter.ai");
+    assert.equal(job.enrichment.state, "skipped");
+    assert.match(job.enrichment.note ?? "", /no LLM credentials configured \(no --llm-provider/);
+    assert.equal(job.enrichment.provider, undefined);
   } finally {
     rmSync(scanRoot, { recursive: true, force: true });
     fixture.cleanup();
@@ -764,9 +763,9 @@ test("under a global cap, enrichment runs on a fake gateway for more than one Gi
       scanRoot,
       enrich: "auto",
       env: {
-        OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
+        OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
         OKIE_LLM_BASE_URL: fake.baseUrl,
-        OPENROUTER_MODEL: "acme/fast",
+        OKIE_LLM_MODEL: "acme/fast",
       },
       githubClient: githubClientForTarball(commitSha, fixture.tgz),
       globalSpend: spend,
@@ -830,9 +829,9 @@ test("at the global cap, enrichment skips across GitHub users and the atlas stil
       scanRoot,
       enrich: "auto",
       env: {
-        OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
+        OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
         OKIE_LLM_BASE_URL: fake.baseUrl,
-        OPENROUTER_MODEL: "acme/fast",
+        OKIE_LLM_MODEL: "acme/fast",
       },
       githubClient: githubClientForTarball(commitSha, fixture.tgz),
       globalSpend: spend,
@@ -897,9 +896,9 @@ test("a zero global cap skips enrichment without calling the fake gateway", asyn
       scanRoot,
       enrich: "auto",
       env: {
-        OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
+        OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
         OKIE_LLM_BASE_URL: fake.baseUrl,
-        OPENROUTER_MODEL: "acme/fast",
+        OKIE_LLM_MODEL: "acme/fast",
       },
       githubClient: githubClientForTarball(commitSha, fixture.tgz),
       globalSpend: createGlobalEnrichmentSpend({ maxTokens: 0 }),

@@ -30,7 +30,7 @@ jobs:
       - name: Assert no live LLM or scan-live flags
         run: |
           set +x
-          for name in OPENROUTER_API_KEY OPENAI_API_KEY OKIE_LLM_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN OKIE_SCAN_LIVE OKIE_GITHUB_CLIENT_SECRET; do
+          for name in OPENROUTER_API_KEY OPENAI_API_KEY OKIE_LLM_API_KEY OKIE_LLM_PROVIDER ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN OKIE_SCAN_LIVE OKIE_GITHUB_CLIENT_SECRET; do
             if [ -n "${!name}" ]; then
               echo "$name must be unset in CI (deterministic gates only)." >&2
               exit 1

@@ -61,7 +61,7 @@ export interface EnrichmentGateway {
 }
 
 export interface EnricherOptions {
-  /** Injectable generator (tests). Default: gateway `chatCompletions`, else Anthropic. */
+  /** Injectable generator (tests). Default: gateway `chatCompletions`, else `anthropic`, else the pass fails. */
   generate?: EnrichmentGenerator;
   /**
    * Operator-configured model id (CLA-21). Opaque string the gateway understands.
@@ -70,9 +70,14 @@ export interface EnricherOptions {
   modelId?: string;
   /**
    * OpenAI-compatible gateway (CLA-20/23). When `chatCompletions` is present, packets
-   * POST there. Otherwise Anthropic SDK remains the `ANTHROPIC_*` fallback.
+   * POST there.
    */
   gateway?: EnrichmentGateway;
+  /**
+   * The `anthropic` provider (CLA-606): key and base URL are passed to the SDK explicitly, so it never
+   * reads ANTHROPIC_* env vars or a local profile. Without this (or a gateway) the pass fails, never egresses.
+   */
+  anthropic?: { apiKey: string; baseUrl: string };
   /** Per-request timeout + scan-level caps (CLA-22). Defaults are the documented constants. */
   budget?: Partial<EnrichmentBudget>;
   /**
@@ -364,7 +369,7 @@ function cappedOutputTokens(maxOutputTokens: number): number {
 }
 
 /**
- * Anthropic Messages fields for one scope (ANTHROPIC_* fallback).
+ * Anthropic Messages fields for one scope (the `anthropic` provider).
  * The model id is the configured string — not a lookup table.
  */
 export function enrichmentStreamParams(
@@ -646,6 +651,34 @@ function gatewayGenerator(
   };
 }
 
+/**
+ * CLA-606: an Anthropic SDK client configured only by Okie. Every input the SDK 0.112 constructor would otherwise take
+ * from the environment is passed explicitly (`apiKey`, `authToken: null`, `baseURL`, `webhookKey: null`,
+ * `logLevel: "off"` plus a silent logger), and the constructor runs with every `ANTHROPIC_*` variable hidden, so env-only
+ * inputs with no option (ANTHROPIC_CUSTOM_HEADERS) never reach it and the SDK's own default headers stay intact. The
+ * credential chain (ANTHROPIC_PROFILE, ANTHROPIC_CONFIG_DIR, ANTHROPIC_IDENTITY_TOKEN*, …) only runs without an apiKey,
+ * so it never runs here. As a final guard the client's fetch sets `x-api-key` to the opted-in key and drops
+ * `authorization` on every outgoing request.
+ */
+export function isolatedAnthropicClient(options: { apiKey: string; baseUrl: string }): Anthropic {
+  const { apiKey, baseUrl } = options;
+  const guardedFetch: typeof fetch = (input, init) => {
+    const headers = new Headers(init?.headers);
+    headers.set("x-api-key", apiKey);
+    headers.delete("authorization");
+    return globalThis.fetch(input, { ...init, headers });
+  };
+  const silent = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
+  // The constructor is synchronous, so hiding and restoring the variables cannot interleave with other code.
+  const hidden = Object.keys(process.env).filter(name => name.startsWith("ANTHROPIC_")).map(name => [name, process.env[name]] as const);
+  for (const [name] of hidden) delete process.env[name];
+  try {
+    return new Anthropic({ apiKey, authToken: null, baseURL: baseUrl, webhookKey: null, logLevel: "off", logger: silent, fetch: guardedFetch });
+  } finally {
+    for (const [name, value] of hidden) process.env[name] = value;
+  }
+}
+
 function defaultGenerator(
   options: EnricherOptions,
   passModelId: string | undefined,
@@ -655,11 +688,12 @@ function defaultGenerator(
   if (passModelId && gatewayCanChat(options.gateway)) {
     return gatewayGenerator(options.gateway, passModelId, remainingTokens);
   }
-  if (passModelId) {
-    return anthropicGenerator(new Anthropic(), passModelId, { timeoutMs, remainingTokens });
+  if (passModelId && options.anthropic) {
+    return anthropicGenerator(isolatedAnthropicClient(options.anthropic), passModelId, { timeoutMs, remainingTokens });
   }
+  const reason = passModelId ? "no LLM provider configured" : "empty model id";
   return async () => {
-    throw new Error("empty model id");
+    throw new Error(reason);
   };
 }
 

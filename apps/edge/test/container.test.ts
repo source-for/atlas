@@ -109,6 +109,7 @@ describe('AtlasApiContainer', () => {
       OKIE_TRUSTED_PROXY: 'cloudflare',
       OKIE_PUBLISHED_STORE_URL: 'http://atlas-store.internal',
       OKIE_JEV_BLOCK_PLANNER: '0',
+      OKIE_LLM_PROVIDER: 'openrouter',
     });
     const vars = containerEnvVars({
       OKIE_LLM_API_KEY: 'k',
@@ -124,6 +125,11 @@ describe('AtlasApiContainer', () => {
     expect(Object.keys(vars)).not.toContain('DEV_BACKEND_ORIGIN');
     expect(Object.keys(vars)).not.toContain('TURNSTILE_SECRET_KEY');
     expect(containerEnvVars({ OKIE_LLM_API_KEY: '' })).not.toHaveProperty('OKIE_LLM_API_KEY');
+  });
+
+  it('opts the container into OpenRouter explicitly (CLA-606: a key alone no longer enables egress)', () => {
+    expect(containerEnvVars({})).toMatchObject({ OKIE_LLM_PROVIDER: 'openrouter' });
+    expect(containerEnvVars({ OKIE_LLM_API_KEY: 'k' })).toMatchObject({ OKIE_LLM_PROVIDER: 'openrouter', OKIE_LLM_API_KEY: 'k' });
   });
 
   it('registers the atlas-store.internal outbound handler (public AND private, GET/HEAD only)', async () => {
