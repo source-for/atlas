@@ -52,7 +52,7 @@ test("scanServer serves healthzBody and main.ts listens on loopback without scan
 
 test("healthz and scan HTTP never put an LLM API key on the wire", () => {
   const fakeKey = "okie-test-llm-key-cla20-fake";
-  const config = resolveLlmGatewayConfig({ OPENROUTER_API_KEY: fakeKey });
+  const config = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: fakeKey });
   const body = healthzBody({ enrich: "auto", bind: "127.0.0.1" });
   const json = JSON.stringify(body);
   const view = JSON.stringify(publicLlmGatewayView(config));
@@ -66,7 +66,7 @@ test("healthz and scan HTTP never put an LLM API key on the wire", () => {
   assert.match(server, /healthzBody\(\{\s*enrich,\s*bind\s*\}\)/);
   assert.doesNotMatch(server, /healthzBody\([^)]*apiKey/);
   assert.doesNotMatch(server, /healthzBody\([^)]*llm/);
-  assert.match(main, /describeEnrichmentMode\(enrich,\s*llm\)/);
+  assert.match(main, /describeLlmStartup\(llm, \{ serverMode: "default", scanEnrich: enrich \}\)/);
   // CLA-261: job errors go through the error scrub (redactGatewayText + provider identifiers).
   assert.match(server, /toPublicJob\(job,\s*text => redactGatewayErrorText\(text,\s*llm\.apiKey\)\)/);
 });

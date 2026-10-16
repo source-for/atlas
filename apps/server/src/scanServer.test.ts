@@ -180,7 +180,7 @@ function askHandler(scanRoot: string, baseUrl: string, extra: Partial<Parameters
     allowSubmit: createSubmitLimiter(),
     auth: createGithubAuthService({ bind: "127.0.0.1", env: { OKIE_GITHUB_TEST_DOUBLE: "1", OKIE_PUBLIC_ORIGIN: "http://localhost:4173" } }),
     scanRoot,
-    llm: resolveLlmGatewayConfig({ OPENAI_BASE_URL: baseUrl, OPENROUTER_API_KEY: FAKE_GATEWAY_KEY, OPENROUTER_MODEL: "acme/fast" }),
+    llm: resolveLlmGatewayConfig({ OKIE_LLM_BASE_URL: baseUrl, OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY, OKIE_LLM_MODEL: "acme/fast" }),
     enrich: "off",
     bind: "127.0.0.1",
     ...extra,
