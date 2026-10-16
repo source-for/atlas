@@ -108,7 +108,7 @@ import { resolveExplanationExcerpt } from './explanation/explanationSource';
 import { getDraftPreviewContext } from './operator/previewContext';
 import { OperatorMenuLink } from './operator/OperatorMenuLink';
 import { buildArchitectureBrief, clampInspectorWidth, defaultInspectorWidth, initialInspectorWidth, inspectorAcceptedSummary, inspectorCanShowSource, inspectorDiagramCount, inspectorEntityLead, inspectorCyclomatic, inspectorCoverage, inspectorDuplicates, inspectorUntestedBehaviours, formatCoverageRange, inspectorNotationDetailsView, inspectorNotationScope, inspectorPathOwners, inspectorSecondaryCopy, inspectorTabForEntity, inspectorWidthRange, inspectorWidthStorageKey, presentInspectorNotationDiagnostics, selectedEntityReframePlan, selectedRelationPresentation, type InspectorTab } from './inspector/inspectorSupport';
-import { inspectorHistoryRestorePlan, popInspectorHistory, pushInspectorHistory, type InspectorHistorySubject } from './inspector/inspectorHistory';
+import { inspectorHistoryRestorePlan, popInspectorHistory, pushInspectorHistory, withdrawInspectorHistory, type InspectorHistorySubject } from './inspector/inspectorHistory';
 import { createInspectorNeighborhoodRequest, inspectorNavigationIdentity } from './inspector/inspectorNeighborhoodRequest';
 import { readDemoQuery } from './renderer/query';
 import { loadStressFixture, stressPlaceholder } from './renderer/stressFixture';
@@ -2015,9 +2015,10 @@ export function App() {
       // Back during the wait returns to the selection the view replaced. The commit records the
       // same subject (deduplicated); a failed open leaves the reader here, so it drops the entry.
       const fromSubject = pending ? currentInspectorHistorySubject() : undefined;
-      if (fromSubject) setInspectorHistory(current => pushInspectorHistory(current, fromSubject));
+      let beforePush: InspectorHistorySubject[] = [];
+      if (fromSubject) setInspectorHistory(current => { beforePush = current; return pushInspectorHistory(current, fromSubject); });
       try { await navigation; } finally {
-        if (pending?.settle() && fromSubject) setInspectorHistory(current => current.at(-1) === fromSubject ? current.slice(0, -1) : current);
+        if (pending?.settle() && fromSubject) setInspectorHistory(current => withdrawInspectorHistory(current, beforePush, fromSubject));
       }
       return;
     }
@@ -5121,6 +5122,15 @@ export function App() {
     });
   }
 
+  /** The pending view's Cancel: the inspector's Back, then focus returns to the row that opened it. */
+  function cancelPendingInspectorChild(childId: string) {
+    navigateInspectorBack();
+    window.setTimeout(() => {
+      const row = Array.from(detailsPanelRef.current?.querySelectorAll<HTMLElement>('.inspector-link-list button[data-inspector-entity-id]') ?? []).find(button => button.dataset.inspectorEntityId === childId);
+      row?.focus({ preventScroll: true });
+    }, 0);
+  }
+
   function navigateInspectorBack() {
     const popped = popInspectorHistory(inspectorHistory);
     const subject = popped.subject;
@@ -7303,7 +7313,7 @@ export function App() {
             <button aria-controls="details-panel" aria-selected={!(inspectorAskActive && askPanelVisible) && inspectorTab === 'details'} id="details-tab" onClick={() => selectInspectorTab('details')} ref={detailsTabRef} role="tab" tabIndex={!(inspectorAskActive && askPanelVisible) && inspectorTab === 'details' ? 0 : -1} type="button">Details</button>
             {!portableAtlas && !askHidden ? <button aria-controls="ask-panel" aria-selected={inspectorAskActive && askPanelVisible} id="ask-tab" onClick={openDockedAsk} ref={askTabRef} role="tab" tabIndex={inspectorAskActive && askPanelVisible ? 0 : -1} type="button">Ask</button> : null}
           </div>
-          {inspectorAskActive && askPanelVisible ? <div aria-labelledby="ask-tab" className="inspector-ask-panel" id="ask-panel" role="tabpanel">{askPanelView}</div> : visiblePendingChild ? <div aria-labelledby={`${inspectorTab}-tab`} className="details-scroll" id={`${inspectorTab}-panel`} role="tabpanel"><PendingInspectorChildView pending={visiblePendingChild}/></div> : inspectorTab === 'overview' ? <div aria-labelledby="overview-tab" className="details-scroll overview-panel" data-testid="inspector-overview" id="overview-panel" role="tabpanel">
+          {inspectorAskActive && askPanelVisible ? <div aria-labelledby="ask-tab" className="inspector-ask-panel" id="ask-panel" role="tabpanel">{askPanelView}</div> : visiblePendingChild ? <div aria-labelledby={`${inspectorTab}-tab`} className="details-scroll" id={`${inspectorTab}-panel`} role="tabpanel"><PendingInspectorChildView onCancel={() => cancelPendingInspectorChild(visiblePendingChild.id)} pending={visiblePendingChild}/></div> : inspectorTab === 'overview' ? <div aria-labelledby="overview-tab" className="details-scroll overview-panel" data-testid="inspector-overview" id="overview-panel" role="tabpanel">
             <ContextualOverviewView key={contextualOverview?.entity.id} overview={contextualOverview} explanation={draftPreviewContext?.explanationsByEntityId.get(selected.id)} entityName={id => activeSnapshot.entities.find(entity => entity.id === id)?.name} onOpenEntity={id => { void openInspectorChild(id).catch(() => setLiveMessage('Unable to load this part of the map. Please try again.')); }}
               onOpenEvidence={evidence => { void resolveExplanationExcerpt(activeSnapshot, evidence, id => scanFixture?.ensureExcerpts(id)).then(found => { if (!found) { setLiveMessage(`A source excerpt for ${evidence.path ?? 'this evidence'} isn't available here.`); return; } openPathExcerptRef.current(found.entityId, found.excerpt); if (!found.exact) setLiveMessage(`Line ${evidence.startLine} of ${evidence.path} wasn't captured; showing the nearest captured excerpt.`); }).catch(() => setLiveMessage('Unable to open this source evidence. Please try again.')); }}/>
             {contextualOverview?.entity.id === scene.rootEntityId ? <ArchitectureBriefView

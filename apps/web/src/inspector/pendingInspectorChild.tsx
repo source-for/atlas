@@ -58,18 +58,22 @@ export function visiblePendingInspectorChild(pending: PendingInspectorChild | un
  * commits sooner never flashes the skeleton. "Loading …" is announced through the
  * app's polite live region by the caller. The view replaces the row that was just
  * activated, so a focus that fell to the document moves to this heading. A press
- * anywhere but the heading keeps focus where it is (a browser would move it to <body>).
+ * anywhere but the heading or Cancel keeps focus where it is (a browser would move it to <body>).
+ * Cancel is the next Tab stop after the heading, so Tab stays in the inspector; it is the
+ * inspector's Back (to the container, and the pending compile never paints).
  */
-export function PendingInspectorChildView({ pending }: { pending: PendingInspectorChild }) {
+export function PendingInspectorChildView({ pending, onCancel }: { pending: PendingInspectorChild; onCancel: () => void }) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     const active = document.activeElement;
     if (!active || active === document.body || !active.isConnected) headingRef.current?.focus({ preventScroll: true });
   }, [pending.id]);
-  return <article aria-busy="true" aria-labelledby="inspector-pending-title" className="inspector-presentation inspector-entity-presentation inspector-pending" data-inspector-pending-entity-id={pending.id} data-testid="inspector-pending-child" onMouseDown={event => { if (event.target !== headingRef.current) event.preventDefault(); }}>
+  return <article aria-busy="true" aria-labelledby="inspector-pending-title" className="inspector-presentation inspector-entity-presentation inspector-pending" data-inspector-pending-entity-id={pending.id} data-testid="inspector-pending-child" onMouseDown={event => { if (event.target !== headingRef.current && !cancelRef.current?.contains(event.target as Node)) event.preventDefault(); }}>
     <header className="entity-hero">
       <div className="entity-kicker"><span>{pending.levelLabel}</span></div>
       <h2 id="inspector-pending-title" ref={headingRef} tabIndex={-1}>{pending.name}</h2>
+      <button aria-label={`Cancel opening ${pending.name}`} className="inspector-pending-cancel" data-testid="inspector-pending-cancel" onClick={onCancel} ref={cancelRef} type="button">Cancel</button>
       <div aria-hidden="true" className="inspector-pending-body inspector-pending-lead">
         <span className="inspector-skeleton-line" style={{ width: '92%' }}/>
         <span className="inspector-skeleton-line" style={{ width: '64%' }}/>

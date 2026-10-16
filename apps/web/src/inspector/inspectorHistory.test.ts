@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { inspectorHistoryRestorePlan, popInspectorHistory, pushInspectorHistory, type InspectorHistoryNavigation, type InspectorHistorySubject } from './inspectorHistory';
+import { inspectorHistoryRestorePlan, popInspectorHistory, pushInspectorHistory, withdrawInspectorHistory, type InspectorHistoryNavigation, type InspectorHistorySubject } from './inspectorHistory';
 import type { NavigationState } from '../navigation/navigationState';
 
 const entityNavigation: InspectorHistoryNavigation = {
@@ -83,5 +83,22 @@ describe('details-panel navigation history', () => {
       lensPath: subject.navigation.lensPath,
       filterId: 'filter:owned',
     });
+  });
+
+  it('withdraws a push at the 32-entry limit by restoring the entry it evicted, only while the push is on top', () => {
+    const subject = (index: number): InspectorHistorySubject => ({ kind: 'entity', entityId: `component:${index}`, tab: 'details', navigation: entityNavigation });
+    const full = Array.from({ length: 32 }, (_, index) => subject(index));
+    const opened = subject(99);
+    const pushed = pushInspectorHistory(full, opened);
+    expect(pushed).toHaveLength(32);
+    expect(pushed[0]).toBe(full[1]);
+    expect(popInspectorHistory(pushed).history).not.toContain(full[0]);
+    expect(withdrawInspectorHistory(pushed, full, opened)).toEqual(full);
+    // Something else moved the history on: the withdraw leaves it alone.
+    const later = pushInspectorHistory(pushed, subject(100));
+    expect(withdrawInspectorHistory(later, full, opened)).toBe(later);
+    // A deduplicated push left the reader's own entry on top: nothing is withdrawn.
+    const deduplicated = pushInspectorHistory(full, { ...full[31]! });
+    expect(withdrawInspectorHistory(deduplicated, full, { ...full[31]! })).toBe(deduplicated);
   });
 });

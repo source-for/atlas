@@ -894,6 +894,9 @@ a.icon-button { text-decoration: none; }
 /* Open-inside: the target's header shows at once; the placeholders appear only if the map takes over 120 ms. */
 /* Focus lands on the pending heading only because the activated row was replaced; no ring for that hand-off. */
 #inspector-pending-title:focus { outline: none; }
+.inspector-pending .entity-hero { position: relative; }
+.inspector-pending-cancel { position: absolute; top: -3px; right: 0; padding: 3px 8px; border: 1px solid var(--atlas-line); border-radius: 999px; background: transparent; color: var(--atlas-quiet); font-family: var(--atlas-font-mono); font-size: 10px; letter-spacing: .05em; cursor: pointer; }
+.inspector-pending-cancel:hover, .inspector-pending-cancel:focus-visible { color: var(--atlas-muted); border-color: var(--atlas-muted); }
 .inspector-pending-body { animation: inspector-pending-reveal 1ms 120ms both; }
 @keyframes inspector-pending-reveal { from { visibility: hidden; } to { visibility: visible; } }
 @media (prefers-reduced-motion: reduce) {

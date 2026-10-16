@@ -38,6 +38,22 @@ const entityTitle = () => host.querySelector('#inspector-entity-title')?.textCon
 const pendingTitle = () => host.querySelector('#inspector-pending-title')?.textContent;
 const kicker = () => host.querySelector('.entity-kicker > span')?.textContent;
 const liveMessage = () => host.querySelector('div.sr-only[aria-live="polite"][role="status"]')?.textContent;
+// The sequential-focus order a browser's Tab follows (HTML "tabindex-ordered focus navigation
+// scope"): positive tabindex first, then tabindex 0 in tree order; skips disabled, inert and hidden.
+const focusableSelector = 'a[href], button, input, select, textarea, summary, iframe, [tabindex], [contenteditable="true"]';
+function tabOrder(): HTMLElement[] {
+  const candidates = Array.from(document.querySelectorAll<HTMLElement>(focusableSelector)).filter(element => element.tabIndex >= 0
+    && !(element as HTMLButtonElement).disabled && !element.closest('[inert], [hidden]') && element.getAttribute('type') !== 'hidden');
+  const positive = candidates.filter(element => element.tabIndex > 0).sort((left, right) => left.tabIndex - right.tabIndex);
+  return [...positive, ...candidates.filter(element => element.tabIndex === 0)];
+}
+/** The element Tab moves to from `from`, which may itself be outside the order (tabindex -1). */
+function nextTabStop(from: Element): HTMLElement | undefined {
+  const order = tabOrder();
+  const index = order.indexOf(from as HTMLElement);
+  if (index >= 0) return order[index + 1];
+  return order.find(element => element.tabIndex === 0 && Boolean(from.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING));
+}
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(done => { resolve = done; });
@@ -475,6 +491,49 @@ describe('open inside a non-resident child', () => {
     await settle();
     expect(entityTitle()).toBe(storiesName);
     expect(selectedId()).toBe('component:web-stories');
+  });
+
+  // A Tab after a keyboard open must stay in the inspector: on main it reached row 2; without a stop
+  // in the pending view it left the panel for the provenance link (target=_blank).
+  it('keeps the next Tab stop after the pending heading in the inspector, on a Cancel that acts as Back', async () => {
+    const compiles = await openContainerFromShell();
+    await settle();
+    (host.querySelector(childButton('component:web-navigation')) as HTMLButtonElement).focus();
+    await act(async () => (document.activeElement as HTMLElement).click()); // Enter on the focused row
+    await settle();
+    const heading = host.querySelector('#inspector-pending-title')!;
+    expect(document.activeElement).toBe(heading);
+    const next = nextTabStop(heading);
+    expect(next?.closest('#architecture-inspector')).not.toBeNull();
+    expect(next?.dataset.testid).toBe('inspector-pending-cancel');
+    expect(next?.tagName).toBe('BUTTON');
+    expect(next?.textContent).toBe('Cancel');
+    expect(next?.getAttribute('aria-label')).toBe('Cancel opening Navigation and history');
+    // A press on Cancel takes focus as a button would.
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    next!.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(false);
+    const seen = new Set<string>();
+    const observer = new MutationObserver(() => { for (const value of [pendingTitle(), entityTitle(), selectedId()]) if (value) seen.add(value); });
+    observer.observe(host, { attributes: true, childList: true, subtree: true, characterData: true });
+    next!.focus();
+    await act(async () => next!.click()); // Enter on Cancel
+    await settle();
+    expect(pendingTitle()).toBeUndefined();
+    expect(entityTitle()).toBe('Atlas web app');
+    expect(selectedId()).toBe('container:web-app');
+    expect(document.activeElement).toBe(host.querySelector(childButton('component:web-navigation')));
+    await act(async () => compiles[0]!.release());
+    await settle();
+    observer.disconnect();
+    expect(entityTitle()).toBe('Atlas web app');
+    expect(seen).not.toContain('Navigation and history');
+    expect(seen).not.toContain('component:web-navigation');
+    expect(compiles.map(compile => compile.focus)).toEqual(['component:web-navigation']);
+    // Cancel used the Back entry; the one before it is still there.
+    await click('[data-testid="inspector-back"]');
+    await settle();
+    expect(entityTitle()).toBe('Application shell');
   });
 
   it('gives the pending header the same kicker the loaded inspector shows', async () => {
