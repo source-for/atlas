@@ -1,4 +1,4 @@
-import { PORTABLE_ATLAS_MAX_BYTES, serializePortableAtlas, type PortableAtlas } from '@okie/architecture';
+import { PORTABLE_ATLAS_MAX_BYTES, serializePortableAtlas, type PortableAtlas, type PortableAtlasGenerator } from '@okie/architecture';
 import { fitDependencyFacts } from './dependency-facts.js';
 import type { ScanArtifacts } from './scan.js';
 
@@ -11,9 +11,10 @@ const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value
  * row fits, a minimal facts object (packages + coverage carrying
  * DEPENDENCY_FACTS_OMITTED_LIMIT) is kept so queries report the size limit.
  */
-export function portableAtlasFromScan(artifacts: ScanArtifacts, repositoryUrl?: string, maxBytes: number = PORTABLE_ATLAS_MAX_BYTES): PortableAtlas {
+export function portableAtlasFromScan(artifacts: ScanArtifacts, repositoryUrl?: string, maxBytes: number = PORTABLE_ATLAS_MAX_BYTES, generator?: PortableAtlasGenerator): PortableAtlas {
   const base: PortableAtlas = {
     format: 'okie-atlas', version: 1,
+    ...(generator ? { generator } : {}),
     repository: { commitSha: artifacts.pin.commitSha, treeHash: artifacts.pin.treeHash, ...(repositoryUrl ? { url: repositoryUrl } : {}) },
     snapshot: artifacts.snapshot, view: artifacts.view, story: artifacts.story, stories: artifacts.stories,
     analysis: artifacts.analysis,

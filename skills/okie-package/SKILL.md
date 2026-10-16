@@ -5,11 +5,13 @@ description: Package an existing Okie scan artifact with the static viewer for l
 
 # Package a portable atlas
 
-Use an existing `atlas.okie.json` and a matching built Okie viewer directory containing `index.html` and assets. In an Okie source checkout, `pnpm build:portable` produces `apps/web/dist-portable` with relative asset URLs; use its supported Node/pnpm/Rust prerequisites. An installed scan CLI alone does not include the viewer build.
+Use an existing `atlas.okie.json`. The `sourcefor-atlas` CLI (`@sourcefor/atlas`) bundles a matching prebuilt viewer, so `export` needs no viewer argument:
 
 ```sh
-okie-scan export --bundle <atlas.okie.json> --viewer <built-viewer> --out <empty-site-directory>
+sourcefor-atlas export --bundle <atlas.okie.json> --out <empty-site-directory>
 ```
+
+To use another viewer build, add `--viewer <built-viewer>`: a directory containing `index.html` and relative assets, such as `apps/web/dist-portable` from `pnpm build:portable` in an Okie source checkout. Running the CLI from source (not the package) has no bundled viewer and requires `--viewer`.
 
 The command validates the artifact and requires an empty output directory outside the viewer directory. Serve that folder over static HTTP, for example with `python3 -m http.server 4175 --directory <site-directory>`. Direct `file://` opening is not supported by this workflow.
 

@@ -16,7 +16,7 @@ Resolve the system ID from the system packet or the bundle's softwareSystem enti
 Apply documents to the existing artifact:
 
 ```sh
-okie-scan enrich --bundle <atlas.okie.json> --docs <docs-directory> --out <enriched.okie.json>
+sourcefor-atlas enrich --bundle <atlas.okie.json> --docs <docs-directory> --out <enriched.okie.json>
 ```
 
 This command performs no rescan and no LLM call. It preserves the pinned source and runs the existing enrichment gate. Inspect the `<output>.enrichment-report.json` sidecar for accepted and rejected scopes; rejected documents leave their scope deterministic. Correct evidence-backed errors where possible and report remaining rejections honestly. Keep the original artifact for comparison.

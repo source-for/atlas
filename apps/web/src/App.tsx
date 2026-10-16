@@ -110,7 +110,7 @@ import { buildArchitectureBrief, clampInspectorWidth, defaultInspectorWidth, ini
 import { inspectorHistoryRestorePlan, popInspectorHistory, pushInspectorHistory, type InspectorHistorySubject } from './inspector/inspectorHistory';
 import { createInspectorNeighborhoodRequest, inspectorNavigationIdentity } from './inspector/inspectorNeighborhoodRequest';
 import { readDemoQuery } from './renderer/query';
-import { loadStressFixture } from './renderer/stressFixture';
+import { loadStressFixture, stressPlaceholder } from './renderer/stressFixture';
 import type { AtlasRenderer, AtlasScene, Camera, PickResult, RendererDiagnostics, RendererLodState, SceneEntity, SceneRelation, SceneSourceExcerpt } from './renderer/types';
 import type { ProjectionOverride } from './renderer/types';
 import {
@@ -309,9 +309,9 @@ function summarizeIds(ids: readonly string[], maximumInlineIds = 48) {
 function stressLoadingScene(): AtlasScene {
   return {
     id: 'stress-loading',
-    title: 'Loading stress fixture…',
-    subtitle: 'deterministic · lazy renderer payload',
-    entities: [{ id: 'stress-loading', name: 'Preparing 5k scene', kind: 'system', responsibility: 'Loading the generated renderer stress fixture', x: -110, y: -65, width: 220, height: 130, confidence: 1 }],
+    title: stressPlaceholder.title,
+    subtitle: stressPlaceholder.subtitle,
+    entities: [{ id: 'stress-loading', name: stressPlaceholder.name, kind: 'system', responsibility: stressPlaceholder.responsibility, x: -110, y: -65, width: 220, height: 130, confidence: 1 }],
     relations: [],
     regions: [],
   };
