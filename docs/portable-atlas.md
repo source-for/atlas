@@ -12,7 +12,7 @@ Once the package is published, run it without installing:
 npx @sourcefor/atlas --source /path/to/repo --quick --out /path/to/scan
 ```
 
-`pnpm dlx @sourcefor/atlas …` works the same way. Until then, build the tarball from this checkout:
+`pnpm dlx @sourcefor/atlas …` works the same way. Until then, build the tarball from this checkout. `pnpm build:portable` compiles the WASM renderer, so first run `pnpm install` and have Rust 1.87 with the `wasm32-unknown-unknown` target and wasm-pack 0.13+ installed (see the root README):
 
 ```sh
 pnpm build:portable

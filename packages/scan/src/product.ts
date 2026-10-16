@@ -1,14 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-/**
- * Product names and the package root, resolved from this module's location. The
- * compiled CLI (`packages/scan/dist/cli.js`) and the packed bundle (`bin/cli.mjs`)
- * both sit one directory below their package root, which holds `product.json`,
- * `package.json` and, in the packed CLI only, the prebuilt `viewer/`.
- */
-const packageRoot = new URL("../", import.meta.url);
-
 export interface ProductNames {
   /** npm package name, e.g. `@sourcefor/atlas`. */
   packageName: string;
@@ -16,7 +8,18 @@ export interface ProductNames {
   bin: string;
 }
 
-export const product: ProductNames = JSON.parse(readFileSync(new URL("product.json", packageRoot), "utf8")) as ProductNames;
+/**
+ * Product names, compiled in so importing `@okie/scan` reads no file (the server deploys
+ * `dist/` only). `packages/scan/product.json` is the source; product.test.ts keeps this equal.
+ */
+export const product: ProductNames = { packageName: "@sourcefor/atlas", bin: "sourcefor-atlas" };
+
+/**
+ * The compiled CLI (`packages/scan/dist/cli.js`) and the packed bundle (`bin/cli.mjs`) both
+ * sit one directory below their package root, which holds `package.json` and, in the packed
+ * CLI only, the prebuilt `viewer/`. Read only when a CLI command needs them.
+ */
+const packageRoot = new URL("../", import.meta.url);
 
 /** The running package's version (written into artifacts as `generator.version`). */
 export function productVersion(): string {

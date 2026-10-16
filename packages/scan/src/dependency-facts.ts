@@ -1360,6 +1360,7 @@ export function buildDependencyFacts(input: DependencyFactsInput): DependencyFac
       // capped, skipped or unreadable) — complete within the stated capture rules, not beyond them.
       const status: DependencyCoverage["status"] = evidence === "symbolReferences" ? symbolStatus[ecosystem]
         : evidence === "declarations" ? "partial"
+          : ecosystem === "cargo" && noRustParser ? "unavailable"
           : total || unowned[ecosystem].imports || unreadable[ecosystem] || skipped[ecosystem].imports ? "partial" : "complete";
       coverage.push({ ecosystem, evidence, status, limitations: [...limitations[ecosystem][evidence]].map(sanitizeControlCharacters).sort(compare), dropped: total, droppedByDependency: dropped });
     }

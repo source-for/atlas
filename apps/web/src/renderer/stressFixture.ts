@@ -27,9 +27,17 @@ function objectName(object: ProtocolObject) {
   return object.id;
 }
 
+/** The portable viewer build (`vite build --mode portable`) omits the 8 MB fixture: this folds to false there, so its chunk is never emitted. */
+const stressFixtureIncluded = import.meta.env.MODE !== 'portable';
+const STRESS_EXCLUDED_MESSAGE = 'The renderer stress fixture is not included in the portable viewer.';
+
+/** Copy for the stand-in scene shown while the fixture loads, or in its place where the build omits it. */
+export const stressPlaceholder = stressFixtureIncluded
+  ? { title: 'Loading stress fixture…', subtitle: 'deterministic · lazy renderer payload', name: 'Preparing 5k scene', responsibility: 'Loading the generated renderer stress fixture' }
+  : { title: 'Stress fixture not included', subtitle: 'portable viewer · open ?fixture=stress in the dev app', name: 'Not in this viewer', responsibility: STRESS_EXCLUDED_MESSAGE };
+
 export async function loadStressFixture(): Promise<AtlasScene> {
-  // The portable viewer build (`vite build --mode portable`) folds this to a throw, so the 8 MB fixture chunk is never emitted.
-  if (import.meta.env.MODE === 'portable') throw new Error('The renderer stress fixture is not included in the portable viewer.');
+  if (!stressFixtureIncluded) throw new Error(STRESS_EXCLUDED_MESSAGE);
   const module = await import('../../../../fixtures/renderer/stress-5000.json');
   const snapshot: unknown = module.default;
   if (!isProtocolSnapshot(snapshot)) throw new Error('The generated stress fixture is not a valid renderer scene snapshot.');

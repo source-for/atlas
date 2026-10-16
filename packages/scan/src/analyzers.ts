@@ -34,18 +34,25 @@ export function analyzerPlatform(): string {
   return `${process.platform}-${process.arch} (node abi ${process.versions.modules})`;
 }
 
-function loadTypeScript(): typeof TypeScript {
-  return typescriptModule ??= requireModule("typescript") as typeof TypeScript;
-}
-
 /**
- * The TypeScript compiler API, loaded on first property access. Modules use it as
- * they used `import ts from "typescript"`; type positions use the type-only import.
+ * The TypeScript compiler API. Modules use it as they used `import ts from "typescript"`;
+ * type positions use the type-only import. Until first use this binding is a stand-in that
+ * loads the compiler; loading then reassigns the binding, so every importer sees the real
+ * module and later calls pay no indirection (a Proxy on every `ts.*` access cost 5-15%
+ * scan CPU).
  */
-export const ts: typeof TypeScript = new Proxy({} as typeof TypeScript, {
+export let ts: typeof TypeScript = new Proxy({} as typeof TypeScript, {
   get: (_target, property) => Reflect.get(loadTypeScript(), property),
   has: (_target, property) => Reflect.has(loadTypeScript(), property),
 });
+
+function loadTypeScript(): typeof TypeScript {
+  if (!typescriptModule) {
+    typescriptModule = requireModule("typescript") as typeof TypeScript;
+    ts = typescriptModule;
+  }
+  return typescriptModule;
+}
 
 function loadRustGrammar(): NonNullable<typeof rustGrammar> {
   if (rustGrammar) return rustGrammar;

@@ -97,8 +97,12 @@ test('without a tree-sitter prebuild: help, TypeScript-only scans and export wor
   const mixed = commitRepository('mixed', {
     'package.json': '{ "name": "mixed", "version": "1.0.0" }\n',
     'src/index.ts': 'export const answer = 42;\n',
-    'Cargo.toml': '[package]\nname = "mixed"\nversion = "0.1.0"\nedition = "2021"\n',
-    'src/lib.rs': 'pub fn hello() -> u32 { 1 }\n',
+    'Cargo.toml': '[package]\nname = "mixed"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\nserde = "1"\n',
+    'src/lib.rs': 'use serde::Serialize;\npub fn hello() -> u32 { 1 }\n',
+  });
+  const cargoImports = atlas => ({
+    status: atlas.dependencies.coverage.find(row => row.ecosystem === 'cargo' && row.evidence === 'imports')?.status,
+    imports: atlas.dependencies.imports.filter(row => row.ecosystem === 'cargo').map(row => row.dependency),
   });
   without(prebuild, () => {
     const help = run(['--help']);
@@ -117,8 +121,9 @@ test('without a tree-sitter prebuild: help, TypeScript-only scans and export wor
     const warnings = mixedScan.stderr.trim().split('\n');
     assert.equal(warnings.length, 1, mixedScan.stderr);
     assert.match(warnings[0], /warning: Rust is not mapped\. Rust parser unavailable: tree-sitter has no usable native build for /);
-    const rust = JSON.parse(readFileSync(join(work, 'out-mixed/atlas.okie.json'), 'utf8')).analysis.adapters.find(adapter => adapter.language === 'rust');
-    assert.equal(rust?.coverage, 'unavailable');
+    const mixedAtlas = JSON.parse(readFileSync(join(work, 'out-mixed/atlas.okie.json'), 'utf8'));
+    assert.equal(mixedAtlas.analysis.adapters.find(adapter => adapter.language === 'rust')?.coverage, 'unavailable');
+    assert.deepEqual(cargoImports(mixedAtlas), { status: 'unavailable', imports: [] }, 'unread Rust imports are not reported complete');
 
     const exported = run(['export', '--bundle', join(work, 'out-mixed/atlas.okie.json'), '--out', join(work, 'site')]);
     assert.equal(exported.status, 0, exported.stderr);
@@ -128,8 +133,9 @@ test('without a tree-sitter prebuild: help, TypeScript-only scans and export wor
   const control = run(['--source', mixed, '--quick', '--out', join(work, 'out-mixed-control')]);
   assert.equal(control.status, 0, control.stderr);
   assert.equal(control.stderr, '');
-  const rust = JSON.parse(readFileSync(join(work, 'out-mixed-control/atlas.okie.json'), 'utf8')).analysis.adapters.find(adapter => adapter.language === 'rust');
-  assert.equal(rust?.coverage, 'syntax');
+  const controlAtlas = JSON.parse(readFileSync(join(work, 'out-mixed-control/atlas.okie.json'), 'utf8'));
+  assert.equal(controlAtlas.analysis.adapters.find(adapter => adapter.language === 'rust')?.coverage, 'syntax');
+  assert.deepEqual(cargoImports(controlAtlas), { status: 'complete', imports: ['serde'] });
 });
 
 test('help needs no language tooling at all', () => {
