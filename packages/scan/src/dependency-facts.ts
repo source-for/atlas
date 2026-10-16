@@ -1,7 +1,7 @@
 import { builtinModules } from "node:module";
-import ts from "typescript";
-import Parser from "tree-sitter";
-import Rust from "tree-sitter-rust";
+import type TS from "typescript";
+import type Parser from "tree-sitter";
+import { rustParser, rustParserUnavailable, ts } from "./analyzers.js";
 import {
   CONTROL_CHARACTERS, DEPENDENCY_FACTS_OMITTED_LIMIT, portableSourcePath, sanitizeControlCharacters, validateDependencyFacts,
   type DependencyCoverage, type DependencyDeclaration, type DependencyEcosystem, type DependencyEvidenceKind, type DependencyFacts,
@@ -739,10 +739,10 @@ export function typeScriptImports(path: string, text: string): CapturedImport[] 
   const source = parseSource(path, text);
   const found: CapturedImport[] = [];
   const lineOf = (position: number): number => source.getLineAndCharacterOfPosition(position).line + 1;
-  const push = (node: ts.Node, specifier: string, kind: DependencyImportKind, typeOnly: boolean): void => {
+  const push = (node: TS.Node, specifier: string, kind: DependencyImportKind, typeOnly: boolean): void => {
     found.push({ specifier, startLine: lineOf(node.getStart(source)), endLine: lineOf(node.getEnd()), kind, typeOnly });
   };
-  const visit = (node: ts.Node): void => {
+  const visit = (node: TS.Node): void => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
       push(node, node.moduleSpecifier.text, "static", !!node.importClause?.isTypeOnly);
     } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
@@ -760,18 +760,10 @@ export function typeScriptImports(path: string, text: string): CapturedImport[] 
   return found;
 }
 
-let rustParser: Parser | undefined;
-function parseRust(text: string): Parser.Tree {
-  if (!rustParser) {
-    rustParser = new Parser();
-    rustParser.setLanguage(Rust as Parser.Language);
-  }
-  return rustParser.parse(text);
-}
-
-/** Root path segments of `use` declarations and `extern crate` items (crate/self/super excluded; `r#` stripped). */
+/** Root path segments of `use` declarations and `extern crate` items (crate/self/super excluded; `r#` stripped). Empty when no Rust parser loads. */
 export function rustImportRoots(text: string): Array<{ root: string; specifier: string; startLine: number; endLine: number; kind: "use" | "externCrate" }> {
-  const tree = parseRust(text);
+  if (rustParserUnavailable()) return [];
+  const tree = rustParser().parse(text);
   const result: Array<{ root: string; specifier: string; startLine: number; endLine: number; kind: "use" | "externCrate" }> = [];
   const roots = (node: Parser.SyntaxNode | null): string[] => {
     if (!node) return [];
@@ -1296,6 +1288,8 @@ export function buildDependencyFacts(input: DependencyFactsInput): DependencyFac
   if (aliasSkipped) limitations.npm.imports.add(`${aliasSkipped} import(s) matched a tsconfig paths alias and were skipped as local.`);
   limitations.cargo.imports.add("Only `use` declarations and `extern crate` whose root is a crate declared by the owning Cargo.toml; fully qualified paths without `use` appear only as symbol references (full scan).");
   limitations.cargo.imports.add("A crate whose library name differs from its package name (e.g. md-5 → md5, `[lib] name`), and a later `use` through an `extern crate x as y` alias, are not matched; raw identifiers (`r#name`) are normalized.");
+  const noRustParser = ecosystems.has("cargo") ? rustParserUnavailable() : undefined;
+  if (noRustParser) limitations.cargo.imports.add(sanitizeControlCharacters(`No Rust imports were read. ${noRustParser}`));
   for (const ecosystem of ECOSYSTEM_LIST) {
     if (unowned[ecosystem].imports) limitations[ecosystem].imports.add(`${unowned[ecosystem].imports} file(s) with dependency evidence have no owning ${ecosystem === "npm" ? "package.json" : "Cargo.toml [package]"} and were skipped.`);
     if (unowned[ecosystem].symbolReferences) limitations[ecosystem].symbolReferences.add(`${unowned[ecosystem].symbolReferences} reference(s) in files without an owning ${ecosystem === "npm" ? "package.json" : "Cargo.toml [package]"} were skipped.`);

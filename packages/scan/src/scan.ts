@@ -46,11 +46,12 @@ import {
   type GithubSourceRef,
 } from "./github.js";
 import { slug, typedId } from "./ids.js";
-import { serializePortableAtlas, type PortableAtlas } from '@okie/architecture';
+import { serializePortableAtlas, type PortableAtlas, type PortableAtlasGenerator } from '@okie/architecture';
 import { portableAtlasFromScan } from './portable.js';
 import type { LanguageAnalysis } from './language-analysis.js';
 import { analyzeTypeScript } from './analyze-typescript.js';
 import { analyzeRust } from './analyze-rust.js';
+import { rustParserUnavailable } from './analyzers.js';
 import { buildDependencyFacts, collectDependencyInputs } from './dependency-facts.js';
 
 export interface ScanOptions {
@@ -368,7 +369,7 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
     analysis: {
       mode: params.analysisMode ?? 'quick',
       adapters: params.languageAnalysis?.coverage.map(({ indexedFiles: _files, ...coverage }) => coverage) ??
-        [...new Set(discovery.sourceFiles.map(path => path.endsWith('.rs') ? 'rust' : 'typescript/javascript'))].map(language => ({ language, tool: language === 'rust' ? 'tree-sitter-rust' : 'typescript', version: 'syntax-v1', coverage: 'syntax' as const, limitations: ['Quick scan: project-wide semantic resolution was not requested.'] })),
+        [...new Set(discovery.sourceFiles.map(path => path.endsWith('.rs') ? 'rust' : 'typescript/javascript'))].map(quickAdapterCoverage),
       ...(hasMembershipFacts ? { membership } : {}),
       ...(scanLimitations.length > 0 ? { limitations: scanLimitations } : {}),
     },
@@ -386,6 +387,13 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
     ...(enrichmentReport ? { enrichmentReport } : {}),
     ...(componentMapReport ? { componentMapReport } : {}),
   };
+}
+
+/** A quick scan's per-language row: syntax-only, or unavailable when the Rust parser does not load here. */
+function quickAdapterCoverage(language: string): ScanArtifacts['analysis']['adapters'][number] {
+  const noParser = language === 'rust' ? rustParserUnavailable() : undefined;
+  if (noParser) return { language, tool: 'tree-sitter-rust', version: 'unavailable', coverage: 'unavailable', limitations: [noParser] };
+  return { language, tool: language === 'rust' ? 'tree-sitter-rust' : 'typescript', version: 'syntax-v1', coverage: 'syntax', limitations: ['Quick scan: project-wide semantic resolution was not requested.'] };
 }
 
 /**
@@ -629,9 +637,9 @@ function loadLcovSidecar(
 }
 
 /** Every file a scan writes, by output name: the CLI writes exactly this map (and tests compare it). */
-export function scanOutputFiles(artifacts: ScanArtifacts, repositoryUrl?: string): Record<string, string> {
+export function scanOutputFiles(artifacts: ScanArtifacts, repositoryUrl?: string, generator?: PortableAtlasGenerator): Record<string, string> {
   return {
-    "atlas.okie.json": serializePortableAtlas(portableAtlasFromScan(artifacts, repositoryUrl)),
+    "atlas.okie.json": serializePortableAtlas(portableAtlasFromScan(artifacts, repositoryUrl, undefined, generator)),
     "extraction.json": stableJson(artifacts.extraction),
     "snapshot.json": stableJson(artifacts.snapshot),
     "view.json": stableJson(artifacts.view),

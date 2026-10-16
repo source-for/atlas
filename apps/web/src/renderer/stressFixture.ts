@@ -28,6 +28,8 @@ function objectName(object: ProtocolObject) {
 }
 
 export async function loadStressFixture(): Promise<AtlasScene> {
+  // The portable viewer build (`vite build --mode portable`) folds this to a throw, so the 8 MB fixture chunk is never emitted.
+  if (import.meta.env.MODE === 'portable') throw new Error('The renderer stress fixture is not included in the portable viewer.');
   const module = await import('../../../../fixtures/renderer/stress-5000.json');
   const snapshot: unknown = module.default;
   if (!isProtocolSnapshot(snapshot)) throw new Error('The generated stress fixture is not a valid renderer scene snapshot.');

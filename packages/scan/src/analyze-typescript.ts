@@ -1,4 +1,5 @@
-import ts from "typescript";
+import type TS from "typescript";
+import { ts } from "./analyzers.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -96,7 +97,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
   };
   const allowed = new Set((discoveredFiles ?? paths.map(relativePath)).filter(path => /\.[cm]?[jt]sx?$/.test(path)).map(path => resolve(root, path)));
   const relativize = compilerMessageRelativizer(root, { ...(checkoutRoot ? { checkoutRoot } : {}), workRoot: scanWorkDir(), ...(installationRoot ? { installationRoot } : {}), home: homedir() });
-  const message = (diagnostic: ts.Diagnostic | ts.DiagnosticMessageChain): string => relativize(ts.flattenDiagnosticMessageText(diagnostic.messageText, " "));
+  const message = (diagnostic: TS.Diagnostic | TS.DiagnosticMessageChain): string => relativize(ts.flattenDiagnosticMessageText(diagnostic.messageText, " "));
   const result: LanguageAnalysis = { schemaVersion: 1, definitions: [], references: [], modules: [], coverage: [] };
   const limitations = new Set<string>();
   const indexed = new Set<string>();
@@ -105,7 +106,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
   const modules = new Map<string, LanguageAnalysis["modules"][number]>();
   const externalReferences = new Map<string, AnalysisExternalReference>();
   const analyzer = `typescript@${ts.version}`;
-  const projects = new Map<string, ts.ParsedCommandLine>();
+  const projects = new Map<string, TS.ParsedCommandLine>();
   const loadConfig = (path: string): void => {
     if (projects.has(path)) return;
     const read = ts.readConfigFile(path, ts.sys.readFile);
@@ -158,7 +159,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
   }
   const dependencies = dependencyContext(root, installationRoot, [...projects.values()].map(project => dirname(ts.getDefaultLibFilePath(project.options))));
   if (dependencies.limitation) limitations.add(dependencies.limitation);
-  const location = (node: ts.Node): AnalysisLocation => {
+  const location = (node: TS.Node): AnalysisLocation => {
     const source = node.getSourceFile();
     const start = node.getStart(source);
     return { path: relativePath(source.fileName), startLine: source.getLineAndCharacterOfPosition(start).line + 1,
@@ -181,7 +182,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
     host.getSourceFile = (path, languageVersion, onError, shouldCreateNewSourceFile) =>
       originalGetSourceFile(virtualPath(path), languageVersion, onError, shouldCreateNewSourceFile);
     // Permit source redirects through project references without requiring emitted .d.ts files.
-    (host as ts.CompilerHost & { useSourceOfProjectReferenceRedirect?: () => boolean }).useSourceOfProjectReferenceRedirect = () => true;
+    (host as TS.CompilerHost & { useSourceOfProjectReferenceRedirect?: () => boolean }).useSourceOfProjectReferenceRedirect = () => true;
     const program = ts.createProgram({ rootNames: project.fileNames, options: project.options, host,
       ...(project.projectReferences ? { projectReferences: project.projectReferences } : {}) });
     const checker = program.getTypeChecker();
@@ -190,7 +191,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
       const prefix = diagnostic.file && inside(diagnostic.file.fileName) ? relativePath(diagnostic.file.fileName) : config === "<inferred>" ? config : relativePath(config);
       limitations.add(`${prefix}: TS${diagnostic.code}: ${message(diagnostic)}`);
     }
-    const targetDefinition = (symbol: ts.Symbol | undefined): AnalysisDefinition | undefined => {
+    const targetDefinition = (symbol: TS.Symbol | undefined): AnalysisDefinition | undefined => {
       if (!symbol) return undefined;
       if (symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
       const candidates = (symbol.declarations ?? []).filter(declaration => allowed.has(resolve(declaration.getSourceFile().fileName)));
@@ -205,7 +206,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
     };
     // Third-party symbols: every declaration in ONE node_modules package (never the
     // compiler's default lib, never a workspace package, never Node's own @types/node).
-    const externalPackage = (symbol: ts.Symbol): { package: string; via?: string } | undefined => {
+    const externalPackage = (symbol: TS.Symbol): { package: string; via?: string } | undefined => {
       // Namespace/module qualifiers (`ts` in `ts.Node`) are not references; their members are.
       if (symbol.flags & (ts.SymbolFlags.ValueModule | ts.SymbolFlags.NamespaceModule)) return undefined;
       const declarations = symbol.declarations ?? [];
@@ -223,13 +224,13 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
       return typed ? { package: typed, via: owner } : { package: owner };
     };
     // `<div className=…>` resolves into React's JSX typings; that is markup, not API use.
-    const jsxTypingOnly = (node: ts.Node): boolean => {
+    const jsxTypingOnly = (node: TS.Node): boolean => {
       const parent = node.parent;
       if (ts.isJsxAttribute(parent) && parent.name === node) return true;
       return (ts.isJsxOpeningElement(parent) || ts.isJsxSelfClosingElement(parent) || ts.isJsxClosingElement(parent))
         && parent.tagName === node && ts.isIdentifier(node) && /^[a-z]/.test(node.text);
     };
-    const displayName = (symbol: ts.Symbol): string => {
+    const displayName = (symbol: TS.Symbol): string => {
       // Anonymous object/type literals print as `__type` / `__object`; drop those segments.
       const qualified = checker.getFullyQualifiedName(symbol).replace(/^"[^"]*"\./, "").split(".").filter(part => part !== "__type" && part !== "__object").join(".");
       return qualified && !/["\\/]/.test(qualified) ? qualified : symbol.getName();
@@ -237,7 +238,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
     for (const source of program.getSourceFiles()) {
       if (!allowed.has(resolve(source.fileName))) continue;
       indexed.add(relativePath(source.fileName));
-      const visit = (node: ts.Node): void => {
+      const visit = (node: TS.Node): void => {
         if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
           const moduleSymbol = checker.getSymbolAtLocation(node.moduleSpecifier);
           const target = moduleSymbol?.declarations?.find(ts.isSourceFile);
@@ -248,7 +249,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
         }
         if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) {
           const parent = node.parent;
-          const named = parent as ts.Node & { name?: ts.Node };
+          const named = parent as TS.Node & { name?: TS.Node };
           const declarationName = named.name === node && !ts.isPropertyAccessExpression(parent)
             && !ts.isShorthandPropertyAssignment(parent) && !ts.isQualifiedName(parent);
           const importExport = ts.isImportSpecifier(parent) || ts.isImportClause(parent) || ts.isNamespaceImport(parent) || ts.isExportSpecifier(parent);
@@ -257,7 +258,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
               ? checker.getShorthandAssignmentValueSymbol(parent) : checker.getSymbolAtLocation(node);
             const aliasSymbol = symbol && symbol.flags & ts.SymbolFlags.Alias ? symbol : undefined;
             if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
-            let expression: ts.Node = node;
+            let expression: TS.Node = node;
             if (ts.isPropertyAccessExpression(parent) && parent.name === node) expression = parent;
             while (ts.isParenthesizedExpression(expression.parent) || ts.isNonNullExpression(expression.parent)
               || ts.isAsExpression(expression.parent) || ts.isSatisfiesExpression(expression.parent)) expression = expression.parent;

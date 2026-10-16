@@ -85,3 +85,79 @@ jobs:
 
       - name: Test Rust workspace
         run: cargo test --workspace
+
+  # CLA-604: the CLI as an npm tarball (@sourcefor/atlas with the bundled viewer). Dry runs only: no npm token,
+  # no login, never a real publish or release. The tarballs are kept as workflow artifacts.
+  package:
+    name: CLI package (dry run)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.87.0
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.13.1
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the portable viewer
+        run: pnpm build:portable
+
+      - name: Package the CLI
+        run: pnpm package:cli
+
+      - name: Pack (dry run) within the 4 MB budget
+        working-directory: dist/okie-cli
+        run: |
+          npm pack --dry-run --json > "$RUNNER_TEMP/pack.json"
+          node -e '
+            const [pack] = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            console.log(`${pack.name}@${pack.version}: ${pack.size} B packed, ${pack.unpackedSize} B unpacked, ${pack.entryCount} files`);
+            if (pack.size > 4_000_000) { console.error(`packed size ${pack.size} B exceeds the 4 MB budget`); process.exit(1); }
+          ' "$RUNNER_TEMP/pack.json"
+
+      - name: Publish (dry run, unauthenticated)
+        working-directory: dist/okie-cli
+        run: npm publish --dry-run --access public
+
+      - name: Test the packed CLI
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: pnpm test:package
+
+      - name: Collect tarballs
+        run: |
+          mkdir -p "$RUNNER_TEMP/package"
+          (cd dist/okie-cli && npm pack --pack-destination "$RUNNER_TEMP/package")
+          tar -czf "$RUNNER_TEMP/package/viewer-release.tgz" -C apps/web dist-portable
+
+      - name: Upload tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sourcefor-atlas-package
+          path: ${{ runner.temp }}/package
+          if-no-files-found: error
+          retention-days: 14

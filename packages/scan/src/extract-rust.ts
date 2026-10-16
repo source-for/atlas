@@ -1,5 +1,5 @@
-import Parser from "tree-sitter";
-import Rust from "tree-sitter-rust";
+import type Parser from "tree-sitter";
+import { rustParser, rustParserUnavailable } from "./analyzers.js";
 
 /**
  * Top-level Rust outline item (and impl methods as `Type::method`).
@@ -25,16 +25,6 @@ const TOP_LEVEL_TYPES = new Set([
   "union_item",
   "macro_definition",
 ]);
-
-let parser: Parser | undefined;
-
-function rustParser(): Parser {
-  if (!parser) {
-    parser = new Parser();
-    parser.setLanguage(Rust as Parser.Language);
-  }
-  return parser;
-}
 
 function isSkippedAttribute(text: string): boolean {
   const compact = text.replace(/\s+/g, "");
@@ -88,8 +78,9 @@ function collectOutline(
   }
 }
 
-/** Deterministic outline of one `.rs` file. Test modules and `#[test]` items are omitted. */
+/** Deterministic outline of one `.rs` file. Test modules and `#[test]` items are omitted. Empty when no Rust parser loads. */
 export function rustTopLevelItems(text: string): RustOutlineItem[] {
+  if (rustParserUnavailable()) return [];
   const tree = rustParser().parse(text);
   const items: RustOutlineItem[] = [];
   collectOutline(tree.rootNode.namedChildren, undefined, items);
