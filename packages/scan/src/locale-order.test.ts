@@ -36,7 +36,9 @@ interface LocaleOrderUse {
 
 /**
  * Every `localeCompare`, `Intl.Collator`, `toLocaleLowerCase`/`toLocaleUpperCase` use in a
- * TypeScript source — property accesses and string-keyed element accesses, never comments.
+ * TypeScript source — property accesses, string-keyed element accesses and destructured
+ * bindings (`const { localeCompare: compare } = String.prototype`, `const { Collator } = Intl`,
+ * `const { Intl: { Collator } } = globalThis`), never comments.
  */
 function localeOrderUses(file: string, text: string): LocaleOrderUse[] {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
@@ -47,11 +49,29 @@ function localeOrderUses(file: string, text: string): LocaleOrderUse[] {
     uses.push({ file, lineNumber, line: lines[lineNumber - 1]!.trim(), call });
   };
   const flagged = new Set(["localeCompare", "toLocaleLowerCase", "toLocaleUpperCase", "Collator"]);
+  /** The property a binding element reads: `{ key: alias }`, `{ 'key': alias }`, `{ ['key']: alias }` or `{ key }`. */
+  const bindingKey = (element: ts.BindingElement): string | undefined => {
+    const key = element.propertyName;
+    if (key === undefined) return ts.isIdentifier(element.name) ? element.name.text : undefined;
+    if (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) return key.text;
+    if (ts.isComputedPropertyName(key) && ts.isStringLiteralLike(key.expression)) return key.expression.text;
+    return undefined;
+  };
+  /** Whether an object pattern destructures `Intl`: `= Intl`, or nested under an `Intl` key. */
+  const destructuresIntl = (pattern: ts.ObjectBindingPattern): boolean => {
+    const owner = pattern.parent;
+    if (ts.isBindingElement(owner)) return bindingKey(owner) === "Intl";
+    const initializer = (ts.isVariableDeclaration(owner) || ts.isParameter(owner)) ? owner.initializer : undefined;
+    return initializer !== undefined && ts.isIdentifier(initializer) && initializer.text === "Intl";
+  };
   const visit = (node: ts.Node): void => {
     if (ts.isPropertyAccessExpression(node) && flagged.has(node.name.text)) {
       if (node.name.text !== "Collator" || (ts.isIdentifier(node.expression) && node.expression.text === "Intl")) record(node, node.name.text);
     } else if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) && flagged.has(node.argumentExpression.text)) {
       record(node, node.argumentExpression.text);
+    } else if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
+      const key = bindingKey(node);
+      if (key !== undefined && flagged.has(key) && (key !== "Collator" || destructuresIntl(node.parent))) record(node, key);
     }
     ts.forEachChild(node, visit);
   };
@@ -101,6 +121,22 @@ test("CLA-589: the locale-order lint sees calls, not comments, and honours allow
   const result = unallowed(uses, [allowance, stale]);
   assert.deepEqual(result.offending.map(use => use.lineNumber), [2, 4]);
   assert.deepEqual(result.stale, [stale]);
+});
+
+test("CLA-589: the locale-order lint sees destructured locale APIs, aliases and nested Intl patterns", () => {
+  const text = [
+    "const { Collator } = Intl;",
+    "const { Collator: C } = Intl;",
+    "const { localeCompare } = String.prototype;",
+    "const { localeCompare: compare } = String.prototype;",
+    "const { 'toLocaleLowerCase': lower } = String.prototype;",
+    "const { Intl: { Collator: Nested } } = globalThis;",
+    "const { Collator: notIntl } = shapes;",
+    "const { localeName } = options;",
+    "function sortBy({ ['localeCompare']: compare }: string) {}",
+  ].join("\n");
+  assert.deepEqual(localeOrderUses("x.ts", text).map(use => [use.lineNumber, use.call]),
+    [[1, "Collator"], [2, "Collator"], [3, "localeCompare"], [4, "localeCompare"], [5, "toLocaleLowerCase"], [6, "Collator"], [9, "localeCompare"]]);
 });
 
 /**
