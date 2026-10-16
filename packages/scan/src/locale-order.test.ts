@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -10,7 +10,9 @@ import ts from "typescript";
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
 /** Packages whose ordering decides scan IDs, truncation, layout or output order (CLA-589). */
-const SCANNED_PACKAGES = ["packages/scan/src", "packages/architecture/src", "packages/scene-compiler/src"];
+const SCANNED_PACKAGES = ["scan", "architecture", "scene-compiler"]
+  .flatMap(name => [`packages/${name}/src`, `packages/${name}/scripts`])
+  .filter(directory => existsSync(join(repoRoot, directory)));
 
 interface LocaleOrderAllowance {
   /** Repo-relative path. */
@@ -35,10 +37,15 @@ interface LocaleOrderUse {
 }
 
 /**
- * Every `localeCompare`, `Intl.Collator`, `toLocaleLowerCase`/`toLocaleUpperCase` use in a
- * TypeScript source — property accesses, string-keyed element accesses and destructured
- * bindings (`const { localeCompare: compare } = String.prototype`, `const { Collator } = Intl`,
- * `const { Intl: { Collator } } = globalThis`), never comments.
+ * Every locale-dependent text API in a TypeScript or JavaScript source: `localeCompare`,
+ * `toLocaleLowerCase`/`toLocaleUpperCase`, `toLocaleString`/`toLocaleDateString`/
+ * `toLocaleTimeString`, and the `Intl` constructors (`Collator`, `NumberFormat`, …). It sees
+ * property accesses, string-keyed element accesses, destructured bindings and destructuring
+ * assignments (`({ localeCompare: compare } = String.prototype)`), with `Intl` reached as
+ * `Intl`, `(Intl)`, `globalThis.Intl`, `window['Intl']` or a nested `{ Intl: { Collator } }`
+ * pattern — never comments. An `Intl` constructor called with a string-literal first argument
+ * (`new Intl.Segmenter('en', …)`) names its locale, so it does not depend on the machine and
+ * is not reported.
  */
 function localeOrderUses(file: string, text: string): LocaleOrderUse[] {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
@@ -48,30 +55,88 @@ function localeOrderUses(file: string, text: string): LocaleOrderUse[] {
     const lineNumber = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
     uses.push({ file, lineNumber, line: lines[lineNumber - 1]!.trim(), call });
   };
-  const flagged = new Set(["localeCompare", "toLocaleLowerCase", "toLocaleUpperCase", "Collator"]);
-  /** The property a binding element reads: `{ key: alias }`, `{ 'key': alias }`, `{ ['key']: alias }` or `{ key }`. */
-  const bindingKey = (element: ts.BindingElement): string | undefined => {
-    const key = element.propertyName;
-    if (key === undefined) return ts.isIdentifier(element.name) ? element.name.text : undefined;
+  const methods = new Set(["localeCompare", "toLocaleLowerCase", "toLocaleUpperCase", "toLocaleString", "toLocaleDateString", "toLocaleTimeString"]);
+  const constructors = new Set(["Collator", "NumberFormat", "DateTimeFormat", "ListFormat", "PluralRules", "RelativeTimeFormat", "DisplayNames", "Segmenter"]);
+  /** The text of a property key: `key`, `'key'` or `['key']`. */
+  const keyText = (key: ts.PropertyName | undefined): string | undefined => {
+    if (key === undefined) return undefined;
     if (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) return key.text;
     if (ts.isComputedPropertyName(key) && ts.isStringLiteralLike(key.expression)) return key.expression.text;
     return undefined;
   };
-  /** Whether an object pattern destructures `Intl`: `= Intl`, or nested under an `Intl` key. */
-  const destructuresIntl = (pattern: ts.ObjectBindingPattern): boolean => {
+  /** `ts.skipParentheses`, which the public typings do not export. */
+  const skipParentheses = (expression: ts.Expression): ts.Expression =>
+    ts.isParenthesizedExpression(expression) ? skipParentheses(expression.expression) : expression;
+  /** Whether an expression is `Intl`: `Intl`, `(Intl)`, `globalThis.Intl` or `window['Intl']`. */
+  const isIntl = (expression: ts.Expression): boolean => {
+    const bare = skipParentheses(expression);
+    if (ts.isIdentifier(bare)) return bare.text === "Intl";
+    if (ts.isPropertyAccessExpression(bare)) return bare.name.text === "Intl";
+    return ts.isElementAccessExpression(bare) && ts.isStringLiteralLike(bare.argumentExpression) && bare.argumentExpression.text === "Intl";
+  };
+  /** Whether a read of `name` from an object whose owner `isOwnerIntl` reports is locale-dependent. */
+  const flagged = (name: string | undefined, isOwnerIntl: () => boolean): name is string =>
+    name !== undefined && (methods.has(name) || (constructors.has(name) && isOwnerIntl()));
+  /** Whether `Intl.X` is the callee of a call or `new` whose first argument is a string literal. */
+  const namesLocale = (access: ts.Expression): boolean => {
+    let callee: ts.Node = access;
+    while (ts.isParenthesizedExpression(callee.parent)) callee = callee.parent;
+    const call = callee.parent;
+    if (!(ts.isCallExpression(call) || ts.isNewExpression(call)) || call.expression !== callee) return false;
+    const first = call.arguments?.[0];
+    return first !== undefined && ts.isStringLiteralLike(first);
+  };
+  /** Whether an object binding pattern destructures `Intl`: `= Intl`, or nested under an `Intl` key. */
+  const bindingFromIntl = (pattern: ts.ObjectBindingPattern): boolean => {
     const owner = pattern.parent;
-    if (ts.isBindingElement(owner)) return bindingKey(owner) === "Intl";
+    if (ts.isBindingElement(owner)) return (keyText(owner.propertyName) ?? (ts.isIdentifier(owner.name) ? owner.name.text : undefined)) === "Intl";
     const initializer = (ts.isVariableDeclaration(owner) || ts.isParameter(owner)) ? owner.initializer : undefined;
-    return initializer !== undefined && ts.isIdentifier(initializer) && initializer.text === "Intl";
+    return initializer !== undefined && isIntl(initializer);
+  };
+  /** The node an assignment pattern sits in, past parentheses. */
+  const container = (node: ts.Node): ts.Node => {
+    let parent = node.parent;
+    while (ts.isParenthesizedExpression(parent)) parent = parent.parent;
+    return parent;
+  };
+  /** The value a destructuring-assignment pattern reads from, if `node` is one: `({ … } = value)`, nested in arrays, objects and spreads. */
+  const assignmentSource = (node: ts.Node): ts.Expression | "nested" | undefined => {
+    const parent = container(node);
+    if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken && skipParentheses(parent.left) === node) {
+      // Inside an enclosing pattern, `{ b } = fallback` is a default and reads from the enclosing key.
+      return assignmentSource(parent) === undefined ? parent.right : "nested";
+    }
+    if ((ts.isForOfStatement(parent) || ts.isForInStatement(parent)) && parent.initializer === node) return "nested";
+    if (ts.isPropertyAssignment(parent) && parent.initializer === node) return assignmentSource(parent.parent) === undefined ? undefined : "nested";
+    if (ts.isArrayLiteralExpression(parent) || ts.isSpreadElement(parent) || ts.isSpreadAssignment(parent)) {
+      const outer = ts.isArrayLiteralExpression(parent) ? parent : parent.parent;
+      return assignmentSource(outer) === undefined ? undefined : "nested";
+    }
+    return undefined;
+  };
+  /** Whether an object-literal assignment pattern destructures `Intl`: `= Intl`, or nested under an `Intl` key. */
+  const assignmentFromIntl = (pattern: ts.ObjectLiteralExpression): boolean => {
+    let inner: ts.Node = pattern;
+    if (ts.isBinaryExpression(container(pattern))) inner = container(pattern);
+    const owner = container(inner);
+    if (ts.isPropertyAssignment(owner)) return keyText(owner.name) === "Intl";
+    const value = assignmentSource(pattern);
+    return value !== undefined && value !== "nested" && isIntl(value);
   };
   const visit = (node: ts.Node): void => {
-    if (ts.isPropertyAccessExpression(node) && flagged.has(node.name.text)) {
-      if (node.name.text !== "Collator" || (ts.isIdentifier(node.expression) && node.expression.text === "Intl")) record(node, node.name.text);
-    } else if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) && flagged.has(node.argumentExpression.text)) {
-      record(node, node.argumentExpression.text);
+    if (ts.isPropertyAccessExpression(node)) {
+      if (flagged(node.name.text, () => isIntl(node.expression)) && !(constructors.has(node.name.text) && namesLocale(node))) record(node, node.name.text);
+    } else if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)) {
+      const name = node.argumentExpression.text;
+      if (flagged(name, () => isIntl(node.expression)) && !(constructors.has(name) && namesLocale(node))) record(node, name);
     } else if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
-      const key = bindingKey(node);
-      if (key !== undefined && flagged.has(key) && (key !== "Collator" || destructuresIntl(node.parent))) record(node, key);
+      const pattern = node.parent;
+      const key = keyText(node.propertyName) ?? (ts.isIdentifier(node.name) ? node.name.text : undefined);
+      if (flagged(key, () => bindingFromIntl(pattern))) record(node, key);
+    } else if ((ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)) && ts.isObjectLiteralExpression(node.parent) && assignmentSource(node.parent) !== undefined) {
+      const pattern = node.parent;
+      const key = keyText(node.name);
+      if (flagged(key, () => assignmentFromIntl(pattern))) record(node, key);
     }
     ts.forEachChild(node, visit);
   };
@@ -91,7 +156,7 @@ function sourceFiles(directory: string): string[] {
   return readdirSync(join(repoRoot, directory), { withFileTypes: true }).flatMap(entry => {
     const path = `${directory}/${entry.name}`;
     if (entry.isDirectory()) return sourceFiles(path);
-    return /\.tsx?$/.test(entry.name) && !entry.name.endsWith(".d.ts") ? [path] : [];
+    return /\.(?:tsx?|mjs|js)$/.test(entry.name) && !entry.name.endsWith(".d.ts") ? [path] : [];
   });
 }
 
@@ -110,13 +175,13 @@ test("CLA-589: the locale-order lint sees calls, not comments, and honours allow
   const text = [
     "// a.localeCompare(b) in a comment is fine",
     "const s = names.sort((a, b) => a.localeCompare(b));",
-    "const c = new Intl.Collator('lt');",
+    "const c = new Intl.Collator();",
     "const u = name['toLocaleUpperCase']();",
     "const other = new Foo.Collator();",
   ].join("\n");
   const uses = localeOrderUses("x.ts", text);
   assert.deepEqual(uses.map(use => [use.lineNumber, use.call]), [[2, "localeCompare"], [3, "Collator"], [4, "toLocaleUpperCase"]]);
-  const allowance = { file: "x.ts", line: "const c = new Intl.Collator('lt');", reason: "display only" };
+  const allowance = { file: "x.ts", line: "const c = new Intl.Collator();", reason: "display only" };
   const stale = { file: "x.ts", line: "gone();", reason: "removed" };
   const result = unallowed(uses, [allowance, stale]);
   assert.deepEqual(result.offending.map(use => use.lineNumber), [2, 4]);
@@ -137,6 +202,65 @@ test("CLA-589: the locale-order lint sees destructured locale APIs, aliases and 
   ].join("\n");
   assert.deepEqual(localeOrderUses("x.ts", text).map(use => [use.lineNumber, use.call]),
     [[1, "Collator"], [2, "Collator"], [3, "localeCompare"], [4, "localeCompare"], [5, "toLocaleLowerCase"], [6, "Collator"], [9, "localeCompare"]]);
+});
+
+test("CLA-589: the locale-order lint sees Intl reached indirectly and destructuring assignments", () => {
+  const text = [
+    "const c = new globalThis.Intl.Collator();",
+    "const { Collator } = globalThis.Intl;",
+    "const p = new (Intl).Collator();",
+    "let compare; ({ localeCompare: compare } = String.prototype);",
+    "({ localeCompare } = String.prototype);",
+    "({ Intl: { Collator: Nested } } = globalThis);",
+    "[{ toLocaleUpperCase: upper }] = [String.prototype];",
+    "const w = window['Intl'].Collator;",
+    "const q = new (Intl.Collator)();",
+    "({ Collator: notIntl } = shapes);",
+    "const literal = { localeCompare: compare };",
+    "const r = new globalThis.Shapes.Collator();",
+    "({ Intl: { Collator } = {} } = globalThis);",
+    "({ proto: { localeCompare } = {} } = shapes);",
+    "for ({ localeCompare } of protos);",
+    "use([{ localeCompare: c } = String.prototype]);",
+    "({ Collator } = (globalThis.Intl));",
+    "const list = { items: [{ localeCompare: compare }] };",
+  ].join("\n");
+  assert.deepEqual(localeOrderUses("x.ts", text).map(use => [use.lineNumber, use.call]),
+    [[1, "Collator"], [2, "Collator"], [3, "Collator"], [4, "localeCompare"], [5, "localeCompare"], [6, "Collator"], [7, "toLocaleUpperCase"], [8, "Collator"], [9, "Collator"],
+      [13, "Collator"], [14, "localeCompare"], [15, "localeCompare"], [16, "localeCompare"], [17, "Collator"]]);
+});
+
+test("CLA-589: the locale-order lint bans locale formatting unless an Intl constructor names its locale", () => {
+  const text = [
+    "const a = count.toLocaleString();",
+    "const b = date.toLocaleDateString();",
+    "const c = date.toLocaleTimeString();",
+    "const d = new Intl.NumberFormat().format(n);",
+    "const e = new Intl.DateTimeFormat();",
+    "const f = new Intl.ListFormat().format(names);",
+    "const g = new Intl.PluralRules();",
+    "const h = new Intl.RelativeTimeFormat();",
+    "const i = new Intl.DisplayNames(undefined, { type: 'region' });",
+    "const j = new Intl.Segmenter();",
+    "const k = Intl.NumberFormat(locale);",
+    "const { DateTimeFormat } = Intl;",
+    "const l = count['toLocaleString']();",
+    "const m = new Intl.Segmenter('en', { granularity: 'grapheme' });",
+    "const n = new Intl.Collator('en').compare;",
+    "const o = Intl.NumberFormat(`en`);",
+    "const p = new (Intl.ListFormat)('en');",
+    "const q = new Intl.PluralRules('en-US');",
+    "const r = Intl.getCanonicalLocales();",
+  ].join("\n");
+  assert.deepEqual(localeOrderUses("x.ts", text).map(use => [use.lineNumber, use.call]),
+    [[1, "toLocaleString"], [2, "toLocaleDateString"], [3, "toLocaleTimeString"], [4, "NumberFormat"], [5, "DateTimeFormat"],
+      [6, "ListFormat"], [7, "PluralRules"], [8, "RelativeTimeFormat"], [9, "DisplayNames"], [10, "Segmenter"], [11, "NumberFormat"],
+      [12, "DateTimeFormat"], [13, "toLocaleString"]]);
+});
+
+test("CLA-589: the locale-order lint reads .mjs scripts", () => {
+  const text = "entries.sort(([left], [right]) => left.localeCompare(right));";
+  assert.deepEqual(localeOrderUses("x.mjs", text).map(use => [use.lineNumber, use.call]), [[1, "localeCompare"]]);
 });
 
 /**
