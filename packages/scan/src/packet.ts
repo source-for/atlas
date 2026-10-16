@@ -1,4 +1,4 @@
-import { ARCHITECTURE_EXTRACTION_LIMITS, type ArchitectureExtraction } from "@okie/architecture";
+import { ARCHITECTURE_EXTRACTION_LIMITS, type ArchitectureExtraction, compareText } from "@okie/architecture";
 import { containerScopes } from "./scope.js";
 import { scrubGithubTokens } from "./redact.js";
 import type { EntityCoverageOverlay } from "./lcov.js";
@@ -179,10 +179,10 @@ export function buildEnrichmentPackets(
     extraction.relations
       .filter(relation => memberIds.has(relation.from) || memberIds.has(relation.to))
       .map(relation => ({ id: relation.id, from: relation.from, to: relation.to, kind: relation.kind }))
-      .sort((left, right) => left.id.localeCompare(right.id));
+      .sort((left, right) => compareText(left.id, right.id));
 
   const packets: EnrichmentPacket[] = [];
-  for (const [containerId, scope] of [...scopes.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+  for (const [containerId, scope] of [...scopes.entries()].sort(([left], [right]) => compareText(left, right))) {
     if (scope.codeBearing.length === 0) continue; // nothing to regroup
 
     const components: PacketComponent[] = scope.codeBearing.map(component => ({
@@ -311,9 +311,9 @@ export function buildSystemPacket(
   const node = (entity: { id: string; name: string }): SystemPacketNode => ({ id: entity.id, name: entity.name });
 
   const containers = extraction.entities.filter(entity => entity.kind === "container")
-    .map(node).sort((left, right) => left.id.localeCompare(right.id));
+    .map(node).sort((left, right) => compareText(left.id, right.id));
   const externalSystems = extraction.entities.filter(entity => entity.kind === "externalSystem")
-    .map(node).sort((left, right) => left.id.localeCompare(right.id));
+    .map(node).sort((left, right) => compareText(left.id, right.id));
 
   const containerDirs = extraction.entities
     .filter(entity => entity.kind === "container")

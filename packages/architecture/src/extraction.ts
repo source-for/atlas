@@ -13,6 +13,7 @@ import {
   type UntestedBehaviour,
 } from "./model.js";
 import { validateSnapshot, type ValidationIssue } from "./validation.js";
+import { compareText } from "./text-order.js";
 
 /** Versioned, semantic-only input accepted from architecture extraction. */
 export const ARCHITECTURE_EXTRACTION_SCHEMA_VERSION = 1 as const;
@@ -176,10 +177,6 @@ function record(value: unknown): UnknownRecord | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as UnknownRecord
     : undefined;
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function unicodeLength(value: string): number {

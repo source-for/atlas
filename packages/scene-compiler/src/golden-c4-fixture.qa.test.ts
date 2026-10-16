@@ -12,6 +12,7 @@ import {
   type ArchitectureView,
   type C4Band,
   type C4ProjectionBundle,
+  compareText,
 } from '@okie/architecture';
 import { goldenSnapshot, goldenStory, goldenView, GOLDEN_WORKTREE_REVISION } from './golden-fixture.js';
 
@@ -74,8 +75,8 @@ test('frozen Okie fixture has exact stable IDs, strict C4 parentage, and pinned 
     await access(`${repositoryRoot}${source.path}`);
     evidenceRows.push([owner[0], owner[1], source.path, source.symbol ?? null, source.startLine ?? null, source.endLine ?? null, source.commitSha]);
   }
-  evidenceRows.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
-  assert.equal(hash(evidenceRows), '23f57be9');
+  evidenceRows.sort((left, right) => compareText(JSON.stringify(left), JSON.stringify(right)));
+  assert.equal(hash(evidenceRows), '59a924ed');
 
   const ids = new Set(snapshot.entities.map(entity => entity.id));
   for (const entity of snapshot.entities) if (entity.parentId) assert.equal(ids.has(entity.parentId), true);

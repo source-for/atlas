@@ -10,6 +10,7 @@ import {
 } from './model.js';
 import type { OrthogonalSide } from './orthogonal-router.js';
 import type { ValidationIssue } from './validation.js';
+import { compareText } from './text-order.js';
 
 export const ARCHITECTURE_AUTHORING_VERSION = 1 as const;
 
@@ -71,10 +72,6 @@ const PORTS = new Set<OrthogonalSide>(['top', 'right', 'bottom', 'left']);
 const RELATION_KINDS = new Set<RelationKind>([
   'uses', 'calls', 'reads', 'writes', 'publishes', 'subscribes', 'contains', 'dependsOn', 'returns',
 ]);
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
 
 function cloneRelation(relation: AuthoredRelation): AuthoredRelation {
   return {

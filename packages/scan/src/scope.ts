@@ -1,4 +1,5 @@
 import type { ArchitectureExtraction, ArchitectureExtractionEntity } from "@okie/architecture";
+import { compareText } from "@okie/architecture";
 
 /**
  * The per-container view the enrichment machinery reasons over: which file-components
@@ -39,7 +40,7 @@ export function containerScopes(extraction: ArchitectureExtraction): Map<string,
     codeByComponent.set(entity.parentId, bucket);
   }
   const byIdSort = (left: ArchitectureExtractionEntity, right: ArchitectureExtractionEntity): number =>
-    left.id.localeCompare(right.id);
+    compareText(left.id, right.id);
 
   const scopes = new Map<string, ContainerScope>();
   for (const container of containers) {

@@ -7,13 +7,14 @@ import {
   type SourceRef,
   type StoryDetail,
   type StoryStep,
+  compareText,
 } from "@okie/architecture";
 
 const MAX_TRACES = STORY_AUTHORING_LIMITS.maxTraceRelationsPerStep;
 const MAX_SOURCE_REFS = STORY_AUTHORING_LIMITS.maxSourceRefsPerStep;
 
 export function compareEntityId(left: string, right: string): number {
-  return left.localeCompare(right);
+  return compareText(left, right);
 }
 
 export function citedRefs(entity: ArchitectureEntity | undefined): SourceRef[] | undefined {

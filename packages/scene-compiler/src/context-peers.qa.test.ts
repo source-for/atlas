@@ -8,6 +8,7 @@ import {
   type ArchitectureEntity,
   type ArchitectureSnapshot,
   type NodeLayout,
+  compareText,
 } from '@okie/architecture';
 import { compileC4Scene, layoutContextPeersAroundSystem, type ContextPeerItem } from './compile-c4.js';
 
@@ -119,7 +120,7 @@ const build = (snapshot: ArchitectureSnapshot, targetAspect?: number) =>
 
 const peersOf = (snapshot: ArchitectureSnapshot) => snapshot.entities
   .filter(entity => entity.kind === 'person' || entity.kind === 'externalSystem')
-  .map(entity => entity.id).sort((left, right) => left.localeCompare(right));
+  .map(entity => entity.id).sort(compareText);
 
 test('a real aspect-packed compile places context peers clear of the system on both flanks', () => {
   const snapshot = scanLike(8);

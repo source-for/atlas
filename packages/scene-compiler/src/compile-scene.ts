@@ -5,6 +5,7 @@ import {
   type NodeLayout,
   validateSnapshot,
   validateView,
+  compareText,
 } from "@okie/architecture";
 import type { LodRange, Point, Rect, Representation, SceneObject, ScenePath, SceneSnapshot } from "./protocol.js";
 import { RENDERER_PROTOCOL_VERSION } from "./protocol.js";
@@ -180,7 +181,7 @@ export function compileScene(
   const visibleRelationIds = new Set(view.relationIds);
   const entityObjects: SceneObject[] = snapshot.entities
     .filter((entity) => visibleEntityIds.has(entity.id))
-    .sort((a, b) => a.id.localeCompare(b.id))
+    .sort((a, b) => compareText(a.id, b.id))
     .map((entity) => {
       const bounds = view.layout.nodes[entity.id];
       if (!bounds) throw new Error(`Missing layout for ${entity.id}`);
@@ -196,7 +197,7 @@ export function compileScene(
 
   const visibleRelations = snapshot.relations
     .filter((relation) => visibleRelationIds.has(relation.id))
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .sort((a, b) => compareText(a.id, b.id));
   const paths: ScenePath[] = visibleRelations.map((relation) => {
       const from = view.layout.nodes[relation.from];
       const to = view.layout.nodes[relation.to];

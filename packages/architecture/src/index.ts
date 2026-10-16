@@ -14,3 +14,4 @@ export * from "./geometry-diagnostics.js";
 export * from "./path-exploration.js";
 export * from "./dependency-consumers.js";
 export * from "./agentQueries.js";
+export * from "./text-order.js";

@@ -1,5 +1,6 @@
 import type { ArchitectureEntity, ArchitectureSnapshot } from "@okie/architecture";
 import { scrubGithubTokens } from "./redact.js";
+import { compareText } from "@okie/architecture";
 
 /**
  * GitHub CODEOWNERS lookup order. The first existing file wins — same as GitHub.
@@ -183,7 +184,7 @@ function isOwnerToken(value: string): boolean {
 }
 
 function uniqueSorted(values: readonly string[]): string[] {
-  return [...new Set(values.filter(value => value.trim().length > 0))].sort((left, right) => left.localeCompare(right));
+  return [...new Set(values.filter(value => value.trim().length > 0))].sort(compareText);
 }
 
 function pathMatchesCodeOwnersPattern(pattern: string, path: string): boolean {

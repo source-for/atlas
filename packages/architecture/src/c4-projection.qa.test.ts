@@ -8,6 +8,7 @@ import {
   type C4ProjectionBundle,
 } from './c4.js';
 import type { ArchitectureRelation, ArchitectureSnapshot, SourceRef } from './model.js';
+import { compareText } from './text-order.js';
 
 const source = (path: string, symbol: string): SourceRef => ({
   path,
@@ -77,7 +78,7 @@ test('focusing a finer entity preserves coarse C4 membership and its context anc
       id: bundle.index.entityIdByVisualNodeId[id],
       kind: bundle.visualNodeById[id]!.kind,
       bounds: layout.nodes[id],
-    })).sort((a, b) => a.id!.localeCompare(b.id!));
+    })).sort((a, b) => compareText(a.id!, b.id!));
     assert.deepEqual(entries.map(entry => entry.id), ['actor:developer', 'external:repository', 'system:okie']);
     assert.ok(entries.every(entry => ['person', 'externalSystem', 'softwareSystem'].includes(entry.kind)));
     for (const band of C4_BANDS) {

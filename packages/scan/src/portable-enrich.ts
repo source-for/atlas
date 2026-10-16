@@ -5,6 +5,7 @@ import {
   type ArchitectureSnapshot,
   type ArchitectureView,
   type PortableAtlas,
+  compareText,
 } from "@okie/architecture";
 import { mergeEnrichment, type EnrichmentReport } from "./enrich.js";
 import { buildOverviewStory } from "./overview-story.js";
@@ -72,7 +73,7 @@ function relationIdentityKey(relation: {
     evidence: relation.evidence.map(evidence => ({
       ...(evidence.reason !== undefined ? { reason: evidence.reason } : {}),
       source: withoutRevision(evidence.source),
-    })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+    })).sort((left, right) => compareText(JSON.stringify(left), JSON.stringify(right))),
   });
 }
 
@@ -128,7 +129,7 @@ function refreshedView(bundle: PortableAtlas, snapshot: ArchitectureSnapshot): A
   if (sameIds(bundle.snapshot.entities, snapshot.entities) && sameIds(bundle.snapshot.relations, snapshot.relations)) return bundle.view;
   const existing = bundle.view.layout.nodes;
   const nodes: ArchitectureView["layout"]["nodes"] = {};
-  for (const [index, entity] of [...snapshot.entities].sort((a, b) => a.id.localeCompare(b.id)).entries()) {
+  for (const [index, entity] of [...snapshot.entities].sort((a, b) => compareText(a.id, b.id)).entries()) {
     nodes[entity.id] = existing[entity.id] ?? {
       x: 120 + (index % 8) * 330,
       y: 120 + Math.floor(index / 8) * 210,

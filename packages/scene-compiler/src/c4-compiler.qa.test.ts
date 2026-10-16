@@ -6,6 +6,7 @@ import {
   C4_INTRINSIC_LAYOUT,
   expandRoutingRect,
   segmentIntersectsRectInterior,
+  compareText,
 } from '@okie/architecture';
 import { C4_CAMERA_LIMITS, C4_PRESENTATION_AT_FOCUS, C4_ZOOM_BANDS, compileC4Scene } from './compile-c4.js';
 import { displayMetricsForFontFamily, displayTextWidth } from './display-text.js';
@@ -218,7 +219,7 @@ test('intrinsic hierarchy sizing preserves readable headers, cards, padding, gap
       const ownerBounds = boundsByEntity[owner.id]?.[policy.band];
       const children = goldenSnapshot.entities
         .filter(entity => entity.parentId === owner.id && policy.childKinds.has(entity.kind))
-        .sort((left, right) => left.id.localeCompare(right.id));
+        .sort((left, right) => compareText(left.id, right.id));
       if (!ownerBounds || !children.length) continue;
       const childBounds = children.map(child => ({ id: child.id, bounds: boundsByEntity[child.id]![policy.band]! }));
       for (const child of childBounds) {
@@ -282,7 +283,7 @@ test('focus presets keep human C4 labels legible and suppress dense L3/L4 relati
     { band: 'context' as const, entityId: 'system:okie', kicker: 'SOFTWARE SYSTEM' },
     { band: 'container' as const, entityId: 'container:architecture-model', kicker: 'CONTAINER' },
     { band: 'component' as const, entityId: 'component:model-scoping', kicker: 'COMPONENT' },
-    { band: 'code' as const, entityId: 'code:model-scoping:select-scoped-view', kicker: 'FN · 600–605' },
+    { band: 'code' as const, entityId: 'code:model-scoping:select-scoped-view', kicker: 'FN · 601–606' },
   ];
 
   for (const sample of samples) {

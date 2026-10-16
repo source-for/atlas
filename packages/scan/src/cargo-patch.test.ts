@@ -78,9 +78,9 @@ function crateEdges(artifacts: ScanArtifacts): string[] {
 }
 
 const EXPECTED_EDGES = [
-  "container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5",
-  "container:app -> container:net @ app/Cargo.toml:9 Cargo.toml:14",
-  "container:app -> container:util @ app/Cargo.toml:7 Cargo.toml:6",
+  "container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6",
+  "container:app -> container:net @ Cargo.toml:14 app/Cargo.toml:9",
+  "container:app -> container:util @ Cargo.toml:6 app/Cargo.toml:7",
   "container:util -> container:core @ Cargo.toml:5 util/Cargo.toml:5",
 ];
 
@@ -246,7 +246,7 @@ test("cargoPatchPaths: a renamed patch entry patches its `package`, inline or su
 
 test("round 1: a renamed [patch] entry (`alias = { package = \"core\", path = \"core\" }`) is an edge to core (quick + full)", () => {
   scanBothModes(TWO_CRATES('[workspace]\nmembers = ["core", "app"]\n\n[patch.crates-io]\ncore_alias = { package = "core", path = "core" }\n', 'core = "1"\n'), (mode, artifacts) => {
-    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], mode);
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], mode);
     assert.deepEqual(patchLimitations(artifacts), [], mode);
   });
 });
@@ -264,7 +264,7 @@ test("round 1: workspace inheritance looks up the declaration key, the patch mat
     "",
   ].join("\n");
   scanBothModes(TWO_CRATES(root, "renamed = { workspace = true }\n"), (mode, artifacts) => {
-    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:8"], mode);
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:8 app/Cargo.toml:6"], mode);
   });
 });
 
@@ -301,7 +301,7 @@ test("cargoPatchPaths: comments after headers are ignored, `#` in quotes is kept
 
 test("round 1: a comment after the [patch.crates-io] header keeps its overrides (quick + full)", () => {
   scanBothModes(TWO_CRATES('[workspace]\nmembers = ["core", "app"]\n\n[patch.crates-io] # local override\ncore = { path = "core" }\n', 'core = "1"\n'), (mode, artifacts) => {
-    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], mode);
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], mode);
   });
 });
 
@@ -316,7 +316,7 @@ test("round 2: a [patch] path with a leading `~` is a literal in-repo directory 
     "app/src/lib.rs": "pub fn app() {}\n",
   };
   scanBothModes(files, (mode, artifacts) => {
-    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], mode);
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], mode);
     assert.deepEqual(patchLimitations(artifacts), [], mode);
   });
   assert.deepEqual(unfollowedCargoPatches('[patch.crates-io]\ncore = { path = "~core" }\n', new Set(["~core"])), [], "`~core` names the member");
@@ -333,10 +333,10 @@ const MEMBERS = '[workspace]\nmembers = ["core", "app"]\n';
 
 test("round 3: literal-string and dotted-key [patch] paths are followed, or reported when outside (quick + full)", () => {
   scanBothModes(CORE_APP(`${MEMBERS}\n[patch.crates-io]\ncore = { path = 'core' }\n`, 'core = "1"\n'), (mode, artifacts) => {
-    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], `${mode}: literal string`);
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], `${mode}: literal string`);
   });
   scanBothModes(CORE_APP(`${MEMBERS}\n[patch.crates-io]\ncore.path = "core"\n`, 'core = "1"\n'), (mode, artifacts) => {
-    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], `${mode}: dotted key`);
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], `${mode}: dotted key`);
   });
   scanBothModes(CORE_APP(`${MEMBERS}\n[patch.crates-io]\ncore = { path = '../core' }\n`, 'core = "1"\n'), (mode, artifacts) => {
     assert.deepEqual(crateEdges(artifacts), [], mode);
@@ -357,7 +357,7 @@ test("round 3: a patch is used only when the patched version satisfies the requi
   // `version.workspace = true` takes the [workspace.package] version.
   const inheriting = (version: string): string => `${MEMBERS}\n[workspace.package]\nversion = "${version}"\n\n[patch.crates-io]\ncore = { path = "core" }\n`;
   scanBothModes(CORE_APP(inheriting("1.4.0"), 'core = "1.2"\n', "version.workspace = true"), (mode, artifacts) => {
-    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:8"], `${mode}: 1.4.0 satisfies ^1.2`);
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:8 app/Cargo.toml:6"], `${mode}: 1.4.0 satisfies ^1.2`);
     assert.deepEqual(patchLimitations(artifacts), [], mode);
   });
   scanBothModes(CORE_APP(inheriting("2.0.0"), 'core = "1.2"\n', "version.workspace = true"), (mode, artifacts) => {
@@ -374,7 +374,7 @@ test("round 3: dependency forms Cargo accepts all meet a patch; a multi-line git
     ["literal string", "core = '1'\n"],
   ] as const) {
     scanBothModes(CORE_APP(patched, dependency), (mode, artifacts) => {
-      assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], `${mode}: ${form}`);
+      assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], `${mode}: ${form}`);
     });
   }
   scanBothModes(CORE_APP(patched, 'core = { features = [\n  "x",\n], git = "https://example.com/core" }\n'), (mode, artifacts) => {
@@ -389,7 +389,7 @@ test("round 3: git sources are canonicalised like Cargo — case-folded and http
     assert.deepEqual(crateEdges(artifacts), [], `${mode}: gitlab paths are case-sensitive`);
   });
   scanBothModes(gitPatch("https://github.com/Acme/Core.git", "http://github.com/acme/core/"), (mode, artifacts) => {
-    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], `${mode}: github.com is canonicalised`);
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], `${mode}: github.com is canonicalised`);
   });
 });
 
@@ -423,7 +423,7 @@ test("round 4: cargoRequirementMatches follows the semver crate: partial bounds 
 test("round 4: partial comparator bounds and prereleases gate patches like Cargo (quick + full)", () => {
   const patched = `${MEMBERS}\n[patch.crates-io]\ncore = { path = "core" }\n`;
   scanBothModes(CORE_APP(patched, 'core = "<=1"\n', 'version = "1.4.0"'), (mode, artifacts) => {
-    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], `${mode}: <=1 admits 1.4.0`);
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], `${mode}: <=1 admits 1.4.0`);
     assert.deepEqual(patchLimitations(artifacts), [], mode);
   });
   scanBothModes(CORE_APP(patched, 'core = "1"\n', 'version = "1.0.0-alpha"'), (mode, artifacts) => {
@@ -442,7 +442,7 @@ test("round 4: `version = { workspace = true }` inherits [workspace.package] lik
       assert.equal(patchLimitations(artifacts).length, 1, `${mode} ${spelling}`);
     });
     scanBothModes(CORE_APP(inheriting("1.4.0"), 'core = "1"\n', spelling), (mode, artifacts) => {
-      assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:8"], `${mode} ${spelling}: inherited 1.4.0 satisfies ^1`);
+      assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:8 app/Cargo.toml:6"], `${mode} ${spelling}: inherited 1.4.0 satisfies ^1`);
     });
   }
 });
@@ -457,6 +457,6 @@ test("round 4: a patched crate without [package] version is 0.0.0 in the version
     ], mode);
   });
   scanBothModes(CORE_APP(patched, 'core = "0"\n', ""), (mode, artifacts) => {
-    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ app/Cargo.toml:6 Cargo.toml:5"], `${mode}: ^0 admits 0.0.0`);
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], `${mode}: ^0 admits 0.0.0`);
   });
 });
