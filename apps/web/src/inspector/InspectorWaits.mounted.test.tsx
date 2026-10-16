@@ -222,7 +222,7 @@ describe('open inside a non-resident child', () => {
   //
   // History is set up so it does not depend on camera-flight timing: boot on the
   // shell (no inspector flight has run), so the parent click records exactly one
-  // entry, and Back pops that entry whatever the motion preference or load.
+  // entry; the pending open records the container on top, and Back pops that.
   describe.each(['default motion', 'reduced motion'] as const)('with %s', motion => {
     it.each([['A then B', 0, 1], ['B then A', 1, 0]] as const)('ends on B when two child compiles overlap, released %s', async (_order, firstIndex, secondIndex) => {
       if (motion === 'reduced motion') {
@@ -250,13 +250,10 @@ describe('open inside a non-resident child', () => {
       await settle();
       expect(compiles.map(compile => compile.focus)).toEqual(['component:web-navigation']);
       expect(pendingTitle()).toBe('Navigation and history');
+      // Back returns to the container the pending view replaced.
       await click('[data-testid="inspector-back"]');
       await settle();
       expect(pendingTitle()).toBeUndefined();
-      expect(entityTitle()).toBe('Application shell');
-      // Back to the container through the shell's parent link (resident, synchronous).
-      await click(childButton('container:web-app'));
-      await settle();
       expect(entityTitle()).toBe('Atlas web app');
       const app = host.querySelector('[data-testid="atlas-app"]')!;
       const seen = new Set<string>();
@@ -308,6 +305,176 @@ describe('open inside a non-resident child', () => {
     await settle();
     expect(pendingTitle()).toBeUndefined();
     expect(entityTitle()).toBe(restored);
+  });
+
+  // Boot on the shell, then reach the container through the shell's resident parent link,
+  // as a reader does: history = [shell], and the container has no entry of its own yet.
+  async function openContainerFromShell(shellUrl = '/?fixture=scan&backend=canvas2d&sel=component%3Aweb-shell') {
+    await mount(shellUrl);
+    await click('#details-tab');
+    expect(entityTitle()).toBe('Application shell');
+    await click(childButton('container:web-app'));
+    await settle();
+    expect(entityTitle()).toBe('Atlas web app');
+    resident.enabled = false;
+    const compiles: Array<{ focus: string; release: () => void }> = [];
+    vi.spyOn(fixture, 'createSceneAsync').mockImplementation((focus, previous, residency) => new Promise<AtlasScene>(done => {
+      compiles.push({ focus, release: () => done(fixture.createScene(focus, previous, residency)) });
+    }));
+    return compiles;
+  }
+  const selectedId = () => host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-selected-entity-id');
+
+  it('returns the inspector Back during the wait to the container the pending view replaced, and the late compile never paints', async () => {
+    const compiles = await openContainerFromShell();
+    await click(childButton('component:web-navigation'));
+    await settle();
+    expect(pendingTitle()).toBe('Navigation and history');
+    const seen = new Set<string>();
+    const observer = new MutationObserver(() => { for (const value of [pendingTitle(), entityTitle(), selectedId()]) if (value) seen.add(value); });
+    observer.observe(host, { attributes: true, childList: true, subtree: true, characterData: true });
+    await click('[data-testid="inspector-back"]');
+    await settle();
+    expect(pendingTitle()).toBeUndefined();
+    expect(entityTitle()).toBe('Atlas web app');
+    expect(selectedId()).toBe('container:web-app');
+    await act(async () => compiles[0]!.release());
+    await settle();
+    observer.disconnect();
+    expect(entityTitle()).toBe('Atlas web app');
+    expect(seen).not.toContain('Navigation and history');
+    expect(seen).not.toContain('component:web-navigation');
+    // The entry before it is still there.
+    await click('[data-testid="inspector-back"]');
+    await settle();
+    expect(entityTitle()).toBe('Application shell');
+  });
+
+  it('keeps Back after a completed open inside as it was: one step to the container, then the shell', async () => {
+    const compiles = await openContainerFromShell();
+    await click(childButton('component:web-navigation'));
+    await settle();
+    await act(async () => compiles[0]!.release());
+    await settle();
+    expect(entityTitle()).toBe('Navigation and history');
+    await click('[data-testid="inspector-back"]');
+    await settle();
+    expect(entityTitle()).toBe('Atlas web app');
+    await click('[data-testid="inspector-back"]');
+    await settle();
+    expect(entityTitle()).toBe('Application shell');
+    expect(host.querySelector('[data-testid="inspector-back"]')).toBeNull();
+  });
+
+  it('adds no Back entry when the open inside fails and the reader stays on the container', async () => {
+    await mount('/?fixture=scan&backend=canvas2d&sel=container%3Aweb-app');
+    await click('#details-tab');
+    resident.enabled = false;
+    vi.spyOn(fixture, 'createSceneAsync').mockImplementation(async () => { throw new Error('worker failed'); });
+    await click(childButton('component:web-navigation'));
+    await settle();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await settle();
+    expect(pendingTitle()).toBeUndefined();
+    expect(entityTitle()).toBe('Atlas web app');
+    expect(host.querySelector('[data-testid="inspector-back"]')).toBeNull();
+  });
+
+  // Open inside never adds a browser entry (its flight replaces the URL), on main as here. So
+  // history.back() goes to the entry before the container whether the compile is pending or done.
+  it.each([['pending', false], ['completed', true]] as const)('takes history.back() to the entry before the container when the open inside is %s; the late compile never paints', async (_state, completeFirst) => {
+    window.history.replaceState(null, '', '/?fixture=scan&backend=canvas2d&sel=component%3Aweb-shell');
+    window.history.pushState(null, '', '/?fixture=scan&backend=canvas2d&sel=container%3Aweb-app');
+    await mount('/?fixture=scan&backend=canvas2d&sel=container%3Aweb-app');
+    await click('#details-tab');
+    resident.enabled = false;
+    const compiles: Array<() => void> = [];
+    vi.spyOn(fixture, 'createSceneAsync').mockImplementation((focus, previous, residency) => new Promise<AtlasScene>(done => {
+      compiles.push(() => done(fixture.createScene(focus, previous, residency)));
+    }));
+    await click(childButton('component:web-navigation'));
+    await settle();
+    expect(pendingTitle()).toBe('Navigation and history');
+    if (completeFirst) {
+      await act(async () => compiles[0]!());
+      await settle();
+      expect(entityTitle()).toBe('Navigation and history');
+    }
+    const seen = new Set<string>();
+    const observer = new MutationObserver(() => { for (const value of [pendingTitle(), entityTitle(), selectedId()]) if (value) seen.add(value); });
+    observer.observe(host, { attributes: true, childList: true, subtree: true, characterData: true });
+    await act(async () => window.history.back());
+    await settle();
+    // The restore compiles its own scene; release it (the open inside's compile stays outstanding).
+    const restoreCompiles = compiles.slice(1);
+    for (const release of restoreCompiles) await act(async () => release());
+    await settle();
+    expect(restoreCompiles.length).toBeGreaterThan(0);
+    expect(pendingTitle()).toBeUndefined();
+    expect(selectedId()).toBe('component:web-shell');
+    if (!completeFirst) {
+      await act(async () => compiles[0]!());
+      await settle();
+      expect(seen).not.toContain('Navigation and history');
+      expect(seen).not.toContain('component:web-navigation');
+    }
+    observer.disconnect();
+    expect(selectedId()).toBe('component:web-shell');
+    expect(pendingTitle()).toBeUndefined();
+  });
+
+  it('ignores clicks on the pending view and its skeleton: no selection change, no focus move, no console error', async () => {
+    const compiles = await openContainerFromShell();
+    const errors = vi.spyOn(console, 'error');
+    await settle();
+    const row = host.querySelector(childButton('component:web-navigation')) as HTMLButtonElement;
+    row.focus();
+    await click(childButton('component:web-navigation'));
+    await settle();
+    const heading = host.querySelector('#inspector-pending-title') as HTMLElement;
+    expect(document.activeElement).toBe(heading);
+    const article = host.querySelector('[data-testid="inspector-pending-child"]') as HTMLElement;
+    for (const target of [article.querySelector('.inspector-skeleton-block')!, article.querySelector('.inspector-pending-row')!, article.querySelector('.inspector-skeleton-line')!, article]) {
+      // A browser moves focus on mousedown (to <body> for non-focusable content); the view must keep it.
+      const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+      await act(async () => { target.dispatchEvent(down); });
+      expect(down.defaultPrevented).toBe(true);
+      await act(async () => (target as HTMLElement).click());
+      await settle();
+      expect(document.activeElement).toBe(heading);
+      expect(selectedId()).toBe('container:web-app');
+      expect(pendingTitle()).toBe('Navigation and history');
+    }
+    await act(async () => heading.click());
+    await settle();
+    expect(document.activeElement).toBe(heading);
+    expect(compiles.map(compile => compile.focus)).toEqual(['component:web-navigation']);
+    await act(async () => compiles[0]!.release());
+    await settle();
+    expect(entityTitle()).toBe('Navigation and history');
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+  // The child rows are buttons in tab order (no arrow-key roving). Enter activates the focused row.
+  // The pending view replaces the list in the same commit as the activation, so a second Enter can
+  // only land on the pending heading; moving to another row before the first Enter is what remains.
+  it('ends on the row the keyboard activates last; an Enter after the pending view mounted does nothing', async () => {
+    const compiles = await openContainerFromShell();
+    await settle();
+    (host.querySelector(childButton('component:web-navigation')) as HTMLButtonElement).focus();
+    (host.querySelector(childButton('component:web-stories')) as HTMLButtonElement).focus();
+    await act(async () => (document.activeElement as HTMLElement).click()); // Enter on the focused row
+    await settle();
+    expect(pendingTitle()).toBe(storiesName);
+    expect(host.querySelector(childButton('component:web-navigation'))).toBeNull();
+    expect(document.activeElement?.id).toBe('inspector-pending-title');
+    await act(async () => (document.activeElement as HTMLElement).click()); // a second Enter
+    await settle();
+    expect(compiles.map(compile => compile.focus)).toEqual(['component:web-stories']);
+    await act(async () => compiles[0]!.release());
+    await settle();
+    expect(entityTitle()).toBe(storiesName);
+    expect(selectedId()).toBe('component:web-stories');
   });
 
   it('gives the pending header the same kicker the loaded inspector shows', async () => {

@@ -2012,7 +2012,13 @@ export function App() {
         ? resolveInspectorEntity(activeSnapshot, sceneRef.current.entities, id, publishedInspector) : undefined;
       const pending = child && child.detail !== 'code' && canonicalChild?.kind !== 'code' ? pendingChildSlotRef.current.show(pendingInspectorChild(child, selected.id)) : undefined;
       if (pending && child) setLiveMessage(`Loading ${child.name}…`);
-      try { await navigation; } finally { pending?.settle(); }
+      // Back during the wait returns to the selection the view replaced. The commit records the
+      // same subject (deduplicated); a failed open leaves the reader here, so it drops the entry.
+      const fromSubject = pending ? currentInspectorHistorySubject() : undefined;
+      if (fromSubject) setInspectorHistory(current => pushInspectorHistory(current, fromSubject));
+      try { await navigation; } finally {
+        if (pending?.settle() && fromSubject) setInspectorHistory(current => current.at(-1) === fromSubject ? current.slice(0, -1) : current);
+      }
       return;
     }
 

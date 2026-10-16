@@ -36,7 +36,8 @@ export function createPendingInspectorChildSlot(publish: (pending: PendingInspec
       const entry = { ...child };
       current = entry;
       publish(entry);
-      return { settle() { if (current === entry) { current = undefined; publish(undefined); } } };
+      /** True when this entry was still pending: nothing committed, cleared or replaced it. */
+      return { settle() { if (current !== entry) return false; current = undefined; publish(undefined); return true; } };
     },
     clear() {
       if (!current) return;
@@ -56,7 +57,8 @@ export function visiblePendingInspectorChild(pending: PendingInspectorChild | un
  * inspector uses. The body reveals after 120 ms (CSS), so a cached open that
  * commits sooner never flashes the skeleton. "Loading …" is announced through the
  * app's polite live region by the caller. The view replaces the row that was just
- * activated, so a focus that fell to the document moves to this heading.
+ * activated, so a focus that fell to the document moves to this heading. A press
+ * anywhere but the heading keeps focus where it is (a browser would move it to <body>).
  */
 export function PendingInspectorChildView({ pending }: { pending: PendingInspectorChild }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -64,7 +66,7 @@ export function PendingInspectorChildView({ pending }: { pending: PendingInspect
     const active = document.activeElement;
     if (!active || active === document.body || !active.isConnected) headingRef.current?.focus({ preventScroll: true });
   }, [pending.id]);
-  return <article aria-busy="true" aria-labelledby="inspector-pending-title" className="inspector-presentation inspector-entity-presentation inspector-pending" data-inspector-pending-entity-id={pending.id} data-testid="inspector-pending-child">
+  return <article aria-busy="true" aria-labelledby="inspector-pending-title" className="inspector-presentation inspector-entity-presentation inspector-pending" data-inspector-pending-entity-id={pending.id} data-testid="inspector-pending-child" onMouseDown={event => { if (event.target !== headingRef.current) event.preventDefault(); }}>
     <header className="entity-hero">
       <div className="entity-kicker"><span>{pending.levelLabel}</span></div>
       <h2 id="inspector-pending-title" ref={headingRef} tabIndex={-1}>{pending.name}</h2>
