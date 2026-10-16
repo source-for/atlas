@@ -24,19 +24,49 @@ GitHub OAuth env (never commit, never log):
 | App slug | `OKIE_GITHUB_APP_SLUG` | Optional install redirect (`/api/auth/github/install`) |
 | Test double | `OKIE_GITHUB_TEST_DOUBLE` | `1` force on / `0` force off; default on for loopback when OAuth is unset |
 
-## LLM gateway (OpenRouter first)
+## LLM gateway (explicit opt-in)
 
-Optional enrichment talks to an OpenAI-compatible gateway. Defaults suit OpenRouter:
+**Nothing is sent to an LLM unless you opt in (CLA-606).** By default the server never sends source excerpts to any provider, even when provider keys are exported in your shell. To turn LLM enrichment and Ask on, a local developer sets **both**:
+
+1. a provider: `--llm-provider <name>` on the server command line (it beats the env var), or `OKIE_LLM_PROVIDER=<name>`; and
+2. the key: `OKIE_LLM_API_KEY`.
+
+```sh
+OKIE_LLM_API_KEY=… node apps/server/dist/main.js --llm-provider openrouter
+pnpm --filter @okie/server dev -- --llm-provider openrouter --dotenv   # key read from the repo-root .env
+```
+
+| Provider | Sends to | Base URL | Used for |
+|---|---|---|---|
+| `openrouter` | openrouter.ai | always `https://openrouter.ai/api/v1`; a different `OKIE_LLM_BASE_URL` / `okie.local.json` `baseUrl` stops the server (use `openai-compatible`) | scan + operator enrichment, Ask |
+| `openai-compatible` | your gateway | **required**: `OKIE_LLM_BASE_URL` or `okie.local.json` `baseUrl` (startup fails without one) | scan + operator enrichment, Ask |
+| `anthropic` | api.anthropic.com | `OKIE_LLM_BASE_URL` / `baseUrl`, else `https://api.anthropic.com` | scan enrichment only (no Ask, no operator enrichment) |
+| `off` | nothing | — | — |
+
+Any other value stops the server at startup.
 
 | Setting | Env | Default |
 |---|---|---|
-| Base URL | `OKIE_LLM_BASE_URL` or `OPENAI_BASE_URL` | `https://openrouter.ai/api/v1` |
-| API key | `OKIE_LLM_API_KEY` or `OPENROUTER_API_KEY` or `OPENAI_API_KEY` | unset (enrichment skipped) |
-| Model id | `OKIE_LLM_MODEL` or `OPENROUTER_MODEL` or `OPENAI_MODEL` | `xiaomi/mimo-v2.6-pro` |
+| Provider | `--llm-provider` or `OKIE_LLM_PROVIDER` | unset: off |
+| API key | `OKIE_LLM_API_KEY` (the only key that is read) | unset: off |
+| Base URL | `OKIE_LLM_BASE_URL` | per provider, above |
+| Model id | `OKIE_LLM_MODEL` | `xiaomi/mimo-v2.6-pro` |
 
-Keys live in `.env` / process env only (gitignored). Put the key in a repo-root `.env`; the server loads it at startup without overriding variables already in the environment. Do not commit a key. There is no `.env.example` (CLA-16).
+`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `OPENROUTER_MODEL` and `OPENAI_MODEL` are **ignored**. If any is set, the server prints one `LLM notice: ignoring …` line naming the variables (never their values) and how to opt in. A provider without `OKIE_LLM_API_KEY`, or the key without a provider, stays off and the startup line says why. The Anthropic SDK is given the key and base URL explicitly, so it never picks up `ANTHROPIC_*` variables or an `ant auth login` profile (profile auth is gone).
 
-Ask Atlas (`GET`/`POST /api/ask`) uses the same gateway and the same GitHub session as hosted scan. `GET /api/ask` returns `{ connected: true|false }` with no key, base URL, or model id — it does not require sign-in. `POST /api/ask` and `GET /api/ask/thread` require a GitHub session (or loopback `test-login`): **401 without one**, and the gateway is not called. Unsigned visitors keep the deterministic atlas. With a session and a key, `POST /api/ask` answers one question from the client-supplied packets and accepted summaries for the selected (or isolated) scopes — never a silent whole-repo dump — and appends that Q&A to an in-process thread keyed by GitHub user + `owner/repo` + `commitSha`. Citations are filtered to those scope ids. The operator gateway key stays in process `.env`; it is never stored on the user, never written into a thread, never logged, and never returned on `/healthz`. Anthropic fallback keys do not connect Ask; the OpenAI-compatible gateway is the path.
+Every start prints one state line, in both server modes, with the host only (never a URL or key):
+
+```
+[okie-server] LLM enrichment: off (no --llm-provider / OKIE_LLM_PROVIDER)
+[okie-server] LLM enrichment: off (--llm-provider openrouter is chosen but OKIE_LLM_API_KEY is unset)
+[okie-server] LLM enrichment: on → openrouter.ai (model xiaomi/mimo-v2.6-pro); scan enrichment, operator enrichment and Ask
+```
+
+**`.env` is not loaded by default.** The server reads the repo-root `.env` only with `--dotenv` (or `OKIE_DOTENV=1`), without overriding variables already in the environment. `askEvalLive.ts`, `scripts/cross-repo-eval.mjs --live` and `scripts/measure-incremental.mjs --live` follow the same rule (and take `--llm-provider` too). If a `.env` exists and was not loaded, the server says so at startup. This applies to **every** key you keep there: `JEV_API` (block planner / claim checks) and the GitHub OAuth settings also need `--dotenv` now, or must be exported. `scripts/publish-atlas.mjs` still loads `.env` unconditionally (it holds publish credentials, not LLM keys). Do not commit a key. There is no `.env.example` (CLA-16).
+
+The deployed container (`apps/edge/src/container.ts` `containerEnvVars`) sets `OKIE_LLM_PROVIDER=openrouter` in code and forwards only `OKIE_LLM_API_KEY` / `OKIE_LLM_MODEL`, so staging and production need no secret change.
+
+Ask Atlas (`GET`/`POST /api/ask`) uses the same gateway and the same GitHub session as hosted scan. `GET /api/ask` returns `{ connected: true|false }` with no key, base URL, or model id — it does not require sign-in. `POST /api/ask` and `GET /api/ask/thread` require a GitHub session (or loopback `test-login`): **401 without one**, and the gateway is not called. Unsigned visitors keep the deterministic atlas. With a session and a key, `POST /api/ask` answers one question from the client-supplied packets and accepted summaries for the selected (or isolated) scopes — never a silent whole-repo dump — and appends that Q&A to an in-process thread keyed by GitHub user + `owner/repo` + `commitSha`. Citations are filtered to those scope ids. The operator gateway key stays in the process env; it is never stored on the user, never written into a thread, never logged, and never returned on `/healthz`. The `anthropic` provider does not connect Ask; an OpenAI-compatible gateway (`openrouter` / `openai-compatible`) is the path.
 
 Non-secret overlay (base URL / model id only) can live in `okie.local.json` at the repo root, or in a JSON file pointed at by `OKIE_LLM_CONFIG`:
 
@@ -44,13 +74,13 @@ Non-secret overlay (base URL / model id only) can live in `okie.local.json` at t
 { "baseUrl": "https://openrouter.ai/api/v1", "modelId": "xiaomi/mimo-v2.6-pro" }
 ```
 
-An `apiKey` field in that file is ignored. With a gateway key, each enrichment scope POSTs the bounded, redacted packet to `{baseUrl}/chat/completions` (OpenAI-compatible). Packet excerpts reuse the existing GitHub token scrub (`gho_` / `ghp_` / `github_pat_`); the operator key is stripped from the outbound JSON body (it stays on `Authorization`). Gateway error strings are scrubbed the same way before `job.error` and logs. The reply's `choices[0].message.content` is parsed into the container-id-keyed document the merge gate already consumes. Live prompts ask for a short summary of **that packet's scope only**; hallucinated ids and out-of-scope entities still reject the scope. `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` remain a fallback for the Anthropic SDK and are not sent to the gateway. Packets are built and sent only while the ephemeral checkout exists.
+An `apiKey` field in that file is ignored. With a gateway key, each enrichment scope POSTs the bounded, redacted packet to `{baseUrl}/chat/completions` (OpenAI-compatible). Packet excerpts reuse the existing GitHub token scrub (`gho_` / `ghp_` / `github_pat_`); the operator key is stripped from the outbound JSON body (it stays on `Authorization`). Gateway error strings are scrubbed the same way before `job.error` and logs. The reply's `choices[0].message.content` is parsed into the container-id-keyed document the merge gate already consumes. Live prompts ask for a short summary of **that packet's scope only**; hallucinated ids and out-of-scope entities still reject the scope. With `--llm-provider anthropic`, packets go to the Anthropic SDK instead, with `OKIE_LLM_API_KEY`. Packets are built and sent only while the ephemeral checkout exists.
 
-No key: enrichment is skipped and the deterministic atlas still publishes. Auto enrichment is also skipped when `OKIE_SCAN_ENRICH=0`. OpenRouter is optional — paste-a-repo still maps the repo without a gateway key.
+No opt-in or no key: enrichment is skipped and the deterministic atlas still publishes. Scan enrichment is also skipped when `OKIE_SCAN_ENRICH=0`. `OKIE_SCAN_ENRICH=1` never enables egress on its own: it only applies once a provider is chosen and `OKIE_LLM_API_KEY` is set. OpenRouter is optional — paste-a-repo still maps the repo without a gateway key.
 
 The scan job (`GET /api/scans/:id`) and the paste-a-repo landing report whether enrichment **ran** (provider host + model id), was **skipped (no key)**, or **failed**. They never include the API key or a gateway URL that carries a token (`user:pass@host`, `?api_key=`). `GET /healthz` stays `{ service, ok, public, bind, enrich }` — no keys, no model id, no `scanRoot`.
 
-The enrichment pass uses the configured model id as an opaque string (no hardcoded model table beyond the default above). Change the env var or `okie.local.json` — no code change. A present-but-empty model (`OPENROUTER_MODEL=""`, or `"modelId": ""` in local config) or a provider-rejected id fails **the enrichment pass only**: the job still completes with the deterministic atlas and an enrichment failed note.
+The enrichment pass uses the configured model id as an opaque string (no hardcoded model table beyond the default above). Change the env var or `okie.local.json` — no code change. A present-but-empty model (`OKIE_LLM_MODEL=""`, or `"modelId": ""` in local config) or a provider-rejected id fails **the enrichment pass only**: the job still completes with the deterministic atlas and an enrichment failed note.
 
 Enrichment is bounded so a paste-a-repo job cannot run unbounded:
 

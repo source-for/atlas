@@ -27,17 +27,17 @@ test("CLA-75: complete + rejected results → why rejected, no notes", () => {
 });
 
 test("CLA-75: skipped no-key does not copy the operator note", () => {
-  const status = publishedEnrichmentStatus({
-    state: "skipped",
-    note: "no LLM credentials visible (set OKIE_LLM_API_KEY / OPENROUTER_API_KEY)",
-  });
-  assert.deepEqual(status, {
-    state: "skipped",
-    acceptedContainers: 0,
-    attemptedContainers: 0,
-    why: "no-key",
-  });
-  assert.doesNotMatch(JSON.stringify(status), /OKIE_LLM_API_KEY|OPENROUTER|credentials/);
+  // The pre-CLA-606 note and the current one (scanService skipNote).
+  for (const note of ["no LLM credentials visible (set OKIE_LLM_API_KEY / OPENROUTER_API_KEY)", "no LLM credentials configured (OKIE_LLM_API_KEY is set but no provider is chosen; pass --llm-provider <name> or set OKIE_LLM_PROVIDER)"]) {
+    const status = publishedEnrichmentStatus({ state: "skipped", note });
+    assert.deepEqual(status, {
+      state: "skipped",
+      acceptedContainers: 0,
+      attemptedContainers: 0,
+      why: "no-key",
+    });
+    assert.doesNotMatch(JSON.stringify(status), /OKIE_LLM|OPENROUTER|credentials|provider/);
+  }
 });
 
 test("CLA-75: skipped budget uses the job note category only", () => {

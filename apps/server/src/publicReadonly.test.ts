@@ -51,7 +51,7 @@ function publicHandler(scanRoot: string, baseUrl: string, extra: Partial<Paramet
     mode: "public-readonly",
     published: { store, publications: new OperatorPublicationService(store) },
     scanRoot,
-    llm: resolveLlmGatewayConfig({ OPENAI_BASE_URL: baseUrl, OPENROUTER_API_KEY: FAKE_GATEWAY_KEY, OPENROUTER_MODEL: "acme/fast" }),
+    llm: resolveLlmGatewayConfig({ OKIE_LLM_BASE_URL: baseUrl, OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY, OKIE_LLM_MODEL: "acme/fast" }),
     enrich: "off",
     bind: "0.0.0.0",
     ...extra,
@@ -104,7 +104,7 @@ test("CLA-266 public-readonly Ask: anonymous, no persisted thread, cost headers 
     const r2 = createServer((request, response) => { const body = client.objects.get((request.url ?? "/").slice(1)); response.writeHead(body ? 200 : 404); response.end(body); });
     const storeUrl = await listen(r2);
     try {
-      const runtime = createPublicReadonlyRuntime({ env: { OKIE_SCAN_ROOT: mirrorRoot, OKIE_PUBLISHED_STORE_URL: storeUrl, OKIE_PUBLISHED_REFRESH_MS: "0" }, llm: resolveLlmGatewayConfig({ OPENAI_BASE_URL: withCost.baseUrl, OPENROUTER_API_KEY: FAKE_GATEWAY_KEY, OPENROUTER_MODEL: "acme/fast" }), bind: "127.0.0.1", log: () => undefined });
+      const runtime = createPublicReadonlyRuntime({ env: { OKIE_SCAN_ROOT: mirrorRoot, OKIE_PUBLISHED_STORE_URL: storeUrl, OKIE_PUBLISHED_REFRESH_MS: "0" }, llm: resolveLlmGatewayConfig({ OKIE_LLM_BASE_URL: withCost.baseUrl, OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY, OKIE_LLM_MODEL: "acme/fast" }), bind: "127.0.0.1", log: () => undefined });
       const origin = await listen(runtime.server);
       try {
         // Nothing synced yet: the Ask names the slug, so the mirror installs it on demand.
@@ -145,7 +145,7 @@ test("CLA-266 public-readonly Ask: anonymous, no persisted thread, cost headers 
       allowSubmit: createSubmitLimiter(),
       auth: createGithubAuthService({ bind: "127.0.0.1", env: { OKIE_GITHUB_TEST_DOUBLE: "0", OKIE_PUBLIC_ORIGIN: "http://localhost:4173" } }),
       scanRoot: mirrorRoot,
-      llm: resolveLlmGatewayConfig({ OPENAI_BASE_URL: withCost.baseUrl, OPENROUTER_API_KEY: FAKE_GATEWAY_KEY, OPENROUTER_MODEL: "acme/fast" }),
+      llm: resolveLlmGatewayConfig({ OKIE_LLM_BASE_URL: withCost.baseUrl, OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY, OKIE_LLM_MODEL: "acme/fast" }),
       enrich: "off",
       bind: "127.0.0.1",
     });

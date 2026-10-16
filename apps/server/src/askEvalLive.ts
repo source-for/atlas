@@ -16,6 +16,8 @@ import {
 } from "./askEval.js";
 import {
   createLlmGatewayClient,
+  ignoredGenericLlmEnvNotice,
+  llmProviderArg,
   loadOperatorDotenv,
   redactGatewayErrorText,
   resolveLlmGatewayConfig,
@@ -29,7 +31,7 @@ import {
  * records raw completions + usage to `fixtures/ask-eval/replay.json`, and prints a table.
  * Never runs in CI (`askEval.test.ts` replays the file instead).
  *
- *   node apps/server/dist/askEvalLive.js [--max-dollars 0.5]
+ *   node apps/server/dist/askEvalLive.js --llm-provider openrouter [--dotenv] [--max-dollars 0.5]   # needs OKIE_LLM_API_KEY
  *   node apps/server/dist/askEvalLive.js --score-only   # re-score replay.json, no spend
  *   node apps/server/dist/askEvalLive.js --only id1,id2 --max-dollars 0.1   # (re)record just these; keeps the other runs
  */
@@ -78,6 +80,9 @@ function scoreOnly(): void {
   console.log(`\nmodel ${replay.modelId}; recorded live spend $${replay.totalCostUsd.toFixed(4)}`);
 }
 
+/** The key the run used, for redacting a failure message. */
+let usedKey: string | undefined;
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.includes("--score-only")) { scoreOnly(); return; }
@@ -85,10 +90,14 @@ async function main(): Promise<void> {
   const maxDollars = capIndex >= 0 ? Number.parseFloat(argv[capIndex + 1] ?? "") : 0.5;
   if (!Number.isFinite(maxDollars) || maxDollars <= 0) throw new Error("--max-dollars must be positive");
   const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../../..");
-  loadOperatorDotenv(repoRoot);
-  const config = resolveLlmGatewayConfig(process.env, resolveLlmGatewayLocalConfig(repoRoot));
+  // CLA-606: .env only with --dotenv / OKIE_DOTENV=1; egress only with --llm-provider (or OKIE_LLM_PROVIDER) + OKIE_LLM_API_KEY.
+  loadOperatorDotenv(repoRoot, argv);
+  const notice = ignoredGenericLlmEnvNotice(process.env);
+  if (notice) console.error(notice);
+  const config = resolveLlmGatewayConfig(process.env, resolveLlmGatewayLocalConfig(repoRoot), llmProviderArg(argv));
+  usedKey = config.apiKey;
   const client = createLlmGatewayClient(config, { timeoutMs: 120_000 });
-  if (!client) throw new Error("No OpenAI-compatible gateway key configured (see .env key names).");
+  if (!client) throw new Error(`No OpenAI-compatible gateway configured: ${config.offReason ?? `--llm-provider ${config.provider ?? ""} has no gateway`} (needs --llm-provider openrouter|openai-compatible and OKIE_LLM_API_KEY).`);
 
   const fixture = loadAskEvalFixture();
   const index = buildAskEvalIndex(fixture);
@@ -146,7 +155,9 @@ async function main(): Promise<void> {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error: unknown) => {
     const raw = error instanceof Error ? error.message : String(error);
-    console.error(redactGatewayErrorText(raw, process.env.OPENROUTER_API_KEY));
+    // The key actually used, plus the generic names in case one held the same value.
+    const secrets = [usedKey, process.env.OKIE_LLM_API_KEY, process.env.OPENROUTER_API_KEY, process.env.OPENAI_API_KEY];
+    console.error(secrets.reduce<string>((text, secret) => redactGatewayErrorText(text, secret), raw));
     process.exit(1);
   });
 }

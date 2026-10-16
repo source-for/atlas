@@ -10,7 +10,8 @@
 //        [--live] [--scan-root <empty scratch dir>] [--depth component|code] [--name owner/repo] [--json <out.json>]
 //
 // Dry-run is the default: a fake gateway (no network, no key, no spend). Only an explicit --live uses the configured
-// gateway (repo-root .env / okie.local.json, OKIE_LLM_OPERATOR_* budget caps): that is a LIVE, paid run.
+// gateway (--llm-provider <name> or OKIE_LLM_PROVIDER + OKIE_LLM_API_KEY; --dotenv / OKIE_DOTENV=1 loads the repo-root
+// .env; okie.local.json; OKIE_LLM_OPERATOR_* budget caps): that is a LIVE, paid run.
 // The store is always a scratch directory: a fresh temp dir by default, never $OKIE_SCAN_ROOT; an existing operator
 // store is refused. rust-analyzer SCIP indexes are cached inside that scratch store (<store>/cache/rust-scip), as the
 // operator runner does. Requires a built server (`pnpm --filter @okie/server build`).
@@ -43,7 +44,7 @@ const { OperatorPublicationService } = await import(join(server, 'operatorPublic
 const { createOperatorRunner, rustIndexCacheDir } = await import(join(server, 'operatorRunner.js'));
 const { autoPublishGate, startIncrementalRun } = await import(join(server, 'operatorIncremental.js'));
 const { OperatorWorkflow } = await import(join(server, 'operatorWorkflow.js'));
-const { loadOperatorDotenv, resolveLlmGatewayConfig, resolveLlmGatewayLocalConfig } = await import(join(server, 'llmGateway.js'));
+const { llmProviderArg, loadOperatorDotenv, resolveLlmGatewayConfig, resolveLlmGatewayLocalConfig } = await import(join(server, 'llmGateway.js'));
 
 const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
 const shaA = git('rev-parse', from);
@@ -57,7 +58,7 @@ const fakeGateway = { modelId: 'fake/dry-run', async chatCompletions(body) {
 let gatewayConfig;
 if (live) {
   loadOperatorDotenv(repoRoot);
-  gatewayConfig = resolveLlmGatewayConfig(process.env, resolveLlmGatewayLocalConfig(repoRoot));
+  gatewayConfig = resolveLlmGatewayConfig(process.env, resolveLlmGatewayLocalConfig(repoRoot), llmProviderArg(process.argv.slice(2)));
   if (gatewayConfig.keySource === 'none') throw new Error('No gateway key configured for --live');
 }
 

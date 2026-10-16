@@ -61,7 +61,7 @@ export interface EnrichmentGateway {
 }
 
 export interface EnricherOptions {
-  /** Injectable generator (tests). Default: gateway `chatCompletions`, else Anthropic. */
+  /** Injectable generator (tests). Default: gateway `chatCompletions`, else `anthropic`, else the pass fails. */
   generate?: EnrichmentGenerator;
   /**
    * Operator-configured model id (CLA-21). Opaque string the gateway understands.
@@ -70,9 +70,14 @@ export interface EnricherOptions {
   modelId?: string;
   /**
    * OpenAI-compatible gateway (CLA-20/23). When `chatCompletions` is present, packets
-   * POST there. Otherwise Anthropic SDK remains the `ANTHROPIC_*` fallback.
+   * POST there.
    */
   gateway?: EnrichmentGateway;
+  /**
+   * The `anthropic` provider (CLA-606): key and base URL are passed to the SDK explicitly, so it never
+   * reads ANTHROPIC_* env vars or a local profile. Without this (or a gateway) the pass fails, never egresses.
+   */
+  anthropic?: { apiKey: string; baseUrl: string };
   /** Per-request timeout + scan-level caps (CLA-22). Defaults are the documented constants. */
   budget?: Partial<EnrichmentBudget>;
   /**
@@ -364,7 +369,7 @@ function cappedOutputTokens(maxOutputTokens: number): number {
 }
 
 /**
- * Anthropic Messages fields for one scope (ANTHROPIC_* fallback).
+ * Anthropic Messages fields for one scope (the `anthropic` provider).
  * The model id is the configured string — not a lookup table.
  */
 export function enrichmentStreamParams(
@@ -655,11 +660,14 @@ function defaultGenerator(
   if (passModelId && gatewayCanChat(options.gateway)) {
     return gatewayGenerator(options.gateway, passModelId, remainingTokens);
   }
-  if (passModelId) {
-    return anthropicGenerator(new Anthropic(), passModelId, { timeoutMs, remainingTokens });
+  if (passModelId && options.anthropic) {
+    // authToken: null so the SDK cannot add ANTHROPIC_AUTH_TOKEN from the environment.
+    const client = new Anthropic({ apiKey: options.anthropic.apiKey, authToken: null, baseURL: options.anthropic.baseUrl });
+    return anthropicGenerator(client, passModelId, { timeoutMs, remainingTokens });
   }
+  const reason = passModelId ? "no LLM provider configured" : "empty model id";
   return async () => {
-    throw new Error("empty model id");
+    throw new Error(reason);
   };
 }
 

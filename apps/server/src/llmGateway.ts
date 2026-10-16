@@ -6,20 +6,36 @@ import { scrubGithubTokens, scrubProviderIdentifiers } from "@okie/scan";
 /**
  * OpenAI-compatible LLM gateway config + client construction (CLA-20).
  *
- * OpenRouter-first: the published default base URL is OpenRouter's v1 endpoint.
- * Keys are env-only (`.env` / process env). Local config may set base URL and
- * model id but is never a key source. The Anthropic env sniff remains a
- * fallback for the existing SDK path; it does not become a gateway credential.
+ * CLA-606: egress is an explicit opt-in. A provider must be chosen (`--llm-provider <name>` or
+ * `OKIE_LLM_PROVIDER`) and the key must be `OKIE_LLM_API_KEY`. Generic provider variables a developer
+ * exports for other tools (OPENROUTER_API_KEY, OPENAI_API_KEY, ANTHROPIC_*, …) are never read, so
+ * trying the server locally cannot send code anywhere by accident. Local config may set base URL and
+ * model id but is never a key source. Repo-root `.env` is loaded only on request (`--dotenv` / OKIE_DOTENV=1).
  */
 
 export const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+
+/** `--llm-provider` / `OKIE_LLM_PROVIDER` values. Anything else stops the process at startup. */
+export const LLM_PROVIDERS = ["openrouter", "openai-compatible", "anthropic", "off"] as const;
+export type LlmProvider = typeof LLM_PROVIDERS[number];
+
+/**
+ * Generic provider variables that are never read (CLA-606). Present ones are named, never valued, in one
+ * startup notice. Redaction lists elsewhere may still mention them: scrubbing more is harmless.
+ */
+export const IGNORED_GENERIC_LLM_ENV = [
+  "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "OPENROUTER_MODEL", "OPENAI_MODEL",
+] as const;
 
 /** Documented default model id in OpenRouter's `provider/model` form. Not a table. */
 export const DEFAULT_GATEWAY_MODEL_ID = "xiaomi/mimo-v2.6-pro";
 
 export const LOCAL_LLM_CONFIG_FILENAME = "okie.local.json";
 
-export type LlmKeySource = "gateway" | "anthropic-fallback" | "none";
+/** `gateway`: OpenAI-compatible chat completions. `anthropic`: the Anthropic SDK, scan enrichment only. */
+export type LlmKeySource = "gateway" | "anthropic" | "none";
 
 /** Non-secret overlay. Keys are not part of this type and are ignored if a file contains them. */
 export interface LlmGatewayLocalConfig {
@@ -33,6 +49,10 @@ export interface LlmGatewayConfig {
   keySource: LlmKeySource;
   /** Present only when a key was resolved. Never serialize, log, or put on /healthz. */
   apiKey?: string;
+  /** The opted-in provider, when one was chosen. */
+  provider?: LlmProvider;
+  /** Why egress is off (`keySource: "none"`): shown on the startup line. Never a value. */
+  offReason?: string;
 }
 
 export interface LlmGatewayPublicView {
@@ -437,8 +457,6 @@ function resolveModelId(env: NodeJS.Dict<string>, local: LlmGatewayLocalConfig):
   const sources: Array<{ present: boolean; raw: string | undefined }> = [
     { present: local.modelId !== undefined, raw: local.modelId },
     { present: envHasKey(env, "OKIE_LLM_MODEL"), raw: env.OKIE_LLM_MODEL },
-    { present: envHasKey(env, "OPENROUTER_MODEL"), raw: env.OPENROUTER_MODEL },
-    { present: envHasKey(env, "OPENAI_MODEL"), raw: env.OPENAI_MODEL },
   ];
   for (const source of sources) {
     if (!source.present) continue;
@@ -479,12 +497,39 @@ function withApiKey(base: Omit<LlmGatewayConfig, "apiKey">, apiKey: string): Llm
   return config;
 }
 
-function gatewayKeyFromEnv(env: NodeJS.Dict<string>): string | undefined {
-  return firstNonEmpty([env.OKIE_LLM_API_KEY, env.OPENROUTER_API_KEY, env.OPENAI_API_KEY]);
+/** The `--llm-provider <name>` / `--llm-provider=<name>` argument, if any (last one wins). */
+export function llmProviderArg(argv: readonly string[]): string | undefined {
+  let value: string | undefined;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]!;
+    if (arg === "--llm-provider") value = argv[++index] ?? "";
+    else if (arg.startsWith("--llm-provider=")) value = arg.slice("--llm-provider=".length);
+  }
+  return value;
 }
 
-function anthropicKeyFromEnv(env: NodeJS.Dict<string>): string | undefined {
-  return firstNonEmpty([env.ANTHROPIC_API_KEY, env.ANTHROPIC_AUTH_TOKEN]);
+function parseLlmProvider(raw: string): LlmProvider {
+  const value = raw.trim().toLowerCase();
+  if ((LLM_PROVIDERS as readonly string[]).includes(value)) return value as LlmProvider;
+  const shown = JSON.stringify(raw.trim().slice(0, 40));
+  throw new Error(`unknown LLM provider ${shown} (--llm-provider / OKIE_LLM_PROVIDER): use ${LLM_PROVIDERS.join(", ")}`);
+}
+
+/** Generic provider variables set in `env` (names only), which CLA-606 ignores. */
+export function ignoredGenericLlmEnv(env: NodeJS.Dict<string>): string[] {
+  return IGNORED_GENERIC_LLM_ENV.filter(name => trimToUndefined(env[name]) !== undefined);
+}
+
+/** One startup notice naming the ignored generic variables (never their values), or `undefined` when none is set. */
+export function ignoredGenericLlmEnvNotice(env: NodeJS.Dict<string>): string | undefined {
+  const names = ignoredGenericLlmEnv(env);
+  if (!names.length) return undefined;
+  return `LLM notice: ignoring ${names.join(", ")} (only OKIE_LLM_API_KEY / OKIE_LLM_BASE_URL / OKIE_LLM_MODEL are read; `
+    + `opt in with --llm-provider <${LLM_PROVIDERS.filter(name => name !== "off").join("|")}> or OKIE_LLM_PROVIDER)`;
+}
+
+function sameUrl(a: string, b: string): boolean {
+  return a.replace(/\/+$/, "") === b.replace(/\/+$/, "");
 }
 
 /** Origin + pathname, with userinfo/query/hash stripped. Never throws. */
@@ -538,19 +583,12 @@ export function safeGatewayProvider(baseUrl: string): string | undefined {
 }
 
 /**
- * Provider label for job/UI. Anthropic fallback and force-without-gateway-key
- * (profile auth) are named "anthropic". A gateway key uses the hostname only.
- * Never a URL, never a key.
+ * Provider label for job/UI. The Anthropic provider is named "anthropic"; a gateway uses the
+ * hostname only; nothing when egress is off. Never a URL, never a key.
  */
-export function enrichmentProviderLabel(
-  config: LlmGatewayConfig,
-  mode: "off" | "force" | "auto" = "auto",
-): string | undefined {
-  let raw: string | undefined;
-  if (config.keySource === "anthropic-fallback") raw = "anthropic";
-  else if (config.keySource === "gateway") raw = safeGatewayProvider(config.baseUrl);
-  else if (mode === "force") raw = "anthropic";
-  else raw = safeGatewayProvider(config.baseUrl);
+export function enrichmentProviderLabel(config: LlmGatewayConfig): string | undefined {
+  if (config.keySource === "none") return undefined;
+  const raw = config.keySource === "anthropic" ? "anthropic" : safeGatewayProvider(config.baseUrl);
   if (!raw) return undefined;
   if (/https?:\/\//i.test(raw) || raw.includes("@") || raw.includes("/")) return undefined;
   const redacted = redactGatewayText(raw, config.apiKey);
@@ -611,29 +649,48 @@ export function hasLlmCredentials(config: LlmGatewayConfig): boolean {
 }
 
 /**
- * Resolves gateway settings. Local overlay wins for base URL / model id.
- * Keys come only from env (gateway vars first, then ANTHROPIC_* fallback).
+ * Resolves the LLM settings (CLA-606). Egress needs a provider opt-in (`provider`, i.e. the
+ * `--llm-provider` value, else `OKIE_LLM_PROVIDER`) AND `OKIE_LLM_API_KEY`; otherwise the config is
+ * off (`keySource: "none"`) with an `offReason`. Local overlay wins for base URL / model id.
+ * Throws on an unknown provider, on `openrouter` with a base URL override, and on `openai-compatible`
+ * without a base URL, so a misconfigured server stops at startup instead of sending somewhere unexpected.
  */
 export function resolveLlmGatewayConfig(
   env: NodeJS.Dict<string> = process.env,
   local: LlmGatewayLocalConfig = {},
+  provider?: string,
 ): LlmGatewayConfig {
-  const baseUrl = firstNonEmpty([
-    local.baseUrl,
-    env.OKIE_LLM_BASE_URL,
-    env.OPENAI_BASE_URL,
-  ]) ?? DEFAULT_OPENROUTER_BASE_URL;
+  // The CLI value (`llmProviderArg`) beats the env var; an empty `--llm-provider=` is an unknown provider.
+  const choice = provider ?? trimToUndefined(env.OKIE_LLM_PROVIDER);
+  const baseOverride = firstNonEmpty([local.baseUrl, env.OKIE_LLM_BASE_URL]);
   const modelId = resolveModelId(env, local);
+  const apiKey = trimToUndefined(env.OKIE_LLM_API_KEY);
+  const off = (offReason: string, baseUrl = baseOverride ?? DEFAULT_OPENROUTER_BASE_URL, chosen?: LlmProvider): LlmGatewayConfig =>
+    ({ baseUrl, modelId, keySource: "none", offReason, ...(chosen ? { provider: chosen } : {}) });
 
-  const gatewayKey = gatewayKeyFromEnv(env);
-  if (gatewayKey) {
-    return withApiKey({ baseUrl, modelId, keySource: "gateway" }, gatewayKey);
+  if (choice === undefined) {
+    return off(apiKey
+      ? "OKIE_LLM_API_KEY is set but no provider is chosen; pass --llm-provider <name> or set OKIE_LLM_PROVIDER"
+      : "no --llm-provider / OKIE_LLM_PROVIDER");
   }
-  const anthropicKey = anthropicKeyFromEnv(env);
-  if (anthropicKey) {
-    return withApiKey({ baseUrl, modelId, keySource: "anthropic-fallback" }, anthropicKey);
+  const chosen = parseLlmProvider(choice);
+  if (chosen === "off") return off("--llm-provider off", undefined, chosen);
+
+  let baseUrl: string;
+  if (chosen === "openrouter") {
+    if (baseOverride && !sameUrl(baseOverride, DEFAULT_OPENROUTER_BASE_URL)) {
+      throw new Error("--llm-provider openrouter always sends to openrouter.ai, but a base URL override is set "
+        + "(OKIE_LLM_BASE_URL or okie.local.json baseUrl); use --llm-provider openai-compatible to send elsewhere");
+    }
+    baseUrl = DEFAULT_OPENROUTER_BASE_URL;
+  } else if (chosen === "openai-compatible") {
+    if (!baseOverride) throw new Error("--llm-provider openai-compatible needs OKIE_LLM_BASE_URL (or okie.local.json baseUrl)");
+    baseUrl = baseOverride;
+  } else {
+    baseUrl = baseOverride ?? DEFAULT_ANTHROPIC_BASE_URL;
   }
-  return { baseUrl, modelId, keySource: "none" };
+  if (!apiKey) return off(`--llm-provider ${chosen} is chosen but OKIE_LLM_API_KEY is unset`, baseUrl, chosen);
+  return withApiKey({ baseUrl, modelId, keySource: chosen === "anthropic" ? "anthropic" : "gateway", provider: chosen }, apiKey);
 }
 
 /**
@@ -675,17 +732,31 @@ export function resolveLlmGatewayLocalConfig(
   return readLlmGatewayLocalConfigFile(path);
 }
 
-/** Load repo-root `.env` into `process.env` without overriding existing vars. */
-export function loadOperatorDotenv(repoRoot: string): void {
+/** `--dotenv` on the command line, or `OKIE_DOTENV=1`. */
+export function dotenvRequested(argv: readonly string[] = process.argv.slice(2), env: NodeJS.Dict<string> = process.env): boolean {
+  return argv.includes("--dotenv") || /^(?:1|on|true|yes)$/i.test(env.OKIE_DOTENV?.trim() ?? "");
+}
+
+/**
+ * Load repo-root `.env` into `process.env` without overriding existing vars, ONLY when asked
+ * (`--dotenv` / `OKIE_DOTENV=1`; CLA-606). Returns whether it was loaded.
+ */
+export function loadOperatorDotenv(
+  repoRoot: string,
+  argv: readonly string[] = process.argv.slice(2),
+  env: NodeJS.Dict<string> = process.env,
+): boolean {
+  if (!dotenvRequested(argv, env)) return false;
   const envPath = join(repoRoot, ".env");
-  if (!existsSync(envPath)) return;
+  if (!existsSync(envPath)) return false;
   process.loadEnvFile(envPath);
+  return true;
 }
 
 /**
  * OpenAI-compatible client. The API key is a private field: JSON, inspect, and
- * error messages never include it. Not constructed for Anthropic-fallback keys
- * (those stay on the Anthropic SDK so they are not sent to the gateway).
+ * error messages never include it. Not constructed for the `anthropic` provider
+ * (that key stays on the Anthropic SDK so it is not sent to a gateway).
  */
 export class LlmGatewayClient {
   readonly baseUrl: string;
@@ -780,7 +851,7 @@ export class LlmGatewayClient {
   }
 }
 
-/** `undefined` when there is no gateway key (including Anthropic-only fallback). */
+/** `undefined` when there is no gateway key (including the `anthropic` provider). */
 export function createLlmGatewayClient(
   config: LlmGatewayConfig,
   options: LlmGatewayClientOptions = {},
@@ -789,26 +860,33 @@ export function createLlmGatewayClient(
   return new LlmGatewayClient(config, options);
 }
 
-export function describeEnrichmentMode(
-  mode: "off" | "force" | "auto",
-  config: LlmGatewayConfig,
-): string {
-  if (mode === "off") return "disabled (OKIE_SCAN_ENRICH=0)";
+function modelNote(config: LlmGatewayConfig): string {
   const modelId = enrichmentModelId(config);
-  const modelNote = modelId
-    ? `model ${modelId}`
-    : isUsableModelId(config.modelId)
-      ? "model [redacted]"
-      : "empty model id (enrichment pass will fail; atlas still publishes)";
-  const provider = enrichmentProviderLabel(config, mode) ?? "configured";
-  if (mode === "force") {
-    return `forced (OKIE_SCAN_ENRICH=1) ${config.keySource === "gateway" ? "gateway" : "provider"} ${provider} ${modelNote}`;
+  if (modelId) return `model ${modelId}`;
+  return isUsableModelId(config.modelId) ? "model [redacted]" : "empty model id; enrichment pass will fail, atlas still publishes";
+}
+
+/**
+ * The single startup line for every LLM state (CLA-606): `LLM enrichment: off (<reason>)` or
+ * `LLM enrichment: on → <host> (model <id>)` plus what runs. Host only: never a URL, never a key.
+ */
+export function describeLlmStartup(
+  config: LlmGatewayConfig,
+  options: { serverMode: "default" | "public-readonly"; scanEnrich?: "off" | "force" | "auto" },
+): string {
+  if (!hasLlmCredentials(config)) return `LLM enrichment: off (${config.offReason ?? "no provider"})`;
+  const scanEnrich = options.serverMode === "public-readonly" ? "off" : options.scanEnrich ?? "auto";
+  if (config.keySource === "anthropic") {
+    if (options.serverMode === "public-readonly") return "LLM enrichment: off (anthropic serves scan enrichment only; public-readonly runs Ask only)";
+    if (scanEnrich === "off") return "LLM enrichment: off (OKIE_SCAN_ENRICH=0, and anthropic serves scan enrichment only)";
   }
-  if (!hasLlmCredentials(config)) {
-    return `auto (no key; enrichment skipped) gateway ${provider} ${modelNote}`;
-  }
-  if (config.keySource === "anthropic-fallback") {
-    return `auto (ANTHROPIC_* fallback) provider ${provider} ${modelNote}`;
-  }
-  return `auto gateway ${provider} ${modelNote}`;
+  const host = enrichmentProviderLabel(config) ?? "configured";
+  const scope = config.keySource === "anthropic"
+    ? "scan enrichment only; Ask and operator enrichment need openrouter or openai-compatible"
+    : options.serverMode === "public-readonly"
+      ? "Ask only; no scan enrichment in public-readonly"
+      : scanEnrich === "off"
+        ? "Ask and operator enrichment; scan enrichment off (OKIE_SCAN_ENRICH=0)"
+        : "scan enrichment, operator enrichment and Ask";
+  return `LLM enrichment: on → ${host} (${modelNote(config)}); ${scope}`;
 }

@@ -9,6 +9,8 @@
 //   --work <dir>            scratch dir OUTSIDE the repo (default: $TMPDIR/okie-cross-repo-eval)
 //   --mirror <dir>          fetch from <dir>/<owner>_<repo> instead of GitHub (SHA still verified)
 //   --live                  allow paid calls (gateway for enrich/ask, Jev for claims/blocks). Never in CI.
+//                           The gateway also needs --llm-provider <name> (or OKIE_LLM_PROVIDER) and OKIE_LLM_API_KEY;
+//                           --dotenv (or OKIE_DOTENV=1) loads the repo-root .env (CLA-606).
 //   --fake                  enrich/claims with a deterministic fake gateway/Jev (free; results stay in --work)
 //   --max-dollars 3         ticket cap for this invocation (default 3, never above 3; spend.json is shared)
 //   --per-repo-dollars 0.15 enrichment dollar cap per repo (OKIE_LLM_OPERATOR_MAX_DOLLARS)
@@ -370,7 +372,7 @@ function liveGateway(client, slug, stageName, stats, hold) {
 let gatewayPrice = core.DEFAULT_GATEWAY_PRICE;
 function resolveLivePrice(stages) {
   if (!live || !stages.some(name => name === 'enrich' || name === 'ask')) return;
-  const config = llm.resolveLlmGatewayConfig(process.env, llm.resolveLlmGatewayLocalConfig(repoRoot));
+  const config = llm.resolveLlmGatewayConfig(process.env, llm.resolveLlmGatewayLocalConfig(repoRoot), llm.llmProviderArg(argv));
   gatewayPrice = core.resolveGatewayPrice(config.modelId, priceOverride);
 }
 const { createOperatorBudgetLedger } = await server('operatorBudget.js');
@@ -423,7 +425,7 @@ async function enrichStage(repo, run) {
     // and give the runner the rest as its global cap.
     const overshoot = caps.maxConcurrent * core.perRequestWorstUsd(gatewayPrice);
     const reservation = Math.min(caps.maxRequests * core.perRequestWorstUsd(gatewayPrice), caps.maxDollars + overshoot);
-    gatewayConfig = llm.resolveLlmGatewayConfig(process.env, llm.resolveLlmGatewayLocalConfig(repoRoot));
+    gatewayConfig = llm.resolveLlmGatewayConfig(process.env, llm.resolveLlmGatewayLocalConfig(repoRoot), llm.llmProviderArg(argv));
     const client = llm.createLlmGatewayClient(gatewayConfig, { timeoutMs: llm.resolveOperatorEnrichmentBudget().requestTimeoutMs });
     if (!client) throw new Error('No OpenAI-compatible gateway key configured (see .env key names).');
     hold = await spend.reserve(reservation, `${repo.slug} enrichment (worst case $${reservation.toFixed(3)})`);
@@ -515,7 +517,7 @@ async function askStage(repo, run) {
   const table = new core.PathTable(prior?.paths ?? []);
   let client; let modelId; let limiter;
   if (live) {
-    const config = llm.resolveLlmGatewayConfig(process.env, llm.resolveLlmGatewayLocalConfig(repoRoot));
+    const config = llm.resolveLlmGatewayConfig(process.env, llm.resolveLlmGatewayLocalConfig(repoRoot), llm.llmProviderArg(argv));
     client = llm.createLlmGatewayClient(config, { timeoutMs: 120_000 });
     if (!client) throw new Error('No OpenAI-compatible gateway key configured (see .env key names).');
     modelId = config.modelId;

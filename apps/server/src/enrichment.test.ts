@@ -709,9 +709,9 @@ test("fake HTTP gateway: 429 skips remaining scopes and redacts the key", async 
   });
   try {
     const client = createLlmGatewayClient(resolveLlmGatewayConfig({
-      OPENAI_BASE_URL: fake.baseUrl,
-      OPENROUTER_API_KEY: fakeKey,
-      OPENROUTER_MODEL: "acme/fast",
+      OKIE_LLM_BASE_URL: fake.baseUrl,
+      OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: fakeKey,
+      OKIE_LLM_MODEL: "acme/fast",
     }), { timeoutMs: 2_000 });
     assert.ok(client);
     const notes: string[] = [];
@@ -922,9 +922,9 @@ test("gateway adapter posts each packet to chat/completions and keys docs by con
   });
   try {
     const client = createLlmGatewayClient(resolveLlmGatewayConfig({
-      OPENAI_BASE_URL: fake.baseUrl,
-      OPENROUTER_API_KEY: fakeKey,
-      OPENROUTER_MODEL: "acme/fast",
+      OKIE_LLM_BASE_URL: fake.baseUrl,
+      OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: fakeKey,
+      OKIE_LLM_MODEL: "acme/fast",
     }), { timeoutMs: 2_000 });
     assert.ok(client);
     const notes: string[] = [];
@@ -977,9 +977,9 @@ test("onUsage records fake-gateway usage onto a shared global spend ledger", asy
   });
   try {
     const client = createLlmGatewayClient(resolveLlmGatewayConfig({
-      OPENAI_BASE_URL: fake.baseUrl,
-      OPENROUTER_API_KEY: fakeKey,
-      OPENROUTER_MODEL: "acme/fast",
+      OKIE_LLM_BASE_URL: fake.baseUrl,
+      OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: fakeKey,
+      OKIE_LLM_MODEL: "acme/fast",
     }), { timeoutMs: 2_000 });
     assert.ok(client);
     const notes: string[] = [];
@@ -1014,9 +1014,9 @@ test("billed malformed gateway replies still count toward the global cap", async
   });
   try {
     const client = createLlmGatewayClient(resolveLlmGatewayConfig({
-      OPENAI_BASE_URL: fake.baseUrl,
-      OPENROUTER_API_KEY: fakeKey,
-      OPENROUTER_MODEL: "acme/fast",
+      OKIE_LLM_BASE_URL: fake.baseUrl,
+      OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: fakeKey,
+      OKIE_LLM_MODEL: "acme/fast",
     }), { timeoutMs: 2_000 });
     assert.ok(client);
     const notes: string[] = [];
@@ -1074,9 +1074,9 @@ test("default enricher factory drives packets through chatCompletions on a fake 
   });
   try {
     const hook = createDefaultEnricherFactory("auto", {
-      OPENAI_BASE_URL: fake.baseUrl,
-      OPENROUTER_API_KEY: fakeKey,
-      OPENROUTER_MODEL: "acme/fast",
+      OKIE_LLM_BASE_URL: fake.baseUrl,
+      OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: fakeKey,
+      OKIE_LLM_MODEL: "acme/fast",
     })(() => {});
     assert.ok(hook);
     const docs = await hook(packets());
@@ -1092,6 +1092,41 @@ test("default enricher factory drives packets through chatCompletions on a fake 
     assert.ok(posted.every(body => !body.includes(fakeKey)));
     assert.ok(posted.every(body => !body.includes("WHOLE_REPO_SENTINEL")));
   } finally {
+    await fake.close();
+  }
+});
+
+test("CLA-606: the anthropic provider passes OKIE_LLM_API_KEY and its base URL explicitly; ANTHROPIC_* env is never read", async () => {
+  const optedKey = "okie-test-cla606-anthropic-opted-fake";
+  const sniffed = { ANTHROPIC_API_KEY: "okie-test-cla606-sniffed-key-fake", ANTHROPIC_AUTH_TOKEN: "okie-test-cla606-sniffed-token-fake", ANTHROPIC_BASE_URL: "http://127.0.0.1:9/never" };
+  const seen: Array<{ url: string; apiKey: string | undefined; authorization: string | undefined }> = [];
+  const fake = await listenFakeGateway((request, response) => {
+    seen.push({ url: request.url ?? "", apiKey: request.headers["x-api-key"] as string | undefined, authorization: request.headers.authorization });
+    response.writeHead(400, { "content-type": "application/json" });
+    response.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "fake" } }));
+  });
+  const saved = Object.fromEntries(Object.keys(sniffed).map(name => [name, process.env[name]]));
+  Object.assign(process.env, sniffed); // the SDK reads process.env itself when not given explicit values
+  try {
+    const hook = createDefaultEnricherFactory("auto", {
+      OKIE_LLM_PROVIDER: "anthropic",
+      OKIE_LLM_BASE_URL: fake.baseUrl.replace(/\/v1$/, ""),
+      OKIE_LLM_API_KEY: optedKey,
+      OKIE_LLM_MODEL: "claude-test",
+      ...sniffed,
+    })(() => {});
+    assert.ok(hook);
+    await hook(packets()).catch(() => undefined);
+    assert.ok(seen.length > 0, "requests went to the configured base URL, not ANTHROPIC_BASE_URL");
+    for (const request of seen) {
+      assert.match(request.url, /^\/v1\/messages/);
+      assert.equal(request.apiKey, optedKey);
+      assert.equal(request.authorization, undefined, "ANTHROPIC_AUTH_TOKEN must not be added");
+    }
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
     await fake.close();
   }
 });
@@ -1139,9 +1174,9 @@ test("a planted secret in source does not appear in the outbound chatCompletions
   });
   try {
     const client = createLlmGatewayClient(resolveLlmGatewayConfig({
-      OPENAI_BASE_URL: fake.baseUrl,
-      OPENROUTER_API_KEY: fakeKey,
-      OPENROUTER_MODEL: "acme/fast",
+      OKIE_LLM_BASE_URL: fake.baseUrl,
+      OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: fakeKey,
+      OKIE_LLM_MODEL: "acme/fast",
     }), { timeoutMs: 2_000 });
     assert.ok(client);
     const enrich = createEnricher({
@@ -1356,9 +1391,9 @@ test("fake HTTP gateway nested C4 dump is rejected by the merge gate", async () 
   });
   try {
     const client = createLlmGatewayClient(resolveLlmGatewayConfig({
-      OPENAI_BASE_URL: fake.baseUrl,
-      OPENROUTER_API_KEY: fakeKey,
-      OPENROUTER_MODEL: "acme/fast",
+      OKIE_LLM_BASE_URL: fake.baseUrl,
+      OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: fakeKey,
+      OKIE_LLM_MODEL: "acme/fast",
     }), { timeoutMs: 2_000 });
     assert.ok(client);
     const enrich = createEnricher({
@@ -1396,9 +1431,9 @@ test("fake HTTP gateway flat envelope is accepted by the merge gate", async () =
   });
   try {
     const client = createLlmGatewayClient(resolveLlmGatewayConfig({
-      OPENAI_BASE_URL: fake.baseUrl,
-      OPENROUTER_API_KEY: fakeKey,
-      OPENROUTER_MODEL: "acme/fast",
+      OKIE_LLM_BASE_URL: fake.baseUrl,
+      OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: fakeKey,
+      OKIE_LLM_MODEL: "acme/fast",
     }), { timeoutMs: 2_000 });
     assert.ok(client);
     const enrich = createEnricher({
@@ -1472,9 +1507,9 @@ test("a nested first reply is retried once as the envelope; it is not coerced", 
   });
   try {
     const client = createLlmGatewayClient(resolveLlmGatewayConfig({
-      OPENAI_BASE_URL: fake.baseUrl,
-      OPENROUTER_API_KEY: fakeKey,
-      OPENROUTER_MODEL: "acme/fast",
+      OKIE_LLM_BASE_URL: fake.baseUrl,
+      OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: fakeKey,
+      OKIE_LLM_MODEL: "acme/fast",
     }), { timeoutMs: 2_000 });
     assert.ok(client);
     const enrich = createEnricher({
@@ -1518,9 +1553,9 @@ test("a nested dump that stays nested after one retry is still rejected", async 
   });
   try {
     const client = createLlmGatewayClient(resolveLlmGatewayConfig({
-      OPENAI_BASE_URL: fake.baseUrl,
-      OPENROUTER_API_KEY: fakeKey,
-      OPENROUTER_MODEL: "acme/fast",
+      OKIE_LLM_BASE_URL: fake.baseUrl,
+      OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: fakeKey,
+      OKIE_LLM_MODEL: "acme/fast",
     }), { timeoutMs: 2_000 });
     assert.ok(client);
     const enrich = createEnricher({
