@@ -49,7 +49,7 @@ print a one-line note if they found one.
 
    | Secret | Used by | Required |
    |---|---|---|
-   | `OKIE_LLM_API_KEY` | Ask (OpenRouter-compatible gateway). Passed into the container env at start. | yes, for Ask |
+   | `OKIE_LLM_API_KEY` | Ask (OpenRouter). Passed into the container env at start, next to `OKIE_LLM_PROVIDER=openrouter`, which `containerEnvVars` sets in code (CLA-606: the server sends nothing without a provider opt-in; generic names like `OPENROUTER_API_KEY` are ignored). | yes, for Ask |
    | `JEV_API` | Jev block planner. Passed into the container env. | only with `OKIE_JEV_BLOCK_PLANNER=on` |
    | `TURNSTILE_SECRET_KEY` | Turnstile guard | only with `TURNSTILE_ENABLED=1` |
 
@@ -362,9 +362,12 @@ With Ask on, against a locally run apps/server:
 ```sh
 cp apps/edge/.dev.vars.example apps/edge/.dev.vars          # uncomment ASK_ENABLED=1; DEV_* are local only
 OKIE_SERVER_MODE=public-readonly OKIE_SERVER_PORT=4195 OKIE_SCAN_ROOT=$(mktemp -d) \
-  OKIE_PUBLISHED_STORE_URL=http://127.0.0.1:4196/__store node apps/server/dist/main.js
+  OKIE_PUBLISHED_STORE_URL=http://127.0.0.1:4196/__store node apps/server/dist/main.js --llm-provider openrouter --dotenv
 pnpm --filter @okie/edge dev
 ```
+
+Ask needs both flags locally (CLA-606): `--llm-provider openrouter` opts in, and `--dotenv` reads `OKIE_LLM_API_KEY` from
+the repo-root `.env` (or export it instead). Without them the server starts with `LLM enrichment: off (…)`.
 
 - Don't use ports 4173, 4174 or 4180; they belong to the operator's own servers.
 - To try the real container locally (Docker running), run

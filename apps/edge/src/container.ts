@@ -20,6 +20,8 @@ export function containerEnvVars(env: Partial<EdgeEnv>): Record<string, string> 
     OKIE_PUBLISHED_STORE_URL: `http://${STORE_HOST}`,
     // Chat uses OpenRouter; the optional Jev Overview planner stays off.
     OKIE_JEV_BLOCK_PLANNER: '0',
+    // CLA-606: the server sends nothing to an LLM without an explicit provider opt-in; OKIE_LLM_API_KEY is the key.
+    OKIE_LLM_PROVIDER: 'openrouter',
   };
   for (const name of ['OKIE_LLM_API_KEY', 'JEV_API', 'OKIE_LLM_MODEL', 'OKIE_ASK_PER_IP_WINDOW'] as const) {
     const value = env[name];

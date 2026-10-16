@@ -18,7 +18,7 @@ export interface ScanJobEnrichment {
   note?: string;
   /** Configured model id when enrichment was attempted. Never the API key. */
   modelId?: string;
-  /** Safe provider host (or "anthropic" fallback). Never a URL, never a key. */
+  /** Safe provider host packets were sent to. Never a URL, never a key. */
   provider?: string;
 }
 

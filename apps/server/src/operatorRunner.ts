@@ -8,7 +8,7 @@ import { OperatorPublicationService } from "./operatorPublication.js";
 import { OperatorStore } from "./operatorStore.js";
 import { createOperatorBudgetLedger, type OperatorBudgetLedger } from "./operatorBudget.js";
 import { runOperatorEnrichment, type OperatorAdmission, type OperatorEnrichmentGateway, type OperatorEnrichmentScope, type OperatorEnrichmentStore, type OperatorExplanation } from "./operatorEnrichment.js";
-import { createLlmGatewayClient, isOpenRouterProvider, resolveOperatorLeafReasoning, resolveLlmGatewayConfig, resolveLlmRateLimitConfig, resolveOperatorEnrichmentBudget, resolveOperatorEnrichmentDepth, safeGatewayProvider, type GatewayUsage, type LlmGatewayConfig } from "./llmGateway.js";
+import { createLlmGatewayClient, isOpenRouterProvider, resolveOperatorLeafReasoning, resolveLlmGatewayConfig, resolveLlmModelId, resolveLlmRateLimitConfig, resolveOperatorEnrichmentBudget, resolveOperatorEnrichmentDepth, safeGatewayProvider, type GatewayUsage, type LlmGatewayConfig } from "./llmGateway.js";
 import { avgCost } from "./operatorWorkflow.js";
 import { rateLimitedGateway, sharedLlmRateLimiter, type LlmRateLimiter } from "./llmRateLimiter.js";
 import { githubClientForAccess } from "./githubAccess.js";
@@ -111,6 +111,10 @@ export async function assertPublicRepository(client: GithubClient, owner: string
 
 /** Controller seam: full committed scans create immutable drafts only; publication is never called here (except CLA-271's opt-in incremental auto-publish). */
 export function createOperatorRunner(deps: OperatorRunnerDeps): OperatorRunner {
+  // CLA-606: one LLM config for the whole runner. main.ts injects the one it resolved with the CLI --llm-provider; only a
+  // runner built without it (tests, scripts) falls back to the env, and the model id fallback never re-resolves the provider.
+  const gatewayConfig = (): LlmGatewayConfig => deps.gatewayConfig ?? resolveLlmGatewayConfig();
+  const configuredModelId = (): string => deps.gatewayConfig?.modelId ?? resolveLlmModelId();
   // The scan seam: a test `scan`, else inline with an injected client, else (production) a child process (CLA-305) so
   // the synchronous analysis never blocks the server's event loop and never sees its secrets. Cancelling the run kills it.
   const scanSource = async (source: GithubSourceRef, client: GithubClient, access: ScanGithubAccess, runId: string): Promise<OperatorRunnerScan> => {
@@ -139,7 +143,7 @@ export function createOperatorRunner(deps: OperatorRunnerDeps): OperatorRunner {
     const run = deps.store.snapshot().runs.find(value => value.runId === input.runId); if (!run) throw new Error("unknown operator run");
     if (input.kind === "incremental") {
       // CLA-271: re-scan at the new commit, carry reused explanations over, then one batch retry pass on the dirty set.
-      const rawGateway = deps.gateway ?? createLlmGatewayClient(deps.gatewayConfig ?? resolveLlmGatewayConfig(), { timeoutMs: resolveOperatorEnrichmentBudget().requestTimeoutMs });
+      const rawGateway = deps.gateway ?? createLlmGatewayClient(gatewayConfig(), { timeoutMs: resolveOperatorEnrichmentBudget().requestTimeoutMs });
       await runIncremental({
         store: deps.store, publication: deps.publication,
         // Cron and webhook triggers carry no session: public repositories are read anonymously (never operator `gh`).
@@ -148,7 +152,7 @@ export function createOperatorRunner(deps: OperatorRunnerDeps): OperatorRunner {
         scan: (source, client) => scanSource(source, client, input.githubAccess, input.runId),
         publicFiles: artifacts => publicArtifactFiles(run.source, artifacts),
         defaultCap: resolveOperatorEnrichmentDepth,
-        hashModel: () => ({ modelId: rawGateway?.modelId ?? (deps.gatewayConfig ?? resolveLlmGatewayConfig()).modelId, leafReasoning: leafReasoningFor(rawGateway, deps.gatewayConfig) }),
+        hashModel: () => ({ modelId: rawGateway?.modelId ?? configuredModelId(), leafReasoning: leafReasoningFor(rawGateway, deps.gatewayConfig) }),
         retry: job => runner.enqueue({ kind: "retry", attemptKind: "incremental", batch: true, githubAccess: input.githubAccess, ...job }),
       }, run, input.githubAccess);
       return;
@@ -210,7 +214,7 @@ export function createOperatorRunner(deps: OperatorRunnerDeps): OperatorRunner {
       if (!draft || !requested.length) throw new Error("retry requires draft and scope");
       const artifact = deps.store.snapshot().artifacts.find(value => value.artifactRevisionId === draft.artifactRevisionId)!;
       const sidecar = JSON.parse(deps.store.readArtifactFile(artifact.artifactRevisionId, "operator-explanations.json")!.toString()) as { maxKind?: OperatorEnrichmentCap; scopes: Array<{ scopeId: string; parentScopeId?: string; name: string; kind: OperatorEnrichmentScope["kind"]; stale?: boolean; /** CLA-271 overlay (claim re-check or moved evidence): never makes a parent stale. */ staleReason?: string; state?: OperatorSidecarScopeState; sourceRefs: Array<{ path: string; startLine?: number; endLine?: number }> }>; explanations: Array<{ scopeId: string; content: unknown; explanationVersionId?: string }> };
-      const selectedIds = requested.filter(scopeId => sidecar.scopes.some(scope => scope.scopeId === scopeId)); const rawGateway = deps.gateway ?? createLlmGatewayClient(deps.gatewayConfig ?? resolveLlmGatewayConfig(), { timeoutMs: resolveOperatorEnrichmentBudget().requestTimeoutMs });
+      const selectedIds = requested.filter(scopeId => sidecar.scopes.some(scope => scope.scopeId === scopeId)); const rawGateway = deps.gateway ?? createLlmGatewayClient(gatewayConfig(), { timeoutMs: resolveOperatorEnrichmentBudget().requestTimeoutMs });
       if (!selectedIds.length) { if (!deps.store.isCancelled(run.runId)) deps.store.updateRun(run.runId, { state: "awaiting_review" }); return; }
       markRunning();
       const single = selectedIds.length === 1 ? selectedIds[0]! : undefined;
@@ -236,7 +240,7 @@ export function createOperatorRunner(deps: OperatorRunnerDeps): OperatorRunner {
       let result: Awaited<ReturnType<typeof runOperatorEnrichment>>;
       const admission = ledgerAdmission(deps.store, run.runId, budget, deps.globalLedger);
       // A batch (the API's `scopeIds` form) re-reduces affected ancestors in the same pass; the single `scopeId` form and refresh keep marking them stale.
-      try { result = await runOperatorEnrichment({ draftRevisionId: draft.draftRevisionId, scopes, store: adapter, ...(gateway ? { gateway } : {}), limits: { maxScopes: budget.maxScopes, maxTokens: budget.maxTokens, maxDollars: budget.maxDollars, maxConcurrent: resolveLlmRateLimitConfig().maxConcurrent }, maxKind: sidecarCap ?? "code", leafReasoning: leafReasoningFor(rawGateway, deps.gatewayConfig), admitRequest: admission, estimateDroppedCostUsd: () => runAverageCostUsd(deps.store, run.runId), ...(deps.transportRetryDelayMs !== undefined ? { transportRetryDelayMs: deps.transportRetryDelayMs } : {}), retryScopeIds: selectedIds, ...(input.batch ? { reReduceAncestors: true } : {}), cancelled: () => deps.store.isCancelled(run.runId) }); }
+      try { result = await runOperatorEnrichment({ draftRevisionId: draft.draftRevisionId, scopes, store: adapter, ...(gateway ? { gateway } : {}), modelId: configuredModelId(), limits: { maxScopes: budget.maxScopes, maxTokens: budget.maxTokens, maxDollars: budget.maxDollars, maxConcurrent: resolveLlmRateLimitConfig().maxConcurrent }, maxKind: sidecarCap ?? "code", leafReasoning: leafReasoningFor(rawGateway, deps.gatewayConfig), admitRequest: admission, estimateDroppedCostUsd: () => runAverageCostUsd(deps.store, run.runId), ...(deps.transportRetryDelayMs !== undefined ? { transportRetryDelayMs: deps.transportRetryDelayMs } : {}), retryScopeIds: selectedIds, ...(input.batch ? { reReduceAncestors: true } : {}), cancelled: () => deps.store.isCancelled(run.runId) }); }
       catch (error) { deps.store.appendEvent({ runId: run.runId, type: "enrichment.retry_failed", detail: subjectDetail }); deps.store.updateRun(run.runId, { state: "awaiting_review", error: `${verb} of ${subject} failed: ${error instanceof Error ? error.message : String(error)}` }); return; }
       const attemptedIds = new Set(result.attempts.map(attempt => attempt.scopeId));
       const hadExplanation = new Set(sidecar.explanations.map(value => value.scopeId));
@@ -318,14 +322,14 @@ export function createOperatorRunner(deps: OperatorRunnerDeps): OperatorRunner {
       const files: Record<string, string> = { ...publicArtifactFiles(run.source, artifacts), "operator-explanations.json": stableJson({ schemaVersion: 1, maxKind, scopes: scopeDto, explanations: [] }) };
       const artifact = deps.store.writeArtifactRevision({ repositoryId: run.source.repositoryId, sourceCommitSha: scanned.commitSha, files });
       const draft = deps.publication.createDraftRevision({ runId: run.runId, artifactRevisionId: artifact.artifactRevisionId, coverage: coverageFor(scopeDto.map(scope => ({ ...scope, state: sidecarState(false, false, undefined, belowEnrichmentCap(scope.kind, maxKind)) }))) }); let activeDraftRevisionId = draft.draftRevisionId;
-      const rawGateway = deps.gateway ?? createLlmGatewayClient(deps.gatewayConfig ?? resolveLlmGatewayConfig(), { timeoutMs: resolveOperatorEnrichmentBudget().requestTimeoutMs });
+      const rawGateway = deps.gateway ?? createLlmGatewayClient(gatewayConfig(), { timeoutMs: resolveOperatorEnrichmentBudget().requestTimeoutMs });
       const budget = resolveOperatorEnrichmentBudget();
       const gateway = rawGateway && limitedGateway(rawGateway, deps.gatewayConfig, deps.rateLimiter);
         const scopes: OperatorEnrichmentScope[] = operatorScopesFromSnapshot(artifacts.snapshot);
         const attemptMap = new Map<string, string>();
         const adapter: OperatorEnrichmentStore = { async createAttempt(attempt) { const row = deps.store.createAttempt({ draftRevisionId: draft.draftRevisionId, scopeId: attempt.scopeId, kind: "enrichment", state: "running", modelId: attempt.modelId, inputHash: attempt.inputHash, taskId: attempt.attemptId }); attemptMap.set(attempt.attemptId, row.attemptId); }, async updateAttempt(id, patch) { const mapped = attemptMap.get(id); const usage = persistedUsage(patch.usage); if (mapped) deps.store.updateAttempt(mapped, { state: patch.state === "accepted" ? "accepted" : patch.state === "cancelled" ? "cancelled" : "failed", ...(usage ? { usage } : {}), ...(patch.error ? { error: patch.error } : {}) }); }, async latestAttempt(scopeId) { const row = deps.store.listAttempts(draft.draftRevisionId, scopeId).at(-1); return row ? { attemptId: row.attemptId, scopeId, role: "owner", state: row.state === "accepted" ? "accepted" : "failed", modelId: row.modelId ?? "", inputHash: row.inputHash ?? "", createdAt: row.createdAt, updatedAt: row.updatedAt } : undefined; }, async putAcceptedExplanation(scopeId, explanation, attemptId, inputHash) { const row = deps.store.putAcceptedExplanation({ draftRevisionId: draft.draftRevisionId, scopeId, attemptId: attemptMap.get(attemptId) ?? attemptId, inputHash, content: explanation, validation: { accepted: true, validator: "operator-enrichment/v1" } }); return { explanationVersionId: row.explanationVersionId }; }, async getAcceptedExplanation(scopeId) { const row = deps.store.getAcceptedExplanation(draft.draftRevisionId, scopeId); return row?.content as OperatorExplanation | undefined; }, async markStale(ids) { ids.forEach(id => deps.store.markScopeStale(draft.draftRevisionId, id)); } };
         const admission = ledgerAdmission(deps.store, run.runId, budget, deps.globalLedger);
-        const enrichment = await runOperatorEnrichment({ draftRevisionId: draft.draftRevisionId, scopes, store: adapter, ...(gateway ? { gateway } : {}), limits: { maxScopes: budget.maxScopes, maxTokens: budget.maxTokens, maxDollars: budget.maxDollars, maxConcurrent: resolveLlmRateLimitConfig().maxConcurrent }, maxKind, leafReasoning: leafReasoningFor(rawGateway, deps.gatewayConfig), admitRequest: admission, estimateDroppedCostUsd: () => runAverageCostUsd(deps.store, run.runId), ...(deps.transportRetryDelayMs !== undefined ? { transportRetryDelayMs: deps.transportRetryDelayMs } : {}), cancelled: () => deps.store.isCancelled(run.runId) });
+        const enrichment = await runOperatorEnrichment({ draftRevisionId: draft.draftRevisionId, scopes, store: adapter, ...(gateway ? { gateway } : {}), modelId: configuredModelId(), limits: { maxScopes: budget.maxScopes, maxTokens: budget.maxTokens, maxDollars: budget.maxDollars, maxConcurrent: resolveLlmRateLimitConfig().maxConcurrent }, maxKind, leafReasoning: leafReasoningFor(rawGateway, deps.gatewayConfig), admitRequest: admission, estimateDroppedCostUsd: () => runAverageCostUsd(deps.store, run.runId), ...(deps.transportRetryDelayMs !== undefined ? { transportRetryDelayMs: deps.transportRetryDelayMs } : {}), cancelled: () => deps.store.isCancelled(run.runId) });
         const stateOf = (explained: ReadonlySet<string>, attempted: ReadonlySet<string>) => scopeDto.map(scope => ({ ...scope, state: sidecarState(explained.has(scope.scopeId), attempted.has(scope.scopeId), undefined, belowEnrichmentCap(scope.kind, maxKind)) }));
         if (deps.store.isCancelled(run.runId)) {
           // Cancellation installs no draft; the completion record still says what was known.

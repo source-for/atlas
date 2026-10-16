@@ -5,7 +5,7 @@
     {
       "name": "scan-server",
       "command": "node apps/server/dist/main.js",
-      "description": "@okie/server paste-a-repo scan service on http://localhost:4180 (proxied by the web dev server at /api and /scan). Optional OpenAI-compatible enrichment activates when OKIE_LLM_API_KEY / OPENROUTER_API_KEY / OPENAI_API_KEY is set (ANTHROPIC_API_KEY remains a fallback)."
+      "description": "@okie/server paste-a-repo scan service on http://localhost:4180 (proxied by the web dev server at /api and /scan). LLM enrichment and Ask are off unless you opt in: add --llm-provider openrouter (or set OKIE_LLM_PROVIDER) and set OKIE_LLM_API_KEY; add --dotenv to load the repo-root .env. Generic provider keys (OPENROUTER_API_KEY, OPENAI_API_KEY, ANTHROPIC_*) are ignored."
     },
     {
       "name": "web",
