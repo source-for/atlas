@@ -44,7 +44,7 @@ const { OperatorPublicationService } = await import(join(server, 'operatorPublic
 const { createOperatorRunner, rustIndexCacheDir } = await import(join(server, 'operatorRunner.js'));
 const { autoPublishGate, startIncrementalRun } = await import(join(server, 'operatorIncremental.js'));
 const { OperatorWorkflow } = await import(join(server, 'operatorWorkflow.js'));
-const { llmProviderArg, loadOperatorDotenv, resolveLlmGatewayConfig, resolveLlmGatewayLocalConfig } = await import(join(server, 'llmGateway.js'));
+const { createLlmGatewayClient, ignoredGenericLlmEnvNotice, llmProviderArg, loadOperatorDotenv, resolveLlmGatewayConfig, resolveLlmGatewayLocalConfig } = await import(join(server, 'llmGateway.js'));
 
 const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
 const shaA = git('rev-parse', from);
@@ -59,7 +59,13 @@ let gatewayConfig;
 if (live) {
   loadOperatorDotenv(repoRoot);
   gatewayConfig = resolveLlmGatewayConfig(process.env, resolveLlmGatewayLocalConfig(repoRoot), llmProviderArg(process.argv.slice(2)));
-  if (gatewayConfig.keySource === 'none') throw new Error('No gateway key configured for --live');
+  const notice = ignoredGenericLlmEnvNotice(process.env);
+  if (notice) console.error(notice);
+  // The operator runner only uses an OpenAI-compatible gateway: `anthropic` (or no opt-in) would measure nothing.
+  if (!createLlmGatewayClient(gatewayConfig)) {
+    const why = gatewayConfig.offReason ?? `provider ${gatewayConfig.provider} has no OpenAI-compatible gateway`;
+    throw new Error(`--live needs an OpenAI-compatible gateway: ${why} (use --llm-provider openrouter|openai-compatible with OKIE_LLM_API_KEY; --dotenv loads the repo-root .env)`);
+  }
 }
 
 const store = new OperatorStore(scanRoot); const publications = new OperatorPublicationService(store);

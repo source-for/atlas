@@ -106,11 +106,49 @@ test("CLA-606 review 2: ANTHROPIC_LOG and ANTHROPIC_PROFILE are named in the ign
   assert.match(ignoredGenericLlmEnvNotice({ ANTHROPIC_LOG: "debug", ANTHROPIC_PROFILE: "work" }) ?? "", /ignoring ANTHROPIC_LOG, ANTHROPIC_PROFILE \(/);
 });
 
+test("CLA-606 review 3: anthropic refuses an OpenRouter / OpenAI-compatible-shaped base URL, never echoing it", () => {
+  const key = { OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY };
+  assert.throws(() => resolveLlmGatewayConfig(key, { baseUrl: "https://openrouter.ai/api/v1" }), /--llm-provider anthropic|OKIE_LLM_PROVIDER=anthropic/);
+  for (const baseUrl of ["https://openrouter.ai/api/v1", "https://openrouter.ai", "https://llm.example.test/v1", "https://llm.example.test/v1/chat/completions", TOKENIZED_GATEWAY_URL]) {
+    assert.throws(() => resolveLlmGatewayConfig({ ...key, OKIE_LLM_BASE_URL: baseUrl }), (error: Error) => {
+      assert.match(error.message, /openrouter or openai-compatible/);
+      for (const secret of [FAKE_URL_USERINFO, FAKE_URL_QUERY, "https://"]) assert.ok(!error.message.includes(secret), secret);
+      return true;
+    }, baseUrl);
+  }
+  // A real Messages root (or a proxy root) is still accepted.
+  assert.equal(resolveLlmGatewayConfig({ ...key, OKIE_LLM_BASE_URL: "https://proxy.example.test" }).baseUrl, "https://proxy.example.test");
+  assert.equal(resolveLlmGatewayConfig(key, { baseUrl: "https://api.anthropic.com/" }).keySource, "anthropic");
+});
+
+test("CLA-606 review 3: an unknown provider value is echoed only when it looks like a name", () => {
+  assert.throws(() => resolveLlmGatewayConfig({}, {}, "open-router"), /unknown LLM provider "open-router"/);
+  const keyShaped = "sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab";
+  for (const value of [keyShaped, "okie_test_value_1234", " spaced value "]) {
+    assert.throws(() => resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: value }), (error: Error) => {
+      assert.match(error.message, new RegExp(`unknown LLM provider \\(value hidden; ${value.trim().length} chars\\)`));
+      assert.ok(!error.message.includes(value.trim().slice(0, 6)), "no part of the value");
+      return true;
+    }, value);
+  }
+});
+
+test("CLA-606 review 3: off reasons and errors name where the provider came from", () => {
+  assert.match(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter" }).offReason ?? "", /^OKIE_LLM_PROVIDER=openrouter is chosen but OKIE_LLM_API_KEY is unset$/);
+  assert.match(resolveLlmGatewayConfig({}, {}, "openrouter").offReason ?? "", /^--llm-provider openrouter is chosen but OKIE_LLM_API_KEY is unset$/);
+  assert.equal(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "off" }).offReason, "OKIE_LLM_PROVIDER=off");
+  assert.equal(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter" }, {}, "off").offReason, "--llm-provider off");
+  assert.throws(() => resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }), /^Error: OKIE_LLM_PROVIDER=openai-compatible needs OKIE_LLM_BASE_URL/);
+  assert.throws(() => resolveLlmGatewayConfig({ OKIE_LLM_BASE_URL: "https://elsewhere.test/v1" }, {}, "openrouter"), /^Error: --llm-provider openrouter always sends to openrouter\.ai/);
+});
+
 test("CLA-606 review: the anthropic startup line and label show the real destination host", () => {
   const custom = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_BASE_URL: "https://custom-gateway.example.test", OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY, OKIE_LLM_MODEL: "claude-x" });
   assert.equal(enrichmentProviderLabel(custom), "custom-gateway.example.test");
   assert.match(describeLlmStartup(custom, { serverMode: "default" }), /^LLM enrichment: on → custom-gateway\.example\.test \(model claude-x\)/);
-  const tokenized = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_BASE_URL: TOKENIZED_GATEWAY_URL, OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY });
+  // A tokenized Anthropic-root URL (a /v1 one is refused for anthropic; see review 3).
+  const tokenizedRoot = `https://okietest:${FAKE_URL_USERINFO}@example.invalid/?api_key=${FAKE_URL_QUERY}`;
+  const tokenized = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_BASE_URL: tokenizedRoot, OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY });
   const line = describeLlmStartup(tokenized, { serverMode: "default" });
   assert.match(line, /^LLM enrichment: on → example\.invalid /);
   for (const secret of [FAKE_URL_USERINFO, FAKE_URL_QUERY, FAKE_ANTHROPIC_KEY, "https://"]) assert.ok(!line.includes(secret), secret);
@@ -124,12 +162,12 @@ test("CLA-606: provider values, CLI precedence, and off reasons", () => {
   assert.equal(llmProviderArg(["--dotenv"]), undefined);
   // The CLI value beats OKIE_LLM_PROVIDER.
   assert.equal(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }, {}, "off").keySource, "none");
-  assert.throws(() => resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter" }, {}, ""), /unknown LLM provider ""/);
+  assert.throws(() => resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter" }, {}, ""), /unknown LLM provider \(empty\) from --llm-provider/);
   assert.equal(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "OpenRouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }).provider, "openrouter");
 
   assert.match(resolveLlmGatewayConfig({}).offReason ?? "", /no --llm-provider/);
   assert.match(resolveLlmGatewayConfig({ OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }).offReason ?? "", /no provider is chosen; pass --llm-provider/);
-  assert.match(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "off", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }).offReason ?? "", /--llm-provider off/);
+  assert.match(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "off", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }).offReason ?? "", /^OKIE_LLM_PROVIDER=off$/);
   assert.match(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter" }).offReason ?? "", /openrouter is chosen but OKIE_LLM_API_KEY is unset/);
   for (const env of [{}, { OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }, { OKIE_LLM_PROVIDER: "openrouter" }]) {
     assert.doesNotMatch(resolveLlmGatewayConfig(env).offReason ?? "", new RegExp(FAKE_GATEWAY_KEY));

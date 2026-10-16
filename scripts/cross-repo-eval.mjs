@@ -190,11 +190,19 @@ function lockSpend() {
   spend.ledger = readJson(spendPath, core.emptySpendLedger());
 }
 
+/** CLA-606: why there is no OpenAI-compatible gateway, from the resolved config (never a value). */
+function noGatewayError(config) {
+  const why = config.offReason ?? `provider ${config.provider} has no OpenAI-compatible gateway`;
+  return new Error(`No OpenAI-compatible gateway configured: ${why} (needs --llm-provider openrouter|openai-compatible and OKIE_LLM_API_KEY; --dotenv loads the repo-root .env)`);
+}
+
 let secrets = [];
 function loadLive() {
   if (!live) return;
   const { loadOperatorDotenv } = llm;
   loadOperatorDotenv(repoRoot);
+  const notice = llm.ignoredGenericLlmEnvNotice(process.env);
+  if (notice) console.error(notice);
   secrets = [process.env.OKIE_LLM_API_KEY, process.env.OPENROUTER_API_KEY, process.env.OPENAI_API_KEY, process.env.JEV_API].filter(Boolean);
 }
 const redact = text => secrets.reduce((out, secret) => out.split(secret).join('[redacted]'), llm.redactGatewayErrorText(scrubPaths(text)));
@@ -427,7 +435,7 @@ async function enrichStage(repo, run) {
     const reservation = Math.min(caps.maxRequests * core.perRequestWorstUsd(gatewayPrice), caps.maxDollars + overshoot);
     gatewayConfig = llm.resolveLlmGatewayConfig(process.env, llm.resolveLlmGatewayLocalConfig(repoRoot), llm.llmProviderArg(argv));
     const client = llm.createLlmGatewayClient(gatewayConfig, { timeoutMs: llm.resolveOperatorEnrichmentBudget().requestTimeoutMs });
-    if (!client) throw new Error('No OpenAI-compatible gateway key configured (see .env key names).');
+    if (!client) throw noGatewayError(gatewayConfig);
     hold = await spend.reserve(reservation, `${repo.slug} enrichment (worst case $${reservation.toFixed(3)})`);
     gateway = liveGateway(client, repo.slug, 'enrich', stats, hold);
     globalMaxDollars = Math.max(0.0001, Math.min(caps.maxDollars, reservation - overshoot));
@@ -519,7 +527,7 @@ async function askStage(repo, run) {
   if (live) {
     const config = llm.resolveLlmGatewayConfig(process.env, llm.resolveLlmGatewayLocalConfig(repoRoot), llm.llmProviderArg(argv));
     client = llm.createLlmGatewayClient(config, { timeoutMs: 120_000 });
-    if (!client) throw new Error('No OpenAI-compatible gateway key configured (see .env key names).');
+    if (!client) throw noGatewayError(config);
     modelId = config.modelId;
     limiter = repoLimiter(askConcurrent);
   }

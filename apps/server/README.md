@@ -40,7 +40,7 @@ pnpm --filter @okie/server dev -- --llm-provider openrouter --dotenv   # key rea
 |---|---|---|---|
 | `openrouter` | openrouter.ai | always `https://openrouter.ai/api/v1`; a different `OKIE_LLM_BASE_URL` / `okie.local.json` `baseUrl` stops the server (use `openai-compatible`) | scan + operator enrichment, Ask |
 | `openai-compatible` | your gateway | **required**: `OKIE_LLM_BASE_URL` or `okie.local.json` `baseUrl` (startup fails without one) | scan + operator enrichment, Ask |
-| `anthropic` | api.anthropic.com | `OKIE_LLM_BASE_URL` / `baseUrl`, else `https://api.anthropic.com` | scan enrichment only (no Ask, no operator enrichment) |
+| `anthropic` | api.anthropic.com | `OKIE_LLM_BASE_URL` / `baseUrl` (an Anthropic API root; OpenRouter or `/v1`-shaped URLs stop the server), else `https://api.anthropic.com` | scan enrichment only (no Ask, no operator enrichment) |
 | `off` | nothing | — | — |
 
 Any other value stops the server at startup.
@@ -71,8 +71,10 @@ Ask Atlas (`GET`/`POST /api/ask`) uses the same gateway and the same GitHub sess
 Non-secret overlay (base URL / model id only) can live in `okie.local.json` at the repo root, or in a JSON file pointed at by `OKIE_LLM_CONFIG`:
 
 ```json
-{ "baseUrl": "https://openrouter.ai/api/v1", "modelId": "xiaomi/mimo-v2.6-pro" }
+{ "modelId": "xiaomi/mimo-v2.6-pro" }
 ```
+
+Set `baseUrl` there only for `openai-compatible` (your gateway's OpenAI-style root, e.g. `https://llm.example.com/v1`) or for an `anthropic` proxy (an Anthropic API root; the SDK appends `/v1/messages`). `openrouter` refuses any other base URL, and `anthropic` refuses an OpenRouter or chat-completions-shaped one (`openrouter.ai`, a `/v1` or `/chat/completions` path), so an Anthropic key is never sent to the wrong API.
 
 An `apiKey` field in that file is ignored. With a gateway key, each enrichment scope POSTs the bounded, redacted packet to `{baseUrl}/chat/completions` (OpenAI-compatible). Packet excerpts reuse the existing GitHub token scrub (`gho_` / `ghp_` / `github_pat_`); the operator key is stripped from the outbound JSON body (it stays on `Authorization`). Gateway error strings are scrubbed the same way before `job.error` and logs. The reply's `choices[0].message.content` is parsed into the container-id-keyed document the merge gate already consumes. Live prompts ask for a short summary of **that packet's scope only**; hallucinated ids and out-of-scope entities still reject the scope. With `--llm-provider anthropic`, packets go to the Anthropic SDK instead, with `OKIE_LLM_API_KEY`. Packets are built and sent only while the ephemeral checkout exists.
 

@@ -516,11 +516,27 @@ export function llmProviderArg(argv: readonly string[]): string | undefined {
   return value;
 }
 
-function parseLlmProvider(raw: string): LlmProvider {
+function parseLlmProvider(raw: string, source: string): LlmProvider {
   const value = raw.trim().toLowerCase();
   if ((LLM_PROVIDERS as readonly string[]).includes(value)) return value as LlmProvider;
-  const shown = JSON.stringify(raw.trim().slice(0, 40));
-  throw new Error(`unknown LLM provider ${shown} (--llm-provider / OKIE_LLM_PROVIDER): use ${LLM_PROVIDERS.join(", ")}`);
+  // Echo the value only when it looks like a name: a swapped-in API key must not reach stderr.
+  const trimmed = raw.trim();
+  const shown = !trimmed ? "(empty)" : /^[a-z][a-z-]{0,23}$/i.test(trimmed) ? JSON.stringify(trimmed) : `(value hidden; ${trimmed.length} chars)`;
+  throw new Error(`unknown LLM provider ${shown} from ${source}: use ${LLM_PROVIDERS.join(", ")}`);
+}
+
+/**
+ * A base URL shaped for OpenRouter / OpenAI-compatible chat completions: the openrouter.ai host, a `/v1` path (the
+ * Anthropic SDK appends `/v1/messages` itself) or a `/chat/completions` path. The `anthropic` provider refuses it.
+ */
+function chatCompletionsShapedUrl(baseUrl: string): boolean {
+  try {
+    const parsed = new URL(baseUrl);
+    const host = parsed.hostname.toLowerCase();
+    return host === "openrouter.ai" || host.endsWith(".openrouter.ai") || /\/v1\/?$/.test(parsed.pathname) || /\/chat\/completions\/?$/.test(parsed.pathname);
+  } catch {
+    return false;
+  }
 }
 
 /** Generic provider variables set in `env` (names only), which CLA-606 ignores. */
@@ -670,6 +686,9 @@ export function resolveLlmGatewayConfig(
 ): LlmGatewayConfig {
   // The CLI value (`llmProviderArg`) beats the env var; an empty `--llm-provider=` is an unknown provider.
   const choice = provider ?? trimToUndefined(env.OKIE_LLM_PROVIDER);
+  // Where the choice came from, named in every reason and error (the container never passes a flag).
+  const source = provider !== undefined ? "--llm-provider" : "OKIE_LLM_PROVIDER";
+  const named = (value: LlmProvider): string => provider !== undefined ? `--llm-provider ${value}` : `OKIE_LLM_PROVIDER=${value}`;
   const baseOverride = firstNonEmpty([local.baseUrl, env.OKIE_LLM_BASE_URL]);
   const modelId = resolveModelId(env, local);
   const apiKey = trimToUndefined(env.OKIE_LLM_API_KEY);
@@ -681,23 +700,29 @@ export function resolveLlmGatewayConfig(
       ? "OKIE_LLM_API_KEY is set but no provider is chosen; pass --llm-provider <name> or set OKIE_LLM_PROVIDER"
       : "no --llm-provider / OKIE_LLM_PROVIDER");
   }
-  const chosen = parseLlmProvider(choice);
-  if (chosen === "off") return off("--llm-provider off", undefined, chosen);
+  const chosen = parseLlmProvider(choice, source);
+  if (chosen === "off") return off(named(chosen), undefined, chosen);
 
   let baseUrl: string;
   if (chosen === "openrouter") {
     if (baseOverride && !sameUrl(baseOverride, DEFAULT_OPENROUTER_BASE_URL)) {
-      throw new Error("--llm-provider openrouter always sends to openrouter.ai, but a base URL override is set "
-        + "(OKIE_LLM_BASE_URL or okie.local.json baseUrl); use --llm-provider openai-compatible to send elsewhere");
+      throw new Error(`${named(chosen)} always sends to openrouter.ai, but a base URL override is set `
+        + "(OKIE_LLM_BASE_URL or okie.local.json baseUrl); use openai-compatible to send elsewhere");
     }
     baseUrl = DEFAULT_OPENROUTER_BASE_URL;
   } else if (chosen === "openai-compatible") {
-    if (!baseOverride) throw new Error("--llm-provider openai-compatible needs OKIE_LLM_BASE_URL (or okie.local.json baseUrl)");
+    if (!baseOverride) throw new Error(`${named(chosen)} needs OKIE_LLM_BASE_URL (or okie.local.json baseUrl)`);
     baseUrl = baseOverride;
   } else {
+    if (baseOverride && chatCompletionsShapedUrl(baseOverride)) {
+      const host = safeGatewayProvider(baseOverride) ?? "the configured host";
+      throw new Error(`${named(chosen)} needs an Anthropic Messages base URL (the SDK appends /v1/messages), but the base URL `
+        + `override (OKIE_LLM_BASE_URL or okie.local.json baseUrl) on ${host} looks like a chat-completions endpoint; `
+        + "use openrouter or openai-compatible for that, or point the override at an Anthropic API root");
+    }
     baseUrl = baseOverride ?? DEFAULT_ANTHROPIC_BASE_URL;
   }
-  if (!apiKey) return off(`--llm-provider ${chosen} is chosen but OKIE_LLM_API_KEY is unset`, baseUrl, chosen);
+  if (!apiKey) return off(`${named(chosen)} is chosen but OKIE_LLM_API_KEY is unset`, baseUrl, chosen);
   return withApiKey({ baseUrl, modelId, keySource: chosen === "anthropic" ? "anthropic" : "gateway", provider: chosen }, apiKey);
 }
 
