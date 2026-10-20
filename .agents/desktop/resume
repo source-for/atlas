@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+
+# Services are supervised by Amp, not by the Desktop shell. No builds on resume.
+amp orb services ensure
+# Desktop supplies the display environment. Install Chrome only if needed.
+if ! command -v google-chrome >/dev/null; then
+  sudo -n /opt/amp-desktop/install-app chrome
+fi
+if ! pgrep -f '[c]hrome.*--app=http://localhost:4173/' >/dev/null; then
+  exec google-chrome --no-sandbox --app=http://localhost:4173/
+fi

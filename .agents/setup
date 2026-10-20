@@ -2,6 +2,11 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+# Keep native builds within the intended 1 CPU / 2 GB tiny orb budget.
+export CARGO_BUILD_JOBS=1
+export CMAKE_BUILD_PARALLEL_LEVEL=1
+export BINARYEN_CORES=1
+
 step() {
   local started=$SECONDS
   printf '\n==> %s\n' "$*"
@@ -9,8 +14,17 @@ step() {
   printf '==> Finished in %ss\n' "$((SECONDS - started))"
 }
 
-# Node 22+ and npm are provided by the Amp orb base image.
-node -e 'if (Number(process.versions.node.split(".")[0]) < 22) throw new Error("Node 22+ is required")'
+# Match CI's Node 22 LTS; newer base-image Node versions change browser globals
+# used by happy-dom tests. Pin the patch rather than following a moving LTS tag.
+export PATH="$HOME/.local/share/atlas/node/bin:$PATH"
+if [[ "$(node --version)" != 'v22.23.3' ]]; then
+  step npm install --global --prefix "$HOME/.local/share/atlas/node" node@22.23.3
+  hash -r
+fi
+marker='# Atlas orb Node LTS'
+if ! grep -Fqx "$marker" "$HOME/.bash_profile" 2>/dev/null; then
+  printf '\n%s\nexport PATH="$HOME/.local/share/atlas/node/bin:$PATH"\n' "$marker" >> "$HOME/.bash_profile"
+fi
 missing=()
 for package in build-essential pkg-config libssl-dev ca-certificates curl; do
   if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
@@ -39,6 +53,15 @@ marker='# Okie orb Rust toolchain'
 if ! grep -Fqx "$marker" "$HOME/.bash_profile" 2>/dev/null; then
   printf '\n%s\nexport PATH="$HOME/.cargo/bin:$PATH"\n' "$marker" >> "$HOME/.bash_profile"
 fi
+# Tests running Rust analysis reject /tmp's world-writable ancestry. Keep their
+# scratch directory outside the Cargo workspace, owned by this user.
+orb_tmp="$HOME/.cache/atlas/tmp"
+install -d -m 700 "$orb_tmp"
+export TMPDIR="$orb_tmp"
+marker='# Atlas orb resource limits and private test scratch'
+if ! grep -Fqx "$marker" "$HOME/.bash_profile" 2>/dev/null; then
+  printf '\n%s\nexport CARGO_BUILD_JOBS=1 CMAKE_BUILD_PARALLEL_LEVEL=1 BINARYEN_CORES=1\nexport TMPDIR="$HOME/.cache/atlas/tmp"\n' "$marker" >> "$HOME/.bash_profile"
+fi
 # rustup reads the version, components, and target from rust-toolchain.toml.
 step rustup show active-toolchain
 # The scan tests need these additional components, matching CI.
@@ -48,7 +71,9 @@ if ! command -v wasm-pack >/dev/null || [[ "$(wasm-pack --version)" != 'wasm-pac
 fi
 
 step pnpm install --frozen-lockfile
+# A stale orb snapshot may contain native addons built by an older Node ABI.
+step pnpm rebuild tree-sitter tree-sitter-rust
 step cargo fetch --locked
 # Workspace consumers resolve emitted dist files, even during typechecking.
-step pnpm -r --if-present --filter './packages/**' --filter './apps/server' build
+step pnpm --workspace-concurrency=1 -r --if-present --filter './packages/**' --filter './apps/server' build
 step pnpm prepare:generated

@@ -1,0 +1,17 @@
+services:
+  scan:
+    command: node apps/server/dist/main.js --llm-provider off
+    port: 4180
+    health: /healthz
+    env:
+      OKIE_SERVER_HOST: '127.0.0.1'
+      OKIE_SERVER_PORT: '4180'
+      OKIE_GITHUB_TEST_DOUBLE: '0'
+      OKIE_DOTENV: '0'
+  web:
+    command: pnpm --filter @okie/web dev --host 0.0.0.0 --port "$PORT" --strictPort
+    port: 4173
+    health: /
+    portal:
+      title: Atlas
+      description: Deterministic atlas preview. LLM and test-login are off. Keep this development portal private.
