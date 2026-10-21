@@ -2,6 +2,28 @@
 
 Repo conventions, commands, and gotchas live in [`CLAUDE.md`](./CLAUDE.md). Follow those. The section below is extra for Cursor Cloud agents.
 
+## Proof required before shipping
+
+Ship targets `main` directly, but only after task completion is demonstrated in
+the thread. Before pushing or merging to `main`:
+
+- Exercise the requested behavior end to end and report the commands, observable
+  results, and relevant regression checks. Passing unit tests or a clean diff
+  alone is not proof that a feature works.
+- For UI work, explore the running application through the changed flow and
+  representative affected states. Capture and inspect screenshots, then embed
+  them in the thread. For interactions, also capture, inspect, and share a video
+  of the real pointer/keyboard flow. Do not substitute generated mockups for
+  evidence from the running app.
+- For bug fixes, show the failing case before the fix and the same case passing
+  afterward when reproducible. Include nearby behavior that must remain intact.
+- State every material verification gap explicitly. If a requirement remains
+  unproven, do not call the task complete or ship it; resolve the gap or obtain
+  the user's explicit acceptance of that limitation first.
+
+This proof gate applies to all agents and to direct pushes as well as Ship.
+It does not itself authorize a push, merge, deployment, or release.
+
 ## Cursor Cloud specific instructions
 
 Before opening or closing a pull request, QA must **explore the running application** — not only unit tests, logs, or `GET /healthz`. A diff-only pass or a single screenshot is not enough.
