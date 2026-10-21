@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import snapshot from '../../../../fixtures/architecture/demo-snapshot.json';
 import view from '../../../../fixtures/architecture/demo-view.json';
 import story from '../../../../fixtures/architecture/demo-story.json';
-import { compileScanFixture, type ScanFixture } from '../renderer/scanFixture';
+import { compileScanFixture, compileScanNeighborhoodFixture, type ScanFixture } from '../renderer/scanFixture';
+import { sliceArchitectureNeighborhood, type ArchitectureSnapshot, type ArchitectureView } from '@okie/architecture';
 import { setActiveScanFixture } from '../renderer/fixtureBundle';
 import type { NavigationHistoryController } from './historyController';
 
@@ -45,6 +46,35 @@ beforeEach(() => {
   fixture = compileScanFixture({ snapshot, view, story });
   setActiveScanFixture(fixture);
 });
+// A neighborhood boot whose bootstrap scene lacks the model container's children: a selection or story
+// focus there keeps the bootstrap root but still needs an async restore compile.
+function bootWithoutModelChildren() {
+  const full = sliceArchitectureNeighborhood(snapshot as ArchitectureSnapshot, view as ArchitectureView, { focusEntityId: 'system:okie' });
+  const packet = structuredClone(full);
+  const omitted = new Set(snapshot.entities.filter(entity => entity.parentId === 'container:architecture-model'
+    || snapshot.entities.some(parent => parent.id === entity.parentId && parent.parentId === 'container:architecture-model')).map(entity => entity.id));
+  packet.snapshot.entities = packet.snapshot.entities.filter(entity => !omitted.has(entity.id));
+  packet.snapshot.relations = packet.snapshot.relations.filter(relation => !omitted.has(relation.from) && !omitted.has(relation.to));
+  const entities = new Set(packet.snapshot.entities.map(entity => entity.id));
+  const relations = new Set(packet.snapshot.relations.map(relation => relation.id));
+  packet.view.entityIds = packet.view.entityIds.filter(id => entities.has(id));
+  packet.view.relationIds = packet.view.relationIds.filter(id => relations.has(id));
+  packet.view.layout.nodes = Object.fromEntries(Object.entries(packet.view.layout.nodes).filter(([id]) => entities.has(id)));
+  if (packet.view.layout.edges) packet.view.layout.edges = Object.fromEntries(Object.entries(packet.view.layout.edges).filter(([id]) => relations.has(id)));
+  fixture = compileScanNeighborhoodFixture(packet, story, {
+    loadNeighborhood: async focus => structuredClone(focus === 'system:okie' ? packet : full),
+    loadStory: async () => story, loadExcerpts: async () => undefined,
+  });
+  setActiveScanFixture(fixture);
+  expect(fixture.snapshot.entities.some(entity => entity.id === 'component:model-scoping')).toBe(false);
+}
+async function holdRestoreCompile() {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const original = fixture.createSceneAsync;
+  const compile = vi.spyOn(fixture, 'createSceneAsync').mockImplementation(async (...args) => { await held; return original(...args); });
+  return { compile, release };
+}
 afterEach(async () => { await act(async () => root?.unmount()); root = undefined; host?.remove(); setActiveScanFixture(undefined); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 // CLA-584: a scan deep link no longer compiles its root synchronously on mount just to validate
@@ -83,9 +113,43 @@ describe('scan deep-link boot (CLA-584)', () => {
     expect(enrich).toHaveBeenCalledTimes(1);
   });
 
-  it('still enriches a bare link straight away', async () => {
+  // CLA-590: every initialize restore begins foreground work that aborts a queued enrichment, and the
+  // abort of active speculative work terminates the worker holding the graph. Enrichment waits for it.
+  it.each([
+    ['a bare link', ''],
+    ['a selection link the bootstrap scene already holds', '&sel=container%3Aweb-app'],
+  ])('delivers the bootstrap enrichment for %s without the restore aborting it', async (_name, search) => {
     const enrich = vi.spyOn(fixture, 'enrichInitialScene');
-    await mount('');
+    await mount(search);
+    for (let attempt = 0; attempt < 20 && !enrich.mock.calls.length; attempt += 1) await settle();
     expect(enrich).toHaveBeenCalledTimes(1);
+    expect(enrich.mock.calls[0]![0]!.aborted).toBe(false);
+  });
+
+  it.each([
+    ['a story step outside the bootstrap scene', '&story=story%3Aokie-context-to-code&step=2&t=0'],
+    ['a selection outside the bootstrap scene', '&sel=component%3Amodel-scoping'],
+  ])('does not enrich while the restore of %s is still compiling', async (_name, search) => {
+    bootWithoutModelChildren();
+    const enrich = vi.spyOn(fixture, 'enrichInitialScene');
+    const { compile, release } = await holdRestoreCompile();
+    await mount(search);
+    for (let attempt = 0; attempt < 20 && !compile.mock.calls.length; attempt += 1) await settle();
+    expect(compile).toHaveBeenCalled();
+    expect(enrich).not.toHaveBeenCalled();
+    release(); await settle(); await settle();
+  });
+
+  it('does not start a wasted enrichment when the user navigates before the restore settles', async () => {
+    bootWithoutModelChildren();
+    const enrich = vi.spyOn(fixture, 'enrichInitialScene');
+    const { compile, release } = await holdRestoreCompile();
+    await mount('&sel=component%3Amodel-scoping');
+    for (let attempt = 0; attempt < 20 && !compile.mock.calls.length; attempt += 1) await settle();
+    const level = host.querySelectorAll<HTMLButtonElement>('.level-rail button')[1]!;
+    await act(async () => { level.click(); });
+    release();
+    for (let attempt = 0; attempt < 10; attempt += 1) await settle();
+    expect(enrich).not.toHaveBeenCalled();
   });
 });

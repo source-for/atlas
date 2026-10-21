@@ -1810,7 +1810,7 @@ export function App() {
   const [storySelectionOverride, setStorySelectionOverride] = useState(false);
   const [visibilityMode, setVisibilityMode] = useState<'all' | 'dim' | 'isolate'>('all');
   const [liveMessage, setLiveMessage] = useState('Architecture atlas loaded.');
-  const [initialDetailLoading, setInitialDetailLoading] = useState(Boolean(scanFixture?.boot === 'neighborhood' && activeSnapshot.entities.length > 128));
+  const [initialDetailLoading, setInitialDetailLoading] = useState(false); // only while the bootstrap enrichment runs (CLA-590)
   const [askOpen, setAskOpen] = useState(false);
   const [askDocked, setAskDocked] = useState(false);
   const [inspectorAskActive, setInspectorAskActive] = useState(false);
@@ -2449,18 +2449,19 @@ export function App() {
     path: navigationPathFromDraft(pathDraft),
   }, navigationDefaults);
   const navigationRef = useRef<NavigationState>(navigationState);
-  // The initialize restore of a deep link replaces the bootstrap root. Enriching that root
-  // meanwhile only queues speculative work its compile cancels, and that cancel ends the
-  // worker holding the graph (CLA-584); enrich only if the restore leaves the bootstrap scene.
-  const [bootRootRestorePending, setBootRootRestorePending] = useState(() => Boolean(scanFixture)
-    && query.fixture !== 'stress' && initialNavigation.rootEntityId !== goldenScene.rootEntityId);
+  // Every scan link's initialize restore begins foreground work, which aborts an enrichment already
+  // queued, and that cancel ends the worker holding the graph (CLA-584/590). Enrich only once the
+  // restore settles, and only while the bootstrap scene is still shown and no navigation owns the worker.
+  const [initialRestorePending, setInitialRestorePending] = useState(() => Boolean(scanFixture) && query.fixture !== 'stress');
   useEffect(() => {
     const fixture = scanFixture;
-    if (!fixture || bootRootRestorePending) return;
-    if (sceneRef.current !== goldenScene) { setInitialDetailLoading(false); return; }
+    if (!fixture || initialRestorePending) return;
+    if (sceneRef.current !== goldenScene || foregroundSceneRequestRef.current.pending() || levelScenePreparationPending(levelCompileAbortRef.current)
+      || reverseScenePendingRef.current || zoomHandoffInflightRef.current) { setInitialDetailLoading(false); return; }
     let alive = true;
     const controller = new AbortController();
     initialEnrichmentAbortRef.current = controller;
+    if (fixture.boot === 'neighborhood' && activeSnapshot.entities.length > 128) setInitialDetailLoading(true);
     void fixture.enrichInitialScene(controller.signal).then(enriched => {
       if (alive) setInitialDetailLoading(false);
       if (!alive || !enriched || fixture !== scanFixture || sceneRef.current !== goldenScene) return;
@@ -2470,7 +2471,7 @@ export function App() {
       setScene(enriched);
     }).catch(() => { if (alive) setInitialDetailLoading(false); });
     return () => { alive = false; controller.abort(); };
-  }, [bootRootRestorePending, goldenScene]);
+  }, [initialRestorePending, goldenScene]);
   navigationRef.current = navigationState;
   const rendererReplayState = JSON.stringify({
     timeline: {
@@ -2946,7 +2947,7 @@ export function App() {
       },
     });
     historyControllerRef.current = controller;
-    void controller.start().finally(() => { if (historyControllerRef.current === controller) setBootRootRestorePending(false); });
+    void controller.start().finally(() => { if (historyControllerRef.current === controller) setInitialRestorePending(false); });
     return () => {
       controller.dispose();
       if (historyControllerRef.current === controller) historyControllerRef.current = undefined;
