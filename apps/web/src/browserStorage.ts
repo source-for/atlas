@@ -6,6 +6,9 @@
  * When the real Storage is unavailable, or a call on it throws, values live in memory for this page only: they are
  * gone on reload and never shared with another tab. That keeps preferences working within one visit without
  * claiming they were saved. IndexedDB gets no in-memory substitute: callers already report it as unavailable.
+ *
+ * apps/web/public/home.js (a plain unbundled script) keeps an inline copy of this contract for its cookie notice;
+ * homeScript.test.ts runs the same parity cases against both.
  */
 
 export type BrowserStorage = Pick<Storage, 'getItem' | 'setItem'>;

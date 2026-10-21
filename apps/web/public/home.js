@@ -268,13 +268,19 @@
   // remembers that (`sf.cookieNotice.dismissed=1`). Storage that throws (blocked, private mode) = show it, and
   // OK still hides it for this page.
   var COOKIE_NOTICE_KEY = 'sf.cookieNotice.dismissed';
+  // CLA-610: inline copy of src/browserStorage.ts's contract (home.js is not bundled, so it cannot import it);
+  // homeScript.test.ts runs the same parity cases against both. A dismissal that storage refused is remembered
+  // for this window only (gone on reload); a later successful write hands back to real storage.
+  var dismissedThisPage = typeof WeakMap === 'function' ? new WeakMap() : undefined;
 
   function noticeDismissed(win) {
+    if (win && dismissedThisPage && dismissedThisPage.get(win)) return true;
     try { return Boolean(win && win.localStorage && win.localStorage.getItem(COOKIE_NOTICE_KEY) === '1'); } catch (_) { return false; }
   }
 
   function rememberNoticeDismissed(win) {
-    try { if (win && win.localStorage) win.localStorage.setItem(COOKIE_NOTICE_KEY, '1'); } catch (_) { /* this page only */ }
+    try { if (win && win.localStorage) { win.localStorage.setItem(COOKIE_NOTICE_KEY, '1'); if (dismissedThisPage) dismissedThisPage.delete(win); return; } } catch (_) { /* this page only */ }
+    if (win && dismissedThisPage) dismissedThisPage.set(win, true);
   }
 
   // Whether an /api/auth/me answer allows the notice: only `oauthConfigured: true` (fail closed).
@@ -298,7 +304,7 @@
     return notice;
   }
 
-  var api = { COOKIE_NOTICE_KEY: COOKIE_NOTICE_KEY, cookieNoticeAllowed: cookieNoticeAllowed, initCookieNotice: initCookieNotice, AUTH_ME_PATH: AUTH_ME_PATH, authLinks: authLinks, initAuth: initAuth, QUERY_MAX: QUERY_MAX, SORTS: SORTS, URL_DELAY_MS: URL_DELAY_MS, supported: supported, matchesAtWordStart: matchesAtWordStart, normalizeQuery: normalizeQuery, sortFrom: sortFrom, matches: matches, countText: countText, searchFor: searchFor, view: view, init: init };
+  var api = { COOKIE_NOTICE_KEY: COOKIE_NOTICE_KEY, noticeDismissed: noticeDismissed, rememberNoticeDismissed: rememberNoticeDismissed, cookieNoticeAllowed: cookieNoticeAllowed, initCookieNotice: initCookieNotice, AUTH_ME_PATH: AUTH_ME_PATH, authLinks: authLinks, initAuth: initAuth, QUERY_MAX: QUERY_MAX, SORTS: SORTS, URL_DELAY_MS: URL_DELAY_MS, supported: supported, matchesAtWordStart: matchesAtWordStart, normalizeQuery: normalizeQuery, sortFrom: sortFrom, matches: matches, countText: countText, searchFor: searchFor, view: view, init: init };
   // Tests evaluate this file with a `module` in scope; the browser has none and just runs it.
   if (typeof module === 'object' && module && module.exports) module.exports = api;
   else if (root.document) {
