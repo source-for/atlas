@@ -141,7 +141,7 @@ function hugeExtraction(fileCount: number) {
     sourceFiles,
     units: [{ kind: "member", dir: "pkg/h", name: "@acme/h", packageName: "@acme/h", evidencePath: "pkg/h", packageManifest: "pkg/h/package.json" }],
     unitByFile,
-    unitByPackageName: new Map([["@acme/h", "pkg/h"]]),
+    resolution: { jsRoots: [""], packages: [{ dir: "pkg/h", manifest: "pkg/h/package.json", name: "@acme/h", context: "", unit: "pkg/h", dependencies: [] }], cargoContexts: [{ dir: "", crates: [] }] },
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
   return { extraction: extractArchitecture({ discovery, readFile: readHuge, systemName: "Huge", systemSlug: "huge" }), readHuge };
@@ -1236,7 +1236,7 @@ test("a planted secret in source does not appear in the outbound chatCompletions
       sourceFiles: ["src/index.ts"],
       units: [{ kind: "root", dir: "", name: "acme-app", packageName: "acme-app", packageManifest: "package.json", evidencePath: "package.json" }],
       unitByFile: new Map([["src/index.ts", ""]]),
-      unitByPackageName: new Map([["acme-app", ""]]),
+      resolution: { jsRoots: [""], packages: [{ dir: "", manifest: "package.json", name: "acme-app", context: "", unit: "", dependencies: [] }], cargoContexts: [{ dir: "", crates: [] }] },
       summary: { singlePackage: true, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
     },
     readFile: read,
@@ -1307,7 +1307,7 @@ function acmeExtraction() {
       sourceFiles: ["pkg/a/src/index.ts"],
       units: [{ kind: "member", dir: "pkg/a", name: "@acme/a", packageName: "@acme/a", evidencePath: "pkg/a", packageManifest: "pkg/a/package.json" }],
       unitByFile: new Map([["pkg/a/src/index.ts", "pkg/a"]]),
-      unitByPackageName: new Map([["@acme/a", "pkg/a"]]),
+      resolution: { jsRoots: [""], packages: [{ dir: "pkg/a", manifest: "pkg/a/package.json", name: "@acme/a", context: "", unit: "pkg/a", dependencies: [] }], cargoContexts: [{ dir: "", crates: [] }] },
       summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
     },
     readFile: read,
