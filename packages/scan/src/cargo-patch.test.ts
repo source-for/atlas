@@ -518,3 +518,18 @@ test("CLA-594: a quoted [package] \"version\" key is read, not treated as missin
     assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:8 app/Cargo.toml:6"], `${mode}: quoted inheritance of 2.0.0 satisfies ^2`);
   });
 });
+
+// CLA-594 (coordinator decision): Cargo refuses a manifest whose requirement it cannot
+// parse, so the scanner records no patch edge for a requirement it cannot parse either, and
+// says so. An absent requirement (`core = { git = … }`) is not unparsable and is unchanged.
+test("CLA-594: an unparsable version requirement records no [patch] edge and a limitation naming it (quick + full)", () => {
+  const patched = `${MEMBERS}\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  for (const [requirement, coreVersion] of [["1.*.3", "1.0.3"], ["1.*-alpha", "1.0.0-alpha"]] as const) {
+    scanBothModes(CORE_APP(patched, `core = "${requirement}"\n`, `version = "${coreVersion}"`), (mode, artifacts) => {
+      assert.deepEqual(crateEdges(artifacts), [], `${mode}: ${requirement}`);
+      assert.deepEqual(patchLimitations(artifacts), [
+        `Cargo [patch] not applied to a version requirement the scanner cannot parse: app/Cargo.toml:6 requires core '${requirement}'; no crate edge recorded for it: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }`,
+      ], `${mode}: ${requirement}`);
+    });
+  }
+});

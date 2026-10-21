@@ -820,10 +820,13 @@ export interface UnfollowedCargoPatch extends CargoPatchPath {
    * no scanned crate; `version-mismatch`: every scanned crate's normal dependency on it
    * rejects the patched crate's version. (Cargo may still use the patch for a
    * dev/build dependency, the root package or a transitive crate — not checked.)
+   * `unparsable-requirement`: a scanned crate's dependency on it has a version requirement
+   * `cargoRequirementMatches` cannot parse, so no edge is recorded for that dependency.
    */
-  reason: "outside-repository" | "no-crate" | "version-mismatch";
-  /** `version-mismatch` only: the patched crate's version and the rejecting requirements. */
+  reason: "outside-repository" | "no-crate" | "version-mismatch" | "unparsable-requirement";
+  /** `version-mismatch` only: the patched crate's version. */
   version?: string;
+  /** `version-mismatch`: the rejecting requirements; `unparsable-requirement`: the unparsable ones. */
   rejected?: ReadonlyArray<{ path: string; line: number; requirement: string }>;
 }
 
@@ -856,9 +859,10 @@ export interface CargoPatchEdge {
  * package from the same source — declared in the crate, or inherited by key from a
  * path-less `[workspace.dependencies]` entry — and, as in Cargo, only when the patched
  * crate's version (`[package] version`, or the `[workspace.package]` one it inherits)
- * satisfies that dependency's requirement (`cargoRequirementMatches`; an unparsable or
- * absent requirement or version does not reject). A patch whose dependents all reject
- * it is reported `version-mismatch`. Deterministic: discovery's unit order, then
+ * satisfies that dependency's requirement (`cargoRequirementMatches`; an absent requirement
+ * or an unparsable version does not reject). A requirement the helper cannot parse records
+ * no edge and is reported `unparsable-requirement` (Cargo refuses such a manifest). A patch
+ * whose dependents all reject it is reported `version-mismatch`. Deterministic: discovery's unit order, then
  * manifest order.
  */
 export function resolveCargoPatches(discovery: Discovery, readFile: (path: string) => string): { edges: CargoPatchEdge[]; unfollowed: UnfollowedCargoPatch[] } {
@@ -896,11 +900,17 @@ export function resolveCargoPatches(discovery: Discovery, readFile: (path: strin
     if (toDir === undefined) continue;
     const version = versionOf(toDir);
     const rejected: Array<{ path: string; line: number; requirement: string }> = [];
+    const unparsable: Array<{ path: string; line: number; requirement: string }> = [];
     let used = false;
     for (const crate of dependents) {
       if (crate.dir === toDir) continue;
       for (const dependency of crate.dependencies) {
         if (dependency.name !== patch.name || !cargoPatchApplies(patch.source, dependency.source)) continue;
+        // 0.0.0 always parses, so `undefined` here means the requirement itself does not.
+        if (dependency.version !== undefined && cargoRequirementMatches(dependency.version, "0.0.0") === undefined) {
+          unparsable.push({ path: crate.manifestPath, line: dependency.line, requirement: dependency.version });
+          continue;
+        }
         if (version !== undefined && dependency.version !== undefined && cargoRequirementMatches(dependency.version, version) === false) {
           rejected.push({ path: crate.manifestPath, line: dependency.line, requirement: dependency.version });
           continue;
@@ -910,6 +920,7 @@ export function resolveCargoPatches(discovery: Discovery, readFile: (path: strin
       }
     }
     if (!used && rejected.length > 0) unfollowed.push({ ...patch, reason: "version-mismatch", version: version!, rejected });
+    if (unparsable.length > 0) unfollowed.push({ ...patch, reason: "unparsable-requirement", rejected: unparsable });
   }
   unfollowed.sort((left, right) => left.line - right.line);
   return { edges, unfollowed };
