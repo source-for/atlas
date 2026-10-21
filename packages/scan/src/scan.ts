@@ -552,7 +552,7 @@ function analyzeLanguages(root: string, discovery: Discovery, mode: ScanOptions[
   }
   const unique = new Map(discovery.resolution.packages.flatMap(declaration =>
     declaration.name !== undefined && declaration.context !== undefined && counts.get(declaration.name) === 1 ? [[declaration.name, declaration.dir] as const] : []));
-  const workspace = { base: discovery.summary.scanRoot ?? "", resolve: decide, packages: unique, declared: declaredPackageNames(discovery.resolution) };
+  const workspace = { base: discovery.summary.scanRoot ?? "", resolve: decide, packages: unique, declared: declaredPackageNames(discovery.resolution), packageDirs: new Set(discovery.resolution.packages.map(declaration => declaration.dir)) };
   const rustScope = rustAnalysisScope(discovery);
   const analyses = [
     analyzeTypeScript(root, discovery.sourceFiles, installationRoot, checkoutRoot, workspace),

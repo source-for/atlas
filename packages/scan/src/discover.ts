@@ -1158,8 +1158,8 @@ export interface RustAnalysisScope {
 
 /**
  * CLA-605 selection (coordinator rule (b); several contexts per scan are CLA-644):
- * the scan root's context when it owns Rust (a `Cargo.toml` there, or crates it
- * governs) — every nested context is then deferred; otherwise the one nested context
+ * the scan root's context when it owns scanned Rust source (crates it governs, or `.rs`
+ * files in no crate and outside every nested context) — every nested context is then deferred; otherwise the one nested context
  * with scanned source, at any depth; otherwise none (never two contexts in one run).
  * With no Cargo context at all the scan root is indexed, as before. A file belongs to
  * the context governing its crate; a file in no crate to the scan root's context, or to
@@ -1173,15 +1173,18 @@ export function rustAnalysisScope(discovery: Pick<Discovery, "units" | "unitByFi
   const contributes = (context: CargoContext): boolean => context.crates.some(crate => rustUnits.has(crate));
   const baseContext = contexts.find(context => context.dir === base);
   const nested = contexts.filter(context => context.dir !== base && contributes(context)).map(context => context.dir).sort(compareText);
-  const baseOwns = baseContext !== undefined && (baseContext.manifest !== undefined || contributes(baseContext));
-  const indexDir = baseOwns || nested.length === 0 ? base : nested.length === 1 ? nested[0]! : undefined;
-  const deferred = nested.filter(dir => dir !== indexDir);
-  const deferredSet = new Set(deferred);
   const rustFiles = discovery.sourceFiles.filter(path => path.endsWith(".rs"));
   const contextOf = (file: string): string | undefined => {
     const unit = discovery.unitByFile.get(file);
     return unit === undefined ? undefined : contextOfCrate.get(unit);
   };
+  // The base owns Rust only through scanned source: crates it governs, or `.rs` files in no crate and under no nested
+  // context (a root `[package]`'s own `src/`). A manifest alone (an empty `[workspace]`) owns nothing.
+  const baseOwns = (baseContext !== undefined && contributes(baseContext))
+    || rustFiles.some(file => contextOf(file) === undefined && !nested.some(dir => file.startsWith(`${dir}/`)));
+  const indexDir = baseOwns || nested.length === 0 ? base : nested.length === 1 ? nested[0]! : undefined;
+  const deferred = nested.filter(dir => dir !== indexDir);
+  const deferredSet = new Set(deferred);
   const admitted = indexDir === undefined ? [] : rustFiles.filter(file => {
     const context = contextOf(file);
     return context !== undefined ? context === indexDir : indexDir === base || file.startsWith(`${indexDir}/`);

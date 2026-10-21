@@ -85,6 +85,8 @@ export interface TypeScriptWorkspaceScope {
   packages: ReadonlyMap<string, string>;
   /** Names declared by any in-scope package: never reported as third-party. */
   declared: ReadonlySet<string>;
+  /** Every in-scope package directory (repository-relative): a resolved file belongs to the nearest one. */
+  packageDirs: ReadonlySet<string>;
 }
 
 /** Real project-aware compiler analysis; unresolved dependencies remain explicit limitations. */
@@ -220,26 +222,60 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
       realpath: path => virtualPath(path, override),
       getDirectories: path => ts.sys.getDirectories(virtualPath(path, override)),
     });
+    type Choice = { host: TS.ModuleResolutionHost; override?: { name: string; directory: string }; packageDir?: string };
     /** The resolution host for `specifier` from `containingFile`, or null when it must not resolve. */
-    const hostFor = (specifier: string, containingFile: string): { host: TS.ModuleResolutionHost; override?: { name: string; directory: string } } | null => {
+    const hostFor = (specifier: string, containingFile: string): Choice | null => {
       const decision = workspace && !specifier.startsWith(".") && !isAbsolute(specifier) && inside(containingFile) ? workspace.resolve(specifier, relativePath(containingFile)) : undefined;
       if (decision === null) return null;
       if (decision === undefined) return { host };
       const name = specifier.startsWith("@") ? specifier.split("/").slice(0, 2).join("/") : specifier.split("/")[0]!;
       const override = { name, directory: resolve(root, decision) };
-      return { host: overrideHost(override), override };
+      return { host: overrideHost(override), override, packageDir: decision };
     };
-    // A resolved file is named by its real repository path, so later host IO (which
-    // only knows unique names) and project-reference redirects stay in the chosen root.
-    const canonicalFile = (fileName: string, override?: { name: string; directory: string }): string => override ? virtualPath(fileName, override) : fileName;
+    /** The in-scope package (nearest declared directory) owning a repository file, or undefined outside the tree. */
+    const packageOf = (fileName: string): string | undefined => {
+      if (!workspace || !inside(fileName)) return undefined;
+      let dir = relativePath(fileName);
+      for (;;) {
+        dir = dir.includes("/") ? dir.slice(0, dir.lastIndexOf("/")) : "";
+        if (workspace.packageDirs.has(dir)) return dir;
+        if (dir === "") return undefined;
+      }
+    };
+    /**
+     * CLA-605: the scan's package decision is authoritative. A resolved file is named by its real repository path (so
+     * later host IO and project-reference redirects stay in the chosen root) and must belong to the chosen package.
+     * Compiler configuration (`paths`, `baseUrl`) that routes the name elsewhere is retried without it; a result still
+     * outside the chosen package is left unresolved and listed, never linked to another package.
+     */
+    const decided = <T>(specifier: string, chosen: Choice, options: TS.CompilerOptions, attempt: (options: TS.CompilerOptions) => T, fileOf: (result: T) => string | undefined, withFile: (result: T, file: string) => T, unresolved: T, from: string): T => {
+      if (!chosen.override) return attempt(options);
+      const accept = (result: T): T | undefined => {
+        const file = fileOf(result);
+        if (file === undefined) return undefined;
+        const canonical = virtualPath(file, chosen.override);
+        return packageOf(canonical) === chosen.packageDir ? withFile(result, canonical) : undefined;
+      };
+      const first = attempt(options);
+      const accepted = accept(first);
+      if (accepted !== undefined) return accepted;
+      if (fileOf(first) === undefined && !options.paths && options.baseUrl === undefined) return first;
+      const { paths: _paths, baseUrl: _baseUrl, ...unrouted } = options as TS.CompilerOptions & { pathsBasePath?: unknown };
+      delete (unrouted as { pathsBasePath?: unknown }).pathsBasePath;
+      const retried = accept(attempt(unrouted));
+      if (retried !== undefined) return retried;
+      limitations.add(`${relativePath(from)}: '${specifier}' resolves outside ${chosen.packageDir || "."}, the package the scan chose for it; not linked.`);
+      return unresolved;
+    };
     host.resolveModuleNameLiterals = (literals, containingFile, redirectedReference, options, containingSourceFile) => literals.map(literal => {
       const chosen = hostFor(literal.text, containingFile);
       if (!chosen) return { resolvedModule: undefined };
       const mode = ts.getModeForUsageLocation(containingSourceFile, literal, options);
-      const resolved = ts.resolveModuleName(literal.text, containingFile, options, chosen.host, undefined, redirectedReference, mode);
-      return resolved.resolvedModule && chosen.override
-        ? { ...resolved, resolvedModule: { ...resolved.resolvedModule, resolvedFileName: canonicalFile(resolved.resolvedModule.resolvedFileName, chosen.override) } }
-        : resolved;
+      return decided<TS.ResolvedModuleWithFailedLookupLocations>(literal.text, chosen, options,
+        attemptOptions => ts.resolveModuleName(literal.text, containingFile, attemptOptions, chosen.host, undefined, redirectedReference, mode),
+        result => result.resolvedModule?.resolvedFileName,
+        (result, file) => ({ ...result, resolvedModule: { ...result.resolvedModule!, resolvedFileName: file } }),
+        { resolvedModule: undefined }, containingFile);
     });
     host.resolveTypeReferenceDirectiveReferences = (references, containingFile, redirectedReference, options, containingSourceFile) => references.map(reference => {
       const name = typeof reference === "string" ? reference : reference.fileName;
@@ -248,11 +284,11 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
       // Exactly the compiler's own loader (typescript's internal default-mode helper).
       const defaultMode = containingSourceFile ? (ts as unknown as { getDefaultResolutionModeForFileWorker(file: TS.SourceFile, options: TS.CompilerOptions): TS.ResolutionMode }).getDefaultResolutionModeForFileWorker(containingSourceFile, options) : undefined;
       const mode = ts.getModeForFileReference(reference, defaultMode);
-      const resolved = ts.resolveTypeReferenceDirective(name, containingFile, options, chosen.host, redirectedReference, undefined, mode);
-      const directive = resolved.resolvedTypeReferenceDirective;
-      return directive?.resolvedFileName && chosen.override
-        ? { ...resolved, resolvedTypeReferenceDirective: { ...directive, resolvedFileName: canonicalFile(directive.resolvedFileName, chosen.override) } }
-        : resolved;
+      return decided<TS.ResolvedTypeReferenceDirectiveWithFailedLookupLocations>(name, chosen, options,
+        attemptOptions => ts.resolveTypeReferenceDirective(name, containingFile, attemptOptions, chosen.host, redirectedReference, undefined, mode),
+        result => result.resolvedTypeReferenceDirective?.resolvedFileName,
+        (result, file) => ({ ...result, resolvedTypeReferenceDirective: { ...result.resolvedTypeReferenceDirective!, resolvedFileName: file } }),
+        { resolvedTypeReferenceDirective: undefined }, containingFile);
     });
     // Permit source redirects through project references without requiring emitted .d.ts files.
     (host as TS.CompilerHost & { useSourceOfProjectReferenceRedirect?: () => boolean }).useSourceOfProjectReferenceRedirect = () => true;

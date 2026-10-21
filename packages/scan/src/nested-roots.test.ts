@@ -380,3 +380,25 @@ test("own-root duplicate type references resolve in the importer's root (full)",
     assert.ok(!(artifacts.analysis.limitations ?? []).some(line => /a\/packages\/app\/main\.ts.*TS2688/.test(line)), "the type reference resolves");
   });
 });
+
+test("the scan's package decision is authoritative over tsconfig paths: a mapping into another root's same-named package is not linked; an own-root mapping still is", () => {
+  const files = (target: string): Record<string, string> => ({
+    "a/package.json": pkg("a", { private: true, workspaces: ["packages/*"] }),
+    "a/tsconfig.json": JSON.stringify({ compilerOptions: { strict: true, paths: { "@scope/core": [target] } }, include: ["packages/**/*.ts"] }),
+    "a/packages/core/package.json": pkg("@scope/core", { main: "./index.ts" }),
+    "a/packages/core/index.ts": scopeCore("a"),
+    "a/packages/app/package.json": pkg("@scope/app-a"),
+    "a/packages/app/main.ts": SCOPE_APP,
+    "b/package.json": pkg("b", { private: true, workspaces: ["packages/*"] }),
+    "b/packages/core/package.json": pkg("@scope/core", { main: "./index.ts" }),
+    "b/packages/core/index.ts": scopeCore("b"),
+  });
+  for (const target of ["../b/packages/core/index.ts", "./packages/core/index.ts"]) {
+    withCommittedRepo(files(target), dir => {
+      const relations = allRelations(scanRepository(dir, { analysisMode: "full" }));
+      assert.deepEqual(relations.filter(line => line.includes(" a/") && line.includes("-> b/")), [], `${target}: ${relations.join("\n")}`);
+      assert.ok(relations.includes("calls a/packages/app/main.ts -> a/packages/core/index.ts"), `${target}: ${relations.join("\n")}`);
+      assert.ok(relations.includes("dependsOn a/packages/app/main.ts -> a/packages/core/index.ts"), target);
+    });
+  }
+});

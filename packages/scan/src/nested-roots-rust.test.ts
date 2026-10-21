@@ -73,6 +73,18 @@ test("P7 selection: base context wins, else the one nested context at any depth,
     assert.deepEqual(scopeOf(dir, "fuzz").indexDir, "fuzz", "--root fuzz indexes its own manifest");
   });
   withCommittedRepo(workspace("rust", "r"), dir => assert.equal(scopeOf(dir).indexDir, "rust"));
+  // A root manifest alone owns nothing: an empty root [workspace] still selects the one nested context.
+  withCommittedRepo({ "Cargo.toml": "[workspace]\nmembers = []\n", ...workspace("deep/rust", "r") }, dir => {
+    const scope = scopeOf(dir);
+    assert.equal(scope.indexDir, "deep/rust");
+    assert.deepEqual(scope.deferred, []);
+  });
+  // A root [package] with its own src/ owns Rust: it stays indexed and the nested context is deferred.
+  withCommittedRepo({ "Cargo.toml": crate("top"), "src/lib.rs": "pub fn top() {}\n", ...workspace("deep/rust", "r") }, dir => {
+    const scope = scopeOf(dir);
+    assert.equal(scope.indexDir, "");
+    assert.deepEqual(scope.deferred, ["deep/rust"]);
+  });
   withCommittedRepo(workspace("services/rust", "r"), dir => {
     const scope = scopeOf(dir);
     assert.equal(scope.indexDir, "services/rust", "depth 2");
@@ -126,6 +138,7 @@ test("P7 real rust-analyzer: one context at depth 1 / depth 2 / --root gets sema
   });
   positive(workspace("rust", "r"), "rust");
   positive(workspace("services/rust", "r"), "services/rust");
+  positive({ "Cargo.toml": "[workspace]\nmembers = []\n", ...workspace("deep/rust", "r") }, "deep/rust");
   positive({ ...workspace("a", "a"), ...workspace("deep/b", "b") }, "deep/b", "deep/b");
 
   for (const files of [{ ...workspace("a", "a"), ...workspace("b", "b") }, { ...workspace("a", "a"), ...workspace("deep/b", "b") }]) {
