@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -61,6 +61,11 @@ for (const analysisMode of ["quick", "full"] as const) {
     withAaRouterRepo(dir => {
       const first = scanRepository(dir, { analysisMode });
       assert.deepEqual(containerGraph(first), { containers: EXPECTED_CONTAINERS, edges: EXPECTED_EDGES });
+      // Every container is anchored on a committed path (no invented root `scripts`).
+      assert.deepEqual(first.snapshot.entities.filter(entity => entity.kind === "container").flatMap(entity => entity.sourceRefs.map(ref => ref.path)).sort(), [
+        "rust/crates/aa-core", "rust/crates/aa-server", "typescript/apps/cloudflare-worker", "typescript/apps/web",
+        "typescript/packages/core", "typescript/packages/sdk", "typescript/scripts",
+      ]);
       // The worker's `@aa/core/policy` subpath import is evidence on the same package edge.
       const worker = first.snapshot.entities.find(entity => entity.name === "aa-router-worker")!;
       const core = first.snapshot.entities.find(entity => entity.name === "@aa/core")!;
@@ -91,8 +96,12 @@ test("--root keeps repository-relative paths and the real commit, scans only tha
     ]);
     assert.ok(paths.has("typescript/apps/cloudflare-worker/src/index.ts"), "evidence keeps the typescript/ prefix");
     for (const path of paths) {
-      assert.ok(path === "README.md" || path === "scripts" || path.startsWith("typescript/"), `${path} stays repository-relative inside --root`);
+      // README.md is repository-wide softwareSystem evidence, kept under --root by design.
+      assert.ok(path === "README.md" || path.startsWith("typescript/"), `${path} stays repository-relative inside --root`);
+      assert.ok(existsSync(join(dir, path)), `${path} is a committed path`);
     }
+    const tooling = typescript.snapshot.entities.find(entity => entity.name === "Build & fixture tooling")!;
+    assert.deepEqual(tooling.sourceRefs.map(ref => ref.path), ["typescript/scripts"]);
     for (const ref of typescript.snapshot.relations.flatMap(relation => relation.evidence.map(evidence => evidence.source))) {
       assert.equal(ref.commitSha, commits.head, "evidence cites the real commit");
     }

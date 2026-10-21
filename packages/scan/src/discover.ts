@@ -219,6 +219,23 @@ const EXCLUDED_ROOT_PATTERN = /(^|\/)(node_modules|vendor|vendored|third_party|t
 /** Lockfiles that make a package outside every workspace a container of its own. */
 const STANDALONE_LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "npm-shrinkwrap.json"] as const;
 
+/**
+ * A real, committed anchor for the tooling bucket (CLA-605): `<scan root>/scripts` when
+ * it holds a tooling file (unchanged for a repo with a root `scripts/`), else the
+ * shallowest `scripts` directory holding one (aa-router's `typescript/scripts`), else
+ * the directory of the first tooling file (the file itself at the repository root).
+ * `files` is the sorted, non-empty list of tooling files.
+ */
+function toolingEvidencePath(base: string, files: readonly string[]): string {
+  const preferred = joinDir(base, "scripts");
+  if (files.some(file => file.startsWith(`${preferred}/`))) return preferred;
+  const nested = files.flatMap(file => /^((?:[^/]+\/)*?scripts)\//.exec(file)?.[1] ?? [])
+    .sort((left, right) => left.split("/").length - right.split("/").length || compareText(left, right))[0];
+  if (nested !== undefined) return nested;
+  const first = files[0]!;
+  return first.includes("/") ? first.slice(0, first.lastIndexOf("/")) : first;
+}
+
 /** `dir/name`, or `name` at the repository root. */
 function joinDir(dir: string, name: string): string {
   return dir ? `${dir}/${name}` : name;
@@ -982,7 +999,7 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
       if (name) unitByPackageName.set(name, dir);
     }
     if (hasTooling) {
-      units.push({ kind: "tooling", dir: TOOLING_UNIT_KEY, name: "Build & fixture tooling", evidencePath: "scripts", packageManifest: undefined });
+      units.push({ kind: "tooling", dir: TOOLING_UNIT_KEY, name: "Build & fixture tooling", evidencePath: toolingEvidencePath(base, [...nonMemberFiles].sort(compareText)), packageManifest: undefined });
     }
   }
 

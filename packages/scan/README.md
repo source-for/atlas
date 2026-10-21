@@ -172,7 +172,10 @@ Discovery generalizes beyond Okie's own layout (validated against third-party cl
   reuse a package name: an import resolves within the importer's own workspace root first; an
   importer in no workspace (or whose root lacks the name) resolves only when exactly one package
   has it, otherwise no relation is recorded and `analysis.limitations` names the package and its
-  candidate roots. An empty `workspaces` list still makes a root. Root `[patch]` overrides
+  candidate roots. An empty `workspaces` list still makes a root. The tooling container is anchored on a committed path: `scripts` at the scan root when it holds
+  tooling files, else the shallowest `scripts/` directory that does (e.g. `typescript/scripts`), else
+  the first tooling file's directory. The repository `README.md` stays the software system's evidence
+  under `--root`. Root `[patch]` overrides
   are still read from the repository-root `Cargo.toml` only.
 - **`--root <subdir>`** scans one repository-relative directory of the pinned commit as if it were
   the workspace root. Commit SHA, tree, evidence paths and source links stay those of the whole
