@@ -11,22 +11,12 @@ import {
 import { typedId } from "./ids.js";
 import {
   authoredStoryStep as step,
+  boundedDisplayText,
   compareEntityId as compareId,
   withAcceptedSummary,
 } from "./story-authoring.js";
 
 const MAX_FOCUS = STORY_AUTHORING_LIMITS.maxFocusEntitiesPerStep;
-
-/**
- * A step title within the authoring limit. Titles embed entity names (up to the
- * extraction gate's 160 characters), so a long one is cut by code point with an
- * ellipsis instead of failing story validation.
- */
-function stepTitle(title: string): string {
-  const codePoints = Array.from(title);
-  const limit = STORY_AUTHORING_LIMITS.maxStepTitleCharacters;
-  return codePoints.length <= limit ? title : `${codePoints.slice(0, limit - 1).join("")}…`;
-}
 
 function joinEnglish(items: readonly string[]): string {
   if (items.length === 0) return "";
@@ -116,7 +106,7 @@ export function buildOverviewStory(
   const steps: StoryStep[] = [
     step({
       id: "step:context",
-      title: stepTitle(`Start with ${systemName}`),
+      title: `Start with ${systemName}`,
       focus: contextFocus,
       relations,
       visibleRelations,
@@ -131,7 +121,7 @@ export function buildOverviewStory(
   if (containerFocus.length > 1) {
     steps.push(step({
       id: "step:containers",
-      title: stepTitle(`Inside ${systemName}`),
+      title: `Inside ${systemName}`,
       focus: containerFocus,
       relations,
       visibleRelations,
@@ -146,7 +136,7 @@ export function buildOverviewStory(
     const childCount = countBy(components, featuredContainer.id);
     steps.push(step({
       id: "step:container",
-      title: stepTitle(`Look inside ${featuredContainer.name}`),
+      title: `Look inside ${featuredContainer.name}`,
       focus: [featuredContainer],
       relations,
       visibleRelations,
@@ -165,7 +155,7 @@ export function buildOverviewStory(
     const childCount = countBy(code, featuredComponent.id);
     steps.push(step({
       id: "step:component",
-      title: stepTitle(`Open ${featuredComponent.name}`),
+      title: `Open ${featuredComponent.name}`,
       focus: [featuredComponent],
       relations,
       visibleRelations,
@@ -185,7 +175,7 @@ export function buildOverviewStory(
       : featuredCode.name;
     steps.push(step({
       id: "step:code",
-      title: stepTitle(`Read ${featuredCode.name}`),
+      title: `Read ${featuredCode.name}`,
       focus: [featuredCode],
       relations,
       visibleRelations,
@@ -207,7 +197,7 @@ export function buildOverviewStory(
     id: typedId("story", repositorySlug, "overview"),
     snapshotId: snapshot.id,
     viewId: view.id,
-    title: `${systemName} overview`,
+    title: boundedDisplayText(`${systemName} overview`, STORY_AUTHORING_LIMITS.maxTitleCharacters),
     steps,
   };
 }

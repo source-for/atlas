@@ -11,7 +11,7 @@ import {
   compareText,
 } from "@okie/architecture";
 import { typedId } from "./ids.js";
-import { authoredStoryStep, kindLabel, withAcceptedSummary } from "./story-authoring.js";
+import { authoredStoryStep, boundedDisplayText, kindLabel, withAcceptedSummary } from "./story-authoring.js";
 
 /**
  * Documented user-flow templates (CLA-77). Each step matches a snapshot entity
@@ -272,7 +272,7 @@ export function buildUserFlowStories(
       id: typedId("story", repositorySlug, template.id),
       snapshotId: snapshot.id,
       viewId: view.id,
-      title: `${systemName}: ${template.title}`,
+      title: boundedDisplayText(`${systemName}: ${template.title}`, STORY_AUTHORING_LIMITS.maxTitleCharacters),
       steps,
     });
   }
