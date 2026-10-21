@@ -10,7 +10,8 @@ import ts from "typescript";
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
 /** Packages whose ordering decides scan IDs, truncation, layout or output order (CLA-589). */
-const SCANNED_PACKAGES = ["scan", "architecture", "scene-compiler"]
+const PACKAGE_NAMES = ["scan", "architecture", "scene-compiler"];
+const SCANNED_PACKAGES = PACKAGE_NAMES
   .flatMap(name => [`packages/${name}/src`, `packages/${name}/scripts`])
   .filter(directory => existsSync(join(repoRoot, directory)));
 
@@ -43,9 +44,10 @@ interface LocaleOrderUse {
  * property accesses, string-keyed element accesses, destructured bindings and destructuring
  * assignments (`({ localeCompare: compare } = String.prototype)`), with `Intl` reached as
  * `Intl`, `(Intl)`, `globalThis.Intl`, `window['Intl']` or a nested `{ Intl: { Collator } }`
- * pattern — never comments. An `Intl` constructor called with a string-literal first argument
- * (`new Intl.Segmenter('en', …)`) names its locale, so it does not depend on the machine and
- * is not reported.
+ * pattern — never comments. `Intl.Collator` is always reported: text is ordered by code unit,
+ * whatever the locale. The one exemption is `Intl.Segmenter` called with a string literal
+ * naming a concrete tag (`new Intl.Segmenter('en', …)`, not `''` or `'und'`), which does not
+ * depend on the machine.
  */
 function localeOrderUses(file: string, text: string): LocaleOrderUse[] {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
@@ -56,7 +58,7 @@ function localeOrderUses(file: string, text: string): LocaleOrderUse[] {
     uses.push({ file, lineNumber, line: lines[lineNumber - 1]!.trim(), call });
   };
   const methods = new Set(["localeCompare", "toLocaleLowerCase", "toLocaleUpperCase", "toLocaleString", "toLocaleDateString", "toLocaleTimeString"]);
-  const constructors = new Set(["Collator", "NumberFormat", "DateTimeFormat", "ListFormat", "PluralRules", "RelativeTimeFormat", "DisplayNames", "Segmenter"]);
+  const constructors = new Set(["Collator", "NumberFormat", "DateTimeFormat", "ListFormat", "PluralRules", "RelativeTimeFormat", "DisplayNames", "DurationFormat", "Segmenter"]);
   /** The text of a property key: `key`, `'key'` or `['key']`. */
   const keyText = (key: ts.PropertyName | undefined): string | undefined => {
     if (key === undefined) return undefined;
@@ -77,14 +79,14 @@ function localeOrderUses(file: string, text: string): LocaleOrderUse[] {
   /** Whether a read of `name` from an object whose owner `isOwnerIntl` reports is locale-dependent. */
   const flagged = (name: string | undefined, isOwnerIntl: () => boolean): name is string =>
     name !== undefined && (methods.has(name) || (constructors.has(name) && isOwnerIntl()));
-  /** Whether `Intl.X` is the callee of a call or `new` whose first argument is a string literal. */
+  /** Whether `Intl.X` is the callee of a call or `new` whose first argument is a string literal naming a concrete tag. */
   const namesLocale = (access: ts.Expression): boolean => {
     let callee: ts.Node = access;
     while (ts.isParenthesizedExpression(callee.parent)) callee = callee.parent;
     const call = callee.parent;
     if (!(ts.isCallExpression(call) || ts.isNewExpression(call)) || call.expression !== callee) return false;
     const first = call.arguments?.[0];
-    return first !== undefined && ts.isStringLiteralLike(first);
+    return first !== undefined && ts.isStringLiteralLike(first) && first.text !== "" && !/^und(?:-|$)/i.test(first.text);
   };
   /** Whether an object binding pattern destructures `Intl`: `= Intl`, or nested under an `Intl` key. */
   const bindingFromIntl = (pattern: ts.ObjectBindingPattern): boolean => {
@@ -125,10 +127,10 @@ function localeOrderUses(file: string, text: string): LocaleOrderUse[] {
   };
   const visit = (node: ts.Node): void => {
     if (ts.isPropertyAccessExpression(node)) {
-      if (flagged(node.name.text, () => isIntl(node.expression)) && !(constructors.has(node.name.text) && namesLocale(node))) record(node, node.name.text);
+      if (flagged(node.name.text, () => isIntl(node.expression)) && !(node.name.text === "Segmenter" && namesLocale(node))) record(node, node.name.text);
     } else if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)) {
       const name = node.argumentExpression.text;
-      if (flagged(name, () => isIntl(node.expression)) && !(constructors.has(name) && namesLocale(node))) record(node, name);
+      if (flagged(name, () => isIntl(node.expression)) && !(name === "Segmenter" && namesLocale(node))) record(node, name);
     } else if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
       const pattern = node.parent;
       const key = keyText(node.propertyName) ?? (ts.isIdentifier(node.name) ? node.name.text : undefined);
@@ -175,13 +177,13 @@ test("CLA-589: the locale-order lint sees calls, not comments, and honours allow
   const text = [
     "// a.localeCompare(b) in a comment is fine",
     "const s = names.sort((a, b) => a.localeCompare(b));",
-    "const c = new Intl.Collator();",
+    "const c = new Intl.Collator('lt');",
     "const u = name['toLocaleUpperCase']();",
     "const other = new Foo.Collator();",
   ].join("\n");
   const uses = localeOrderUses("x.ts", text);
   assert.deepEqual(uses.map(use => [use.lineNumber, use.call]), [[2, "localeCompare"], [3, "Collator"], [4, "toLocaleUpperCase"]]);
-  const allowance = { file: "x.ts", line: "const c = new Intl.Collator();", reason: "display only" };
+  const allowance = { file: "x.ts", line: "const c = new Intl.Collator('lt');", reason: "display only" };
   const stale = { file: "x.ts", line: "gone();", reason: "removed" };
   const result = unallowed(uses, [allowance, stale]);
   assert.deepEqual(result.offending.map(use => use.lineNumber), [2, 4]);
@@ -230,7 +232,7 @@ test("CLA-589: the locale-order lint sees Intl reached indirectly and destructur
       [13, "Collator"], [14, "localeCompare"], [15, "localeCompare"], [16, "localeCompare"], [17, "Collator"]]);
 });
 
-test("CLA-589: the locale-order lint bans locale formatting unless an Intl constructor names its locale", () => {
+test("CLA-589: the locale-order lint bans Collator and locale formatting; only Intl.Segmenter may name a concrete locale", () => {
   const text = [
     "const a = count.toLocaleString();",
     "const b = date.toLocaleDateString();",
@@ -251,11 +253,28 @@ test("CLA-589: the locale-order lint bans locale formatting unless an Intl const
     "const p = new (Intl.ListFormat)('en');",
     "const q = new Intl.PluralRules('en-US');",
     "const r = Intl.getCanonicalLocales();",
+    "const s = new Intl.Collator('lt');",
+    "const t = new Intl.NumberFormat('und');",
+    "const u = new Intl.NumberFormat('en');",
+    "const v = new Intl.Segmenter('und');",
+    "const w = new Intl.Segmenter('');",
+    "const x = new Intl.DurationFormat().format({ hours: 1 });",
+    "const y = new Intl.DurationFormat('en');",
+    "const z = new Intl.Segmenter(`en-US`);",
   ].join("\n");
   assert.deepEqual(localeOrderUses("x.ts", text).map(use => [use.lineNumber, use.call]),
     [[1, "toLocaleString"], [2, "toLocaleDateString"], [3, "toLocaleTimeString"], [4, "NumberFormat"], [5, "DateTimeFormat"],
       [6, "ListFormat"], [7, "PluralRules"], [8, "RelativeTimeFormat"], [9, "DisplayNames"], [10, "Segmenter"], [11, "NumberFormat"],
-      [12, "DateTimeFormat"], [13, "toLocaleString"]]);
+      [12, "DateTimeFormat"], [13, "toLocaleString"], [15, "Collator"], [16, "NumberFormat"], [17, "ListFormat"], [18, "PluralRules"],
+      [20, "Collator"], [21, "NumberFormat"], [22, "NumberFormat"], [23, "Segmenter"], [24, "Segmenter"], [25, "DurationFormat"], [26, "DurationFormat"]]);
+});
+
+test("CLA-589: the locale-order lint walks every scanned package's src and the golden-excerpt generator script", () => {
+  const files = SCANNED_PACKAGES.flatMap(sourceFiles);
+  assert.ok(files.includes("packages/scene-compiler/scripts/generate-golden-source-excerpts.mjs"), "the walk must read .mjs files under packages/*/scripts");
+  for (const name of PACKAGE_NAMES) {
+    assert.ok(files.some(file => file.startsWith(`packages/${name}/src/`)), `the walk must read packages/${name}/src`);
+  }
 });
 
 test("CLA-589: the locale-order lint reads .mjs scripts", () => {
