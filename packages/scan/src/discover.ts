@@ -18,6 +18,7 @@ import {
   type ScanSizeLimits,
   type SkippedTreeEntries,
 } from "./source-tree.js";
+import { parsePackageJsonDependencies } from "./dependency-facts.js";
 import { compareText } from "@okie/architecture";
 
 /**
@@ -50,19 +51,6 @@ export interface SourceUnit {
   packageManifest: string | undefined;
   /** Repository-relative anchor for the container. */
   evidencePath: string;
-  /**
-   * On a `rust` unit governed by a nested Cargo workspace (CLA-605), that workspace's
-   * directory: its `Cargo.toml` holds the `[workspace.dependencies]` this crate inherits.
-   * Set whenever that workspace is not the repository root (including a `--root`
-   * scan's base); absent for the repository-root workspace.
-   */
-  cargoWorkspace?: string;
-  /**
-   * CLA-605: the JS workspace root (repository-relative; `""` = the scan root's) whose
-   * globs claimed this member. Set only when the scan has a nested JS workspace root, and
-   * never on a standalone (own-lockfile) package, which belongs to no workspace.
-   */
-  jsWorkspaceRoot?: string;
 }
 
 /**
@@ -126,6 +114,51 @@ export interface DiscoverySummary {
   scanRoot?: string;
 }
 
+/**
+ * One in-scope `package.json` that is not a bare marker (`{"type":"module"}`): it bounds
+ * the files below it as their nearest package and, when named and owned by a context,
+ * is a candidate for bare imports of its name.
+ */
+export interface PackageDeclaration {
+  /** Package directory (repository-relative; `""` = repository root). */
+  dir: string;
+  /** Repository path of the `package.json`. */
+  manifest: string;
+  name?: string;
+  version?: string;
+  /**
+   * The resolution context: the JS workspace root (`""` = the scan root) whose globs
+   * claim it (or that it is); its own `dir` for a package in no workspace (standalone,
+   * or simply unclaimed). Undefined for an unclaimed manifest under an excluded
+   * (vendored / test / example) directory: a boundary for nearest-package lookups,
+   * never an import candidate.
+   */
+  context?: string;
+  /** The unit key imports of this package resolve to, when it owns scanned source. */
+  unit?: string;
+  /** Dependency specs by name across dependencies/devDependencies/peerDependencies/optionalDependencies (all entries). */
+  dependencies: Array<{ name: string; section: string; spec: string }>;
+}
+
+/** One Cargo resolution context: the scan root or a nested `[workspace]` root, and the crates it governs. */
+export interface CargoContext {
+  /** Repository-relative directory (`""` = repository root). */
+  dir: string;
+  /** Its `Cargo.toml`, when tracked. */
+  manifest?: string;
+  /** Crate directories it governs (deepest workspace claiming each), sorted; includes skipped fixture crates. */
+  crates: string[];
+}
+
+export interface WorkspaceResolution {
+  /** The scan root (`""` or the `--root` dir), then every nested JS workspace root, sorted. */
+  jsRoots: string[];
+  /** Every non-marker in-scope `package.json` (never under node_modules), sorted by dir. */
+  packages: PackageDeclaration[];
+  /** The scan root's Cargo context first, then each nested `[workspace]` root, sorted. */
+  cargoContexts: CargoContext[];
+}
+
 /** Why a `.js` file in a TypeScript repo was not scanned; see {@link jsSkipReason}. */
 export interface SkippedJsByReason {
   /** Under a `test`/`tests`/`fixture(s)`/`__fixtures__`/`vendor`/`third_party` directory. */
@@ -152,15 +185,13 @@ export interface Discovery {
   units: SourceUnit[];
   /** file path -> owning unit dir. */
   unitByFile: Map<string, string>;
-  /** workspace package name -> owning unit dir. */
-  unitByPackageName: Map<string, string>;
   /**
-   * CLA-605: every JS workspace root (the scan root first, then each nested root),
-   * present only when a nested root exists. Two independent roots may reuse a package
-   * name; extraction then resolves a bare import within the importer's own root first
-   * (see `resolveWorkspacePackageImport`).
+   * CLA-605: how bare package imports and Cargo inheritance resolve, built once by
+   * discovery and scoped to `--root`. Every consumer (container edges, external
+   * filtering, semantic TypeScript resolution, Cargo patches/inheritance and Rust
+   * analyzer selection) reads this one record; nothing re-derives it from units.
    */
-  jsWorkspaceRoots?: string[];
+  resolution: WorkspaceResolution;
   summary: DiscoverySummary;
   /**
    * Every listed repository file (source or not: assets, JSON, skipped `.js`), so an
@@ -907,20 +938,22 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
   // Every Cargo workspace's crates; a crate claimed by two workspaces goes to the
   // deepest (its inherited `[workspace.dependencies]` resolve against that manifest).
   // A nested workspace root that is also a package is a crate itself.
+  // As in Cargo, a path dependency joins a workspace only when it lies inside that
+  // workspace's directory: a workspace containing the crate wins over one merely
+  // reaching it through a path (cargo-fuzz's `fuzz/` depending on `../crates/core`).
   const cargoWorkspaceByCrate = new Map<string, string>();
+  const contains = (root: string, dir: string): boolean => root === "" || dir === root || dir.startsWith(`${root}/`);
   for (const root of [base, ...nestedCargoRoots].sort((left, right) => right.length - left.length || compareText(left, right))) {
     const crates = rustCrateDirectories(sourceRoot, allFiles, root, root === base);
     if (root !== base && cargoPackageName(readRepositoryFile(sourceRoot, `${root}/Cargo.toml`) ?? "") !== undefined) crates.push(root);
-    for (const crate of crates) if (!cargoWorkspaceByCrate.has(crate)) cargoWorkspaceByCrate.set(crate, root);
+    for (const crate of crates) {
+      const claimed = cargoWorkspaceByCrate.get(crate);
+      if (claimed === undefined || (!contains(claimed, crate) && contains(root, crate))) cargoWorkspaceByCrate.set(crate, root);
+    }
   }
   const rustCrateDirs = [...cargoWorkspaceByCrate.keys()].sort(compareText);
   const rustCrateDirSet = new Set(rustCrateDirs);
   const rustCrateOf = (file: string): string | undefined => mostSpecificRoot(file, rustCrateDirs);
-  /** The member's claiming JS root, only when nested JS roots make it meaningful. */
-  const jsRootField = (dir: string): { jsWorkspaceRoot?: string } => {
-    const root = nestedJsRoots.size > 0 ? jsRootByMember.get(dir) : undefined;
-    return root === undefined ? {} : { jsWorkspaceRoot: root };
-  };
 
   const allMembers = [...memberDirs].sort();
   // Fixture/example/playground members are skipped the same way whether npm or Cargo
@@ -942,7 +975,6 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
   };
 
   const unitByFile = new Map<string, string>();
-  const unitByPackageName = new Map<string, string>();
   const units: SourceUnit[] = [];
   const singlePackage = allMembers.length === 0;
   let reexportAliases: ReexportAlias[] = [];
@@ -975,7 +1007,6 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
         packageManifest: hasRootManifest ? rootManifest : undefined,
         evidencePath: hasRootManifest ? rootManifest : base || rootSlug,
       });
-      if (rootPackage) unitByPackageName.set(rootPackage, rootKey);
     }
   } else {
     const nonMemberFiles = new Set<string>();
@@ -995,8 +1026,7 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
       .filter(dir => sourceCandidates.some(file => unitByFile.get(file) === dir));
     for (const dir of membersWithSource) {
       const name = readPackageName(sourceRoot, dir);
-      units.push({ kind: "member", dir, name: name ?? dir, evidencePath: dir, ...(name ? { packageName: name } : {}), packageManifest: `${dir}/package.json`, ...jsRootField(dir) });
-      if (name) unitByPackageName.set(name, dir);
+      units.push({ kind: "member", dir, name: name ?? dir, evidencePath: dir, ...(name ? { packageName: name } : {}), packageManifest: `${dir}/package.json` });
     }
     if (hasTooling) {
       units.push({ kind: "tooling", dir: TOOLING_UNIT_KEY, name: "Build & fixture tooling", evidencePath: toolingEvidencePath(base, [...nonMemberFiles].sort(compareText)), packageManifest: undefined });
@@ -1012,7 +1042,6 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
     // member's npm manifest facts and answers to its npm name.
     const isJsMember = memberDirs.has(dir);
     const packageName = isJsMember ? readPackageName(sourceRoot, dir) : undefined;
-    const cargoWorkspace = cargoWorkspaceByCrate.get(dir)!;
     units.push({
       kind: "rust",
       dir,
@@ -1020,11 +1049,51 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
       evidencePath: dir,
       ...(packageName ? { packageName } : {}),
       packageManifest: isJsMember ? `${dir}/package.json` : undefined,
-      ...(cargoWorkspace ? { cargoWorkspace } : {}),
-      ...(isJsMember ? jsRootField(dir) : {}),
     });
-    if (packageName) unitByPackageName.set(packageName, dir);
   }
+
+  /**
+   * Every non-marker package.json in scope with its context (see PackageDeclaration),
+   * and every Cargo context with the crates it governs. Built from the same member,
+   * standalone and crate claims as the units above, so a sourceless or skipped member
+   * keeps its declaration (and so stays its root's answer for its name).
+   */
+  const workspaceResolution = (): WorkspaceResolution => {
+    const unitByManifest = new Map(units.flatMap(unit => unit.packageName && unit.packageManifest ? [[unit.packageManifest, unit.dir] as const] : []));
+    const standaloneSet = new Set(standalonePackages);
+    const packages: PackageDeclaration[] = [];
+    for (const dir of [base, ...packageDirs].sort(compareText)) {
+      const manifest = joinDir(dir, "package.json");
+      if (!listedFileSet.has(manifest)) continue;
+      const text = readRepositoryFile(sourceRoot, manifest);
+      if (text === undefined) continue;
+      let parsed: ReturnType<typeof parsePackageJsonDependencies>;
+      let version: unknown;
+      try { parsed = parsePackageJsonDependencies(text); version = (JSON.parse(text) as { version?: unknown }).version; } catch { continue; }
+      if (parsed.marker) continue;
+      const context = dir === base || nestedJsRoots.has(dir) ? dir
+        : jsRootByMember.get(dir) ?? (standaloneSet.has(dir) || isDiscoverableDir(dir) ? dir : undefined);
+      const unit = unitByManifest.get(manifest);
+      packages.push({
+        dir,
+        manifest,
+        ...(parsed.name ? { name: parsed.name } : {}),
+        ...(typeof version === "string" && version.trim() ? { version: version.trim() } : {}),
+        ...(context !== undefined ? { context } : {}),
+        ...(unit !== undefined ? { unit } : {}),
+        dependencies: parsed.entries.map(entry => ({ name: entry.key, section: entry.section, spec: entry.spec })),
+      });
+    }
+    const cargoContexts: CargoContext[] = [base, ...[...nestedCargoRoots].sort(compareText)].map(dir => {
+      const manifest = joinDir(dir, "Cargo.toml");
+      return {
+        dir,
+        ...(listedFileSet.has(manifest) ? { manifest } : {}),
+        crates: rustCrateDirs.filter(crate => cargoWorkspaceByCrate.get(crate) === dir),
+      };
+    });
+    return { jsRoots, packages, cargoContexts };
+  };
 
   const sourceFiles = [...unitByFile.keys()].sort();
   const nestedWorkspaceRoots = [...new Set([...nestedJsRoots, ...nestedCargoRoots])].sort(compareText);
@@ -1032,8 +1101,7 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
     sourceFiles,
     units,
     unitByFile,
-    unitByPackageName,
-    ...(nestedJsRoots.size > 0 ? { jsWorkspaceRoots: jsRoots } : {}),
+    resolution: workspaceResolution(),
     trackedFiles,
     summary: {
       singlePackage,
@@ -1070,4 +1138,55 @@ export function discoverRepository(sourceRoot: string, options: DiscoverOptions 
 export function discoverExtractedTree(root: string, options: DiscoverOptions = {}): Discovery {
   const walked = walkExtractedTree(root, { ...SCAN_SIZE_LIMITS, ...options.limits });
   return discoverFromFiles(root, walked.files, { ...options, skippedEntries: mergeSkippedEntries(options.skippedEntries, walked.skipped) });
+}
+
+/** Which Cargo context Rust semantic analysis indexes, and which files' facts it may ingest (CLA-605). */
+export interface RustAnalysisScope {
+  /** The context directory to index (`""` = repository root), or undefined: no rust-analyzer run at all. */
+  indexDir?: string;
+  /** Scanned `.rs` files owned by the selected context: the only files whose facts are ingested. */
+  admitted: string[];
+  /** Contexts with scanned Rust source that receive no semantic edges (manifest edges are kept); sorted. */
+  deferred: string[];
+  /** Scanned `.rs` files of the deferred contexts. */
+  deferredFiles: string[];
+  /** The scan root (`""` = repository root): documents outside it never count. */
+  base: string;
+  /** Crate directories governed by any other context: their documents are never the selected context's. */
+  foreignCrates: string[];
+}
+
+/**
+ * CLA-605 selection (coordinator rule (b); several contexts per scan are CLA-644):
+ * the scan root's context when it owns Rust (a `Cargo.toml` there, or crates it
+ * governs) — every nested context is then deferred; otherwise the one nested context
+ * with scanned source, at any depth; otherwise none (never two contexts in one run).
+ * With no Cargo context at all the scan root is indexed, as before. A file belongs to
+ * the context governing its crate; a file in no crate to the scan root's context, or to
+ * the selected nested context when it lies under that context's directory.
+ */
+export function rustAnalysisScope(discovery: Pick<Discovery, "units" | "unitByFile" | "sourceFiles" | "resolution" | "summary">): RustAnalysisScope {
+  const base = discovery.summary.scanRoot ?? "";
+  const rustUnits = new Set(discovery.units.flatMap(unit => unit.kind === "rust" ? [unit.dir] : []));
+  const contexts = discovery.resolution.cargoContexts;
+  const contextOfCrate = new Map(contexts.flatMap(context => context.crates.map(crate => [crate, context.dir] as const)));
+  const contributes = (context: CargoContext): boolean => context.crates.some(crate => rustUnits.has(crate));
+  const baseContext = contexts.find(context => context.dir === base);
+  const nested = contexts.filter(context => context.dir !== base && contributes(context)).map(context => context.dir).sort(compareText);
+  const baseOwns = baseContext !== undefined && (baseContext.manifest !== undefined || contributes(baseContext));
+  const indexDir = baseOwns || nested.length === 0 ? base : nested.length === 1 ? nested[0]! : undefined;
+  const deferred = nested.filter(dir => dir !== indexDir);
+  const deferredSet = new Set(deferred);
+  const rustFiles = discovery.sourceFiles.filter(path => path.endsWith(".rs"));
+  const contextOf = (file: string): string | undefined => {
+    const unit = discovery.unitByFile.get(file);
+    return unit === undefined ? undefined : contextOfCrate.get(unit);
+  };
+  const admitted = indexDir === undefined ? [] : rustFiles.filter(file => {
+    const context = contextOf(file);
+    return context !== undefined ? context === indexDir : indexDir === base || file.startsWith(`${indexDir}/`);
+  });
+  const deferredFiles = rustFiles.filter(file => deferredSet.has(contextOf(file) ?? "\0"));
+  const foreignCrates = contexts.filter(context => context.dir !== indexDir).flatMap(context => context.crates).sort(compareText);
+  return { base, ...(indexDir !== undefined ? { indexDir } : {}), admitted, deferred, deferredFiles, foreignCrates };
 }

@@ -156,7 +156,7 @@ function comparableDiscovery(discovery: ReturnType<typeof discoverRepository>) {
     sourceFiles: discovery.sourceFiles,
     units: discovery.units,
     unitByFile: [...discovery.unitByFile.entries()].sort(),
-    unitByPackageName: [...discovery.unitByPackageName.entries()].sort(),
+    resolution: discovery.resolution,
     summary: discovery.summary,
   };
 }
@@ -263,7 +263,7 @@ test("root package.json workspaces (array form) declares members", () => {
     const discovery = discoverRepository(dir);
     assert.equal(discovery.summary.singlePackage, false);
     assert.deepEqual(memberDirs(dir), ["apps/web", "packages/a"], "./ prefix and trailing / are normalized; undeclared apps/other is not a member");
-    assert.equal(discovery.unitByPackageName.get("@m/a"), "packages/a");
+    assert.equal(discovery.resolution.packages.find(declaration => declaration.name === "@m/a")?.unit, "packages/a");
   });
 });
 
@@ -532,7 +532,7 @@ test("same dir as both a JS member and a Rust crate: one Rust unit that keeps th
     assert.deepEqual(discovery.units.filter(unit => unit.dir === "engine"), [
       { kind: "rust", dir: "engine", name: "engine", evidencePath: "engine", packageName: "@m/engine", packageManifest: "engine/package.json" },
     ], "exactly one unit owns the dir");
-    assert.equal(discovery.unitByPackageName.get("@m/engine"), "engine");
+    assert.equal(discovery.resolution.packages.find(declaration => declaration.name === "@m/engine")?.unit, "engine");
     assert.equal(discovery.unitByFile.get("engine/src/index.ts"), "engine");
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x", "--no-gpg-sign"], { cwd: dir });
     const { snapshot } = scanRepository(dir, { analysisMode: "quick" });

@@ -17,6 +17,7 @@ import type { Discovery } from "./discover.js";
 import { extractArchitecture } from "./extract.js";
 import { mergeEnrichment } from "./enrich.js";
 import { buildScanArtifacts } from "./scan.js";
+import { testResolution } from "./test-resolution.js";
 
 const files: Record<string, string> = {
   "README.md": "# Acme",
@@ -42,7 +43,7 @@ function discovery(): Discovery {
       ["pkg/a/src/index.ts", "pkg/a"], ["pkg/a/src/util.ts", "pkg/a"],
       ["pkg/b/src/main.ts", "pkg/b"], ["pkg/c/src/config.ts", "pkg/c"],
     ]),
-    unitByPackageName: new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"], ["@acme/c", "pkg/c"]]),
+    resolution: testResolution(new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"], ["@acme/c", "pkg/c"]])),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
 }

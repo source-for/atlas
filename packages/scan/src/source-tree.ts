@@ -99,7 +99,7 @@ export function placeSymlinkSafely(root: string, relativePath: string, target: s
     let stats;
     try { stats = lstatSync(current); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
-      mkdirSync(current);
+      mkdirSync(current, { mode: 0o755 });
       continue;
     }
     if (stats.isSymbolicLink() || !stats.isDirectory()) return false;

@@ -13,6 +13,7 @@ import type { Discovery } from "./discover.js";
 import { extractArchitecture } from "./extract.js";
 import { mergeEnrichment } from "./enrich.js";
 import { buildSystemPacket } from "./packet.js";
+import { testResolution } from "./test-resolution.js";
 
 const files: Record<string, string> = {
   "README.md": "# Acme\n\nAcme is a demo system that people and agents interact with.\n",
@@ -32,7 +33,7 @@ function discovery(): Discovery {
       { kind: "member", dir: "pkg/b", name: "@acme/b", packageName: "@acme/b", evidencePath: "pkg/b", packageManifest: "pkg/b/package.json" },
     ],
     unitByFile: new Map([["pkg/a/src/index.ts", "pkg/a"], ["pkg/b/src/main.ts", "pkg/b"]]),
-    unitByPackageName: new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"]]),
+    resolution: testResolution(new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"]])),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
 }

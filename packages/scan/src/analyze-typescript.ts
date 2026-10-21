@@ -67,20 +67,33 @@ export function relativizeCompilerMessage(text: string, root: string, paths: Com
   return compilerMessageRelativizer(root, paths)(text);
 }
 
-/** Real project-aware compiler analysis; unresolved dependencies remain explicit limitations. */
 /**
- * CLA-605: decides which workspace package directory (repository-relative) a bare
- * import from `fromFile` (repository-relative) names: a directory, `null` for an
- * ambiguous name (left unresolved, so no semantic edge is guessed), or undefined to
- * fall back to the compiler's normal resolution.
+ * CLA-605: the scan's package scope for semantic resolution, from discovery's
+ * resolution (the same decisions container edges use).
  */
-export type WorkspacePackageResolver = (specifier: string, fromFile: string) => string | null | undefined;
+export interface TypeScriptWorkspaceScope {
+  /** The scan root (repository-relative, `""` = whole repository): only tsconfigs under it are loaded. */
+  base: string;
+  /**
+   * The package directory (repository-relative) a bare import from `fromFile` names,
+   * `null` when the scan decided it resolves nowhere (ambiguous, vetoed, or defined
+   * only by a package with no scanned source), or undefined for the compiler's own
+   * third-party resolution.
+   */
+  resolve: (specifier: string, fromFile: string) => string | null | undefined;
+  /** Package name -> repository-relative directory, for names declared exactly once in scope. */
+  packages: ReadonlyMap<string, string>;
+  /** Names declared by any in-scope package: never reported as third-party. */
+  declared: ReadonlySet<string>;
+}
 
-export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly string[], installationRoot?: string, checkoutRoot?: string, resolveWorkspacePackage?: WorkspacePackageResolver): LanguageAnalysis {
+/** Real project-aware compiler analysis; unresolved dependencies remain explicit limitations. */
+export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly string[], installationRoot?: string, checkoutRoot?: string, workspace?: TypeScriptWorkspaceScope): LanguageAnalysis {
   const root = resolve(sourceRoot);
   const paths: string[] = [];
   const configs: string[] = [];
-  const packages = new Map<string, string>();
+  // Without a scan scope (direct callers), every package.json in the tree: a name seen twice maps nowhere.
+  const walkedPackages = new Map<string, string | undefined>();
   const walk = (directory: string): void => {
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => compareText(a.name, b.name))) {
       if (entry.isDirectory()) {
@@ -90,7 +103,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
         if (entry.name === "package.json") {
           try {
             const manifest = JSON.parse(readFileSync(path, "utf8")) as { name?: unknown };
-            if (typeof manifest.name === "string") packages.set(manifest.name, directory);
+            if (typeof manifest.name === "string") walkedPackages.set(manifest.name, walkedPackages.has(manifest.name) ? undefined : directory);
           } catch { /* Config diagnostics report projects that cannot be loaded. */ }
         }
         if (/^(tsconfig|jsconfig)(\.[^.]+)*\.json$/.test(entry.name)) configs.push(path);
@@ -99,6 +112,10 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
     }
   };
   walk(root);
+  const packages = new Map<string, string>(workspace
+    ? [...workspace.packages].map(([name, dir]) => [name, resolve(root, dir)] as const)
+    : [...walkedPackages].flatMap(([name, dir]) => dir === undefined ? [] : [[name, dir] as const]));
+  const declaredPackages: ReadonlySet<string> = workspace?.declared ?? new Set(walkedPackages.keys());
   const relativePath = (path: string): string => relative(root, path).split(sep).join("/");
   const inside = (path: string): boolean => {
     const rel = relative(root, path);
@@ -125,7 +142,9 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
     for (const diagnostic of parsed.errors) limitations.add(`${relativePath(path)}: ${message(diagnostic)}`);
     for (const reference of parsed.projectReferences ?? []) loadConfig(ts.resolveProjectReferencePath(reference));
   };
-  for (const config of configs) loadConfig(config);
+  // A4: only the scan root's own tsconfigs (a sibling root's project references never redirect in-scope files).
+  const inScope = (path: string): boolean => !workspace?.base || relativePath(path).startsWith(`${workspace.base}/`);
+  for (const config of configs) if (inScope(config)) loadConfig(config);
   // An isolated committed tree has no workspace symlinks or generated declarations.
   // Present workspace packages at their normal node_modules paths to the compiler,
   // and redirect configured declaration outputs to their matching source files.
@@ -190,28 +209,51 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
     host.getDirectories = path => ts.sys.getDirectories(virtualPath(path));
     host.getSourceFile = (path, languageVersion, onError, shouldCreateNewSourceFile) =>
       originalGetSourceFile(virtualPath(path), languageVersion, onError, shouldCreateNewSourceFile);
-    if (resolveWorkspacePackage) {
-      // Nested workspace roots may reuse a package name, so the global name -> directory
-      // map above is not enough: resolve each bare workspace import for ITS importer.
-      const overrideHost = (override: { name: string; directory: string }): TS.ModuleResolutionHost => ({
-        readFile: path => originalReadFile(virtualPath(path, override)),
-        fileExists: path => originalFileExists(virtualPath(path, override)),
-        directoryExists: path => originalDirectoryExists?.(virtualPath(path, override))
-          || outputDirectories.has(virtualPath(path, override))
-          || /(?:^|\/)node_modules(?:\/@[^/]+)?$/.test(path.split(sep).join("/")),
-        realpath: path => virtualPath(path, override),
-        getDirectories: path => ts.sys.getDirectories(virtualPath(path, override)),
-      });
-      host.resolveModuleNameLiterals = (literals, containingFile, redirectedReference, options, containingSourceFile) => literals.map(literal => {
-        const mode = ts.getModeForUsageLocation(containingSourceFile, literal, options);
-        const specifier = literal.text;
-        const decision = !specifier.startsWith(".") && inside(containingFile) ? resolveWorkspacePackage(specifier, relativePath(containingFile)) : undefined;
-        if (decision === null) return { resolvedModule: undefined };
-        const name = specifier.startsWith("@") ? specifier.split("/").slice(0, 2).join("/") : specifier.split("/")[0]!;
-        const resolutionHost = decision === undefined ? host : overrideHost({ name, directory: resolve(root, decision) });
-        return ts.resolveModuleName(specifier, containingFile, options, resolutionHost, undefined, redirectedReference, mode);
-      });
-    }
+    // CLA-605: every bare import and type reference is decided for ITS importer (the
+    // decision container edges use); the global name map above holds only unique names.
+    const overrideHost = (override: { name: string; directory: string }): TS.ModuleResolutionHost => ({
+      readFile: path => originalReadFile(virtualPath(path, override)),
+      fileExists: path => originalFileExists(virtualPath(path, override)),
+      directoryExists: path => originalDirectoryExists?.(virtualPath(path, override))
+        || outputDirectories.has(virtualPath(path, override))
+        || /(?:^|\/)node_modules(?:\/@[^/]+)?$/.test(path.split(sep).join("/")),
+      realpath: path => virtualPath(path, override),
+      getDirectories: path => ts.sys.getDirectories(virtualPath(path, override)),
+    });
+    /** The resolution host for `specifier` from `containingFile`, or null when it must not resolve. */
+    const hostFor = (specifier: string, containingFile: string): { host: TS.ModuleResolutionHost; override?: { name: string; directory: string } } | null => {
+      const decision = workspace && !specifier.startsWith(".") && !isAbsolute(specifier) && inside(containingFile) ? workspace.resolve(specifier, relativePath(containingFile)) : undefined;
+      if (decision === null) return null;
+      if (decision === undefined) return { host };
+      const name = specifier.startsWith("@") ? specifier.split("/").slice(0, 2).join("/") : specifier.split("/")[0]!;
+      const override = { name, directory: resolve(root, decision) };
+      return { host: overrideHost(override), override };
+    };
+    // A resolved file is named by its real repository path, so later host IO (which
+    // only knows unique names) and project-reference redirects stay in the chosen root.
+    const canonicalFile = (fileName: string, override?: { name: string; directory: string }): string => override ? virtualPath(fileName, override) : fileName;
+    host.resolveModuleNameLiterals = (literals, containingFile, redirectedReference, options, containingSourceFile) => literals.map(literal => {
+      const chosen = hostFor(literal.text, containingFile);
+      if (!chosen) return { resolvedModule: undefined };
+      const mode = ts.getModeForUsageLocation(containingSourceFile, literal, options);
+      const resolved = ts.resolveModuleName(literal.text, containingFile, options, chosen.host, undefined, redirectedReference, mode);
+      return resolved.resolvedModule && chosen.override
+        ? { ...resolved, resolvedModule: { ...resolved.resolvedModule, resolvedFileName: canonicalFile(resolved.resolvedModule.resolvedFileName, chosen.override) } }
+        : resolved;
+    });
+    host.resolveTypeReferenceDirectiveReferences = (references, containingFile, redirectedReference, options, containingSourceFile) => references.map(reference => {
+      const name = typeof reference === "string" ? reference : reference.fileName;
+      const chosen = hostFor(name, containingFile);
+      if (!chosen) return { resolvedTypeReferenceDirective: undefined };
+      // Exactly the compiler's own loader (typescript's internal default-mode helper).
+      const defaultMode = containingSourceFile ? (ts as unknown as { getDefaultResolutionModeForFileWorker(file: TS.SourceFile, options: TS.CompilerOptions): TS.ResolutionMode }).getDefaultResolutionModeForFileWorker(containingSourceFile, options) : undefined;
+      const mode = ts.getModeForFileReference(reference, defaultMode);
+      const resolved = ts.resolveTypeReferenceDirective(name, containingFile, options, chosen.host, redirectedReference, undefined, mode);
+      const directive = resolved.resolvedTypeReferenceDirective;
+      return directive?.resolvedFileName && chosen.override
+        ? { ...resolved, resolvedTypeReferenceDirective: { ...directive, resolvedFileName: canonicalFile(directive.resolvedFileName, chosen.override) } }
+        : resolved;
+    });
     // Permit source redirects through project references without requiring emitted .d.ts files.
     (host as TS.CompilerHost & { useSourceOfProjectReferenceRedirect?: () => boolean }).useSourceOfProjectReferenceRedirect = () => true;
     const program = ts.createProgram({ rootNames: project.fileNames, options: project.options, host,
@@ -251,7 +293,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
       }
       if (!owner || owner === "@types/node") return undefined;
       const typed = typedPackageOf(owner);
-      if (packages.has(owner) || (typed && packages.has(typed))) return undefined;
+      if (declaredPackages.has(owner) || (typed && declaredPackages.has(typed))) return undefined;
       return typed ? { package: typed, via: owner } : { package: owner };
     };
     // `<div className=…>` resolves into React's JSX typings; that is markup, not API use.

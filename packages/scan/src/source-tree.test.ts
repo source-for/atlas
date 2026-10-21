@@ -85,7 +85,7 @@ const comparable = (discovery: Discovery): string => JSON.stringify({
   sourceFiles: discovery.sourceFiles,
   units: discovery.units,
   unitByFile: [...discovery.unitByFile],
-  unitByPackageName: [...discovery.unitByPackageName],
+  resolution: discovery.resolution,
   summary: discovery.summary,
 });
 

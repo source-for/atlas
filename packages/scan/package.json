@@ -27,11 +27,13 @@
     "@okie/architecture": "workspace:*",
     "@okie/scene-compiler": "workspace:*",
     "@scip-code/scip": "0.10.0",
+    "semver": "7.8.5",
     "tree-sitter": "^0.22.4",
     "tree-sitter-rust": "^0.24.0",
     "typescript": "^5.8.3"
   },
   "devDependencies": {
-    "@types/node": "^22.15.0"
+    "@types/node": "^22.15.0",
+    "@types/semver": "^7.8.0"
   }
 }

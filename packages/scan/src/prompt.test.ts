@@ -25,6 +25,7 @@ import {
   writePromptEmission,
 } from "./prompt.js";
 import { stableJson } from "./scan.js";
+import { testResolution } from "./test-resolution.js";
 
 const files: Record<string, string> = {
   "README.md": "# Acme",
@@ -50,7 +51,7 @@ function discovery(): Discovery {
       ["pkg/a/src/index.ts", "pkg/a"], ["pkg/a/src/util.ts", "pkg/a"],
       ["pkg/b/src/main.ts", "pkg/b"], ["pkg/c/src/config.ts", "pkg/c"],
     ]),
-    unitByPackageName: new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"], ["@acme/c", "pkg/c"]]),
+    resolution: testResolution(new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"], ["@acme/c", "pkg/c"]])),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
 }
@@ -329,7 +330,7 @@ test("writePromptEmission writes unique remainder packet files without overwriti
         sourceFiles,
         units: [{ kind: "member", dir: "pkg/h", name: "@acme/h", packageName: "@acme/h", evidencePath: "pkg/h", packageManifest: "pkg/h/package.json" }],
         unitByFile,
-        unitByPackageName: new Map([["@acme/h", "pkg/h"]]),
+        resolution: testResolution(new Map([["@acme/h", "pkg/h"]])),
         summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
       },
       readFile: readHuge,

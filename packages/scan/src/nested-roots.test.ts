@@ -184,7 +184,7 @@ test("nested roots: yarn object-form workspaces and a Cargo root package; the de
     assert.equal(unitOf("apps/site/fixtures/ws/pkgs/f/f.ts"), "apps/site", "a fixture root's files stay with their real owner");
     assert.deepEqual(discovery.summary.nestedWorkspaceRoots, ["engine", "js"]);
     assert.equal(discovery.summary.standalonePackages, undefined);
-    assert.equal(discovery.unitByPackageName.get("@js/a"), "js/libs/a");
+    assert.equal(discovery.resolution.packages.find(declaration => declaration.name === "@js/a")?.unit, "js/libs/a");
   });
 });
 
@@ -278,5 +278,105 @@ test("a nested package.json with an empty workspaces list is still a root: an ou
     assert.notEqual(discovery.unitByFile.get("js/pkg/index.ts"), "js/pkg");
     assert.notEqual(discovery.unitByFile.get("js/other/inner/index.ts"), "js/other/inner");
     assert.deepEqual(discovery.summary.nestedWorkspaceRoots, ["js", "js/other"]);
+  });
+});
+
+const SCOPE_APP = "import { calculate } from \"@scope/core\";\nexport function app(): string {\n  return calculate();\n}\n";
+const scopeCore = (label: string): string => `export function calculate(): string {\n  return "${label}";\n}\n`;
+/** Every relation (all bands) as `kind from -> to`, keyed by entity evidence paths. */
+function allRelations(artifacts: ScanArtifacts): string[] {
+  const pathOf = new Map(artifacts.snapshot.entities.map(entity => [entity.id, entity.sourceRefs[0]?.path ?? ""]));
+  return artifacts.snapshot.relations.map(relation => `${relation.kind} ${pathOf.get(relation.from)} -> ${pathOf.get(relation.to)}`).sort();
+}
+
+test("own root first even without scanned source: a sourceless or skipped own member never falls through to another root (every band)", () => {
+  for (const own of [
+    { "a/packages/core/package.json": pkg("@scope/core", { main: "./index.vue" }), "a/packages/core/index.vue": "<template/>\n" },
+    { "a/packages/examples/package.json": pkg("@scope/core", { main: "./index.ts" }), "a/packages/examples/index.ts": scopeCore("skipped") },
+  ]) {
+    withCommittedRepo({
+      "a/package.json": pkg("a", { private: true, workspaces: ["packages/*"] }),
+      ...own,
+      "a/packages/app/package.json": pkg("@scope/app-a"),
+      "a/packages/app/main.ts": SCOPE_APP,
+      "b/package.json": pkg("b", { private: true, workspaces: ["packages/*"] }),
+      "b/packages/core/package.json": pkg("@scope/core", { main: "./index.ts" }),
+      "b/packages/core/index.ts": scopeCore("b"),
+    }, dir => {
+      for (const analysisMode of ["quick", "full"] as const) {
+        const relations = allRelations(scanRepository(dir, { analysisMode }));
+        assert.deepEqual(relations.filter(line => line.includes(" a/") && line.includes("-> b/")), [], `${analysisMode}: ${relations.join("\n")}`);
+      }
+    });
+  }
+});
+
+test("--root a / --root b (full) keep in-root container, component and call edges when the sibling root reuses the name", () => {
+  withCommittedRepo({
+    "a/package.json": pkg("a", { private: true, workspaces: ["packages/*"] }),
+    "a/packages/core/package.json": pkg("@scope/core", { main: "./index.ts" }),
+    "a/packages/core/index.ts": scopeCore("a"),
+    "a/packages/app/package.json": pkg("@scope/app-a"),
+    "a/packages/app/main.ts": SCOPE_APP,
+    "b/package.json": pkg("b", { private: true, workspaces: ["packages/*"] }),
+    "b/packages/core/package.json": pkg("@scope/core", { main: "./index.ts" }),
+    "b/packages/core/index.ts": scopeCore("b"),
+    "b/packages/app/package.json": pkg("@scope/app-b"),
+    "b/packages/app/main.ts": SCOPE_APP,
+  }, dir => {
+    for (const root of ["a", "b"]) {
+      assert.deepEqual(allRelations(scanRepository(dir, { analysisMode: "full", root })), [
+        `calls ${root}/packages/app/main.ts -> ${root}/packages/core/index.ts`,
+        `dependsOn ${root}/packages/app -> ${root}/packages/core`,
+        `dependsOn ${root}/packages/app/main.ts -> ${root}/packages/core/index.ts`,
+      ], `--root ${root}`);
+    }
+  });
+});
+
+test("A5: a name defined only in another root resolves unless the importer's package.json rules that package out", () => {
+  const cases: Array<[spec: string, version: string, linked: boolean]> = [
+    ["^1.2.0", "1.4.0", true], ["^2", "1.4.0", false], ["^0.2.0", "0.3.0", false], ["1.2", "1.9.0", false],
+    ["workspace:*", "1.0.0", false], ["npm:other@^1", "1.0.0", false], ["github:o/r", "1.0.0", false],
+    ["file:../../../b/packages/core", "1.0.0", true], ["file:../elsewhere", "1.0.0", false], ["^1", "not-a-version", false],
+  ];
+  withCommittedRepo(Object.assign({
+    "b/package.json": pkg("b", { private: true, workspaces: ["packages/*"] }),
+  }, ...cases.map(([spec, version], index) => ({
+    [`b${index}/package.json`]: pkg(`b${index}`, { private: true, workspaces: ["packages/*"] }),
+    [`b${index}/packages/core/package.json`]: pkg(`@v${index}/core`, { version, main: "./index.ts" }),
+    [`b${index}/packages/core/index.ts`]: scopeCore(String(index)),
+    [`a${index}/package.json`]: pkg(`a${index}`, { private: true, workspaces: ["packages/*"] }),
+    [`a${index}/packages/app/package.json`]: pkg(`@a${index}/app`, { dependencies: { [`@v${index}/core`]: spec.replace("b/packages", `b${index}/packages`) } }),
+    [`a${index}/packages/app/main.ts`]: SCOPE_APP.replace("@scope/core", `@v${index}/core`),
+  }))), dir => {
+    const artifacts = scanRepository(dir, { analysisMode: "full" });
+    const relations = allRelations(artifacts);
+    const limitations = artifacts.analysis.limitations ?? [];
+    cases.forEach(([spec, version, linked], index) => {
+      const edges = relations.filter(line => line.startsWith(`dependsOn a${index}/`) && line.includes(`-> b${index}/`));
+      assert.equal(edges.length > 0, linked, `${spec} vs ${version}: ${edges.join(", ")}`);
+      assert.equal(limitations.some(line => line.startsWith(`Cross-root package import not linked a${index}/`)), !linked, `${spec} vs ${version} limitation`);
+      assert.ok(!limitations.some(line => line.includes(`@v${index}/core`) && line.startsWith("Ambiguous")));
+    });
+  });
+});
+
+test("own-root duplicate type references resolve in the importer's root (full)", () => {
+  withCommittedRepo({
+    "a/package.json": pkg("a", { private: true, workspaces: ["packages/*"] }),
+    "a/packages/types/package.json": pkg("@scope/types", { types: "./index.ts" }),
+    "a/packages/types/index.ts": "export interface Shape { a: number }\nexport function shapeA(): Shape {\n  return { a: 1 };\n}\n",
+    "a/packages/app/package.json": pkg("@scope/app-a"),
+    "a/packages/app/main.ts": "/// <reference types=\"@scope/types\" />\nimport { shapeA } from \"@scope/types\";\nexport const x = shapeA();\n",
+    "b/package.json": pkg("b", { private: true, workspaces: ["packages/*"] }),
+    "b/packages/types/package.json": pkg("@scope/types", { types: "./index.ts" }),
+    "b/packages/types/index.ts": "export interface Shape { b: string }\nexport function shapeB(): Shape {\n  return { b: \"\" };\n}\n",
+  }, dir => {
+    const artifacts = scanRepository(dir, { analysisMode: "full" });
+    const relations = allRelations(artifacts);
+    assert.ok(relations.includes("calls a/packages/app/main.ts -> a/packages/types/index.ts"), relations.join("\n"));
+    assert.deepEqual(relations.filter(line => line.includes(" a/") && line.includes("-> b/")), []);
+    assert.ok(!(artifacts.analysis.limitations ?? []).some(line => /a\/packages\/app\/main\.ts.*TS2688/.test(line)), "the type reference resolves");
   });
 });

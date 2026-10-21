@@ -21,7 +21,7 @@ import { attachCoverage, coverageByCodeIdFromEntities, parseLcov, readLcov, type
 import { attachPortableSourceExcerpts } from "./excerpt.js";
 import { buildOverviewStory } from "./overview-story.js";
 import { buildUserFlowStories, publishedStoryCatalog, type PublishedStoryCatalog } from "./flow-story.js";
-import { discoverExtractedTree, normalizeScanRoot, TOOLING_UNIT_KEY, type Discovery, type DiscoverySummary } from "./discover.js";
+import { discoverExtractedTree, normalizeScanRoot, rustAnalysisScope, TOOLING_UNIT_KEY, type Discovery, type DiscoverySummary } from "./discover.js";
 import { membershipDiagnostics, membershipReport, type MembershipReport } from "./container-membership.js";
 import {
   attachCyclomaticComplexity,
@@ -33,7 +33,9 @@ import {
   type ExtractInput,
   type UnresolvedRelativeImport,
   type AmbiguousPackageImport,
+  type VetoedPackageImport,
   resolveCargoPatches,
+  declaredPackageNames,
   resolveWorkspacePackageImport,
 } from "./extract.js";
 import { mergeEnrichment, type EnrichmentReport } from "./enrich.js";
@@ -225,6 +227,8 @@ export interface BuildScanArtifactsParams {
   unresolvedRelativeImports?: readonly UnresolvedRelativeImport[];
   /** Ambiguous workspace-package imports from the same extract as `baseExtraction` (CLA-605). Recomputed when omitted. */
   ambiguousPackageImports?: readonly AmbiguousPackageImport[];
+  /** Manifest-vetoed cross-root package imports from the same extract (CLA-605 A5). Recomputed when omitted. */
+  vetoedPackageImports?: readonly VetoedPackageImport[];
   /** Optional lcov.info bytes. Conventional `coverage/lcov.info` is read when omitted. */
   lcovText?: string;
   /**
@@ -258,6 +262,7 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
         ?? clonePairsFromEntities(params.baseExtraction.entities, readFile),
       unresolvedRelativeImports: params.unresolvedRelativeImports ?? recollect().unresolvedRelativeImports,
       ambiguousPackageImports: params.ambiguousPackageImports ?? recollect().ambiguousPackageImports,
+      vetoedPackageImports: params.vetoedPackageImports ?? recollect().vetoedPackageImports,
     }
     : collectExtractedArchitecture(extractInput);
   const baseExtraction = collected.extraction;
@@ -288,6 +293,7 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
     ...discoveryLimitations(discovery.summary),
     ...unresolvedImportLimitations(collected.unresolvedRelativeImports),
     ...ambiguousPackageImportLimitations(collected.ambiguousPackageImports),
+    ...vetoedPackageImportLimitations(collected.vetoedPackageImports),
     ...cargoPatchLimitations(discovery, readFile),
   ];
 
@@ -481,6 +487,24 @@ export function ambiguousPackageImportLimitations(imports: readonly AmbiguousPac
 }
 
 /**
+ * CLA-605 A5: bare imports of a package defined only in another root whose import the
+ * importer's own package.json rules out (another version, a workspace:/file: source
+ * elsewhere, an alias, git/URL/tarball, or an unverifiable range); no relation was
+ * recorded. Capped like {@link unresolvedImportLimitations}. Empty when none.
+ */
+export function vetoedPackageImportLimitations(imports: readonly VetoedPackageImport[]): string[] {
+  if (imports.length === 0) return [];
+  const shown = imports.slice(0, UNRESOLVED_IMPORTS_SHOWN).map(item =>
+    `Cross-root package import not linked ${displayText(item.path)}:${item.line}: '${displayText(item.specifier)}' — ${displayText(item.packageName)} is defined only in ${displayText(item.candidateRoot)}, but ${displayText(item.manifest)} declares '${displayText(item.spec)}' (${displayText(item.reason)})`);
+  const hidden = imports.length - shown.length;
+  return [
+    `${imports.length} package import(s) name a package defined only in another workspace root that the importer's package.json rules out; no relation was recorded for them.`,
+    ...shown,
+    ...(hidden > 0 ? [`+${hidden} more cross-root package import(s) not itemized.`] : []),
+  ];
+}
+
+/**
  * Root `Cargo.toml` `[patch.*]` path overrides that recorded no crate edge, one line
  * each: out-of-repository paths (never followed), paths naming no scanned crate, and
  * patches whose version no scanned crate's normal dependency requirement admits (an
@@ -489,7 +513,7 @@ export function ambiguousPackageImportLimitations(imports: readonly AmbiguousPac
  */
 export function cargoPatchLimitations(discovery: Discovery, readFile: (path: string) => string): string[] {
   return resolveCargoPatches(discovery, readFile).unfollowed.map(patch => {
-    const where = `Cargo.toml:${patch.line}: [patch.${displayText(patch.source)}] ${displayText(patch.name)} = { path = '${displayText(patch.path)}' }`;
+    const where = `${displayText(patch.manifestPath)}:${patch.line}: [patch.${displayText(patch.source)}] ${displayText(patch.name)} = { path = '${displayText(patch.path)}' }`;
     if (patch.reason === "version-mismatch") {
       const [first, ...more] = patch.rejected ?? [];
       const requirement = first ? `${displayText(first.path)}:${first.line} requires '${displayText(first.requirement)}'${more.length ? ` (+${more.length} more)` : ""}` : "";
@@ -516,15 +540,24 @@ function skippedJsLimitations(summary: DiscoverySummary): string[] {
 /** Runs the local scan pipeline against an already-acquired committed tree. */
 function analyzeLanguages(root: string, discovery: Discovery, mode: ScanOptions['analysisMode'], installationRoot?: string, rustIndexCacheDir?: string, checkoutRoot?: string): LanguageAnalysis | undefined {
   if (mode !== 'full') return undefined;
-  // CLA-605: with nested JS workspace roots, semantic resolution of bare workspace
-  // imports follows the same per-importer rule as container edges (no global name map).
-  const workspaceResolver = discovery.jsWorkspaceRoots
-    ? (specifier: string, fromFile: string): string | null | undefined => {
-      const resolved = resolveWorkspacePackageImport(specifier, fromFile, discovery);
-      return resolved === undefined ? undefined : "ambiguous" in resolved ? null : resolved.dir;
-    }
-    : undefined;
-  const analyses = [analyzeTypeScript(root, discovery.sourceFiles, installationRoot, checkoutRoot, workspaceResolver), analyzeRust(root, discovery.sourceFiles, { ...(rustIndexCacheDir ? { indexCacheDir: rustIndexCacheDir } : {}), ...(checkoutRoot ? { checkoutRoot } : {}) })];
+  // CLA-605: semantic resolution follows the same per-importer decisions as container
+  // edges, and Rust indexes one selected Cargo context (rustAnalysisScope).
+  const decide = (specifier: string, fromFile: string): string | null | undefined => {
+    const decision = resolveWorkspacePackageImport(specifier, fromFile, discovery);
+    return decision.kind === "external" ? undefined : decision.kind === "resolved" ? decision.packageDir : null;
+  };
+  const counts = new Map<string, number>();
+  for (const declaration of discovery.resolution.packages) {
+    if (declaration.name !== undefined && declaration.context !== undefined) counts.set(declaration.name, (counts.get(declaration.name) ?? 0) + 1);
+  }
+  const unique = new Map(discovery.resolution.packages.flatMap(declaration =>
+    declaration.name !== undefined && declaration.context !== undefined && counts.get(declaration.name) === 1 ? [[declaration.name, declaration.dir] as const] : []));
+  const workspace = { base: discovery.summary.scanRoot ?? "", resolve: decide, packages: unique, declared: declaredPackageNames(discovery.resolution) };
+  const rustScope = rustAnalysisScope(discovery);
+  const analyses = [
+    analyzeTypeScript(root, discovery.sourceFiles, installationRoot, checkoutRoot, workspace),
+    analyzeRust(root, discovery.sourceFiles, { ...(rustIndexCacheDir ? { indexCacheDir: rustIndexCacheDir } : {}), ...(checkoutRoot ? { checkoutRoot } : {}), scope: rustScope }),
+  ];
   return { schemaVersion: 1, definitions: analyses.flatMap(item => item.definitions), references: analyses.flatMap(item => item.references), modules: analyses.flatMap(item => item.modules), externalReferences: analyses.flatMap(item => item.externalReferences ?? []), coverage: analyses.flatMap(item => item.coverage) };
 }
 
@@ -619,6 +652,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
     let clonePairs: readonly ClonePair[] | undefined;
     let unresolvedRelativeImports: readonly UnresolvedRelativeImport[] | undefined;
     let ambiguousPackageImports: readonly AmbiguousPackageImport[] | undefined;
+    let vetoedPackageImports: readonly VetoedPackageImport[] | undefined;
     let enrichmentDocs = options.enrichmentDocs;
     if ((!enrichmentDocs || enrichmentDocs.size === 0) && options.enrichWithPackets) {
       const collected = collectExtractedArchitecture({
@@ -634,6 +668,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
       clonePairs = collected.clonePairs;
       unresolvedRelativeImports = collected.unresolvedRelativeImports;
       ambiguousPackageImports = collected.ambiguousPackageImports;
+      vetoedPackageImports = collected.vetoedPackageImports;
       const sidecar = loadLcovSidecar(readFile, options.lcovText);
       const coverageByCodeId = coverageByCodeIdFromEntities(baseExtraction.entities, sidecar);
       // The live provider must see the same accepted component interpretation
@@ -664,6 +699,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
       ...(clonePairs && clonePairs.length ? { clonePairs } : {}),
       ...(unresolvedRelativeImports ? { unresolvedRelativeImports } : {}),
       ...(ambiguousPackageImports ? { ambiguousPackageImports } : {}),
+      ...(vetoedPackageImports ? { vetoedPackageImports } : {}),
       ...(options.lcovText ? { lcovText: options.lcovText } : {}),
     });
     return { source, commitSha: commit.sha, artifacts };

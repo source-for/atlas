@@ -17,6 +17,7 @@ import {
 } from "./extract.js";
 import { stableJson } from "./scan.js";
 import { scanRepository } from "./scan.js";
+import { testResolution } from "./test-resolution.js";
 
 // ---------------------------------------------------------------------------
 // Unit tests for the two pure helpers.
@@ -141,7 +142,7 @@ function syntheticDiscovery(): Discovery {
     unitByFile: new Map([
       ["pkg/app/src/a.ts", "pkg/app"], ["pkg/app/src/b.ts", "pkg/app"], ["pkg/lib/src/l.ts", "pkg/lib"],
     ]),
-    unitByPackageName: new Map([["@acme/app", "pkg/app"], ["@acme/lib", "pkg/lib"]]),
+    resolution: testResolution(new Map([["@acme/app", "pkg/app"], ["@acme/lib", "pkg/lib"]])),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
 }
@@ -225,7 +226,7 @@ test("selection keeps only the top-N service-boundary packages by (import count 
     sourceFiles: ["m/src/index.ts"],
     units: [{ kind: "member", dir: "m", name: "@m/m", packageName: "@m/m", evidencePath: "m", packageManifest: "m/package.json" }],
     unitByFile: new Map([["m/src/index.ts", "m"]]),
-    unitByPackageName: new Map([["@m/m", "m"]]),
+    resolution: testResolution(new Map([["@m/m", "m"]])),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
   const extraction = extractArchitecture({ discovery, readFile: read, systemName: "M", systemSlug: "m" });

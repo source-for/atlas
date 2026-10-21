@@ -5,6 +5,7 @@ import { extractArchitecture } from "./extract.js";
 import { mergeEnrichment } from "./enrich.js";
 import { applyComponentMembership } from "./component-map.js";
 import { buildEnrichmentPackets, containerIdFromFileName, contentHash, packetFileName, ENRICHMENT_PROMPT_VERSION, MAX_COMPONENTS_PER_PACKET } from "./packet.js";
+import { testResolution } from "./test-resolution.js";
 
 const files: Record<string, string> = {
   "README.md": "# Acme",
@@ -30,7 +31,7 @@ function base() {
       ["pkg/a/src/index.ts", "pkg/a"], ["pkg/a/src/util.ts", "pkg/a"],
       ["pkg/b/src/main.ts", "pkg/b"], ["pkg/c/src/config.ts", "pkg/c"],
     ]),
-    unitByPackageName: new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"], ["@acme/c", "pkg/c"]]),
+    resolution: testResolution(new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"], ["@acme/c", "pkg/c"]])),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
   return extractArchitecture({ discovery, readFile: read, systemName: "Acme", systemSlug: "acme" });
@@ -100,7 +101,7 @@ test("packet excerpts apply the existing GitHub token scrub (planted secret stay
         ["pkg/a/src/index.ts", "pkg/a"], ["pkg/a/src/util.ts", "pkg/a"],
         ["pkg/b/src/main.ts", "pkg/b"], ["pkg/c/src/config.ts", "pkg/c"],
       ]),
-      unitByPackageName: new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"], ["@acme/c", "pkg/c"]]),
+      resolution: testResolution(new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"], ["@acme/c", "pkg/c"]])),
       summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
     },
     readFile: readSecret,
@@ -165,7 +166,7 @@ function hugeExtraction(fileCount: number) {
     sourceFiles,
     units: [{ kind: "member", dir: "pkg/h", name: "@acme/h", packageName: "@acme/h", evidencePath: "pkg/h", packageManifest: "pkg/h/package.json" }],
     unitByFile,
-    unitByPackageName: new Map([["@acme/h", "pkg/h"]]),
+    resolution: testResolution(new Map([["@acme/h", "pkg/h"]])),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
   return { extraction: extractArchitecture({ discovery, readFile: readHuge, systemName: "Huge", systemSlug: "huge" }), readHuge };

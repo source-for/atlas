@@ -169,17 +169,42 @@ Discovery generalizes beyond Okie's own layout (validated against third-party cl
   membership is unchanged. A `package.json` in no workspace that has its own lockfile
   (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock(b)`) is a container of its own;
   its `@scope/*` imports resolve to workspace containers by package name. Independent roots may
-  reuse a package name: an import resolves within the importer's own workspace root first; an
-  importer in no workspace (or whose root lacks the name) resolves only when exactly one package
-  has it, otherwise no relation is recorded and `analysis.limitations` names the package and its
-  candidate roots. Full-mode TypeScript analysis resolves bare workspace imports by the same rule, so component and
-  code relations never cross into another root's same-named package. A file belongs to a root only
+  reuse a package name. Discovery records every in-scope `package.json` (sourceless and skipped
+  members included) with the context that claims it, and one resolver decides every bare import:
+  the importer's nearest package's own context first (a same-named package there without scanned
+  source means no relation, never a fallback to another root); otherwise exactly one in-scope
+  package with the name resolves, unless the importer's `package.json` rules it out — a
+  `workspace:` spec, a `file:`/`link:`/`portal:` path to another directory, an `npm:` alias, a
+  git/URL/tarball source, or a semver range (npm's `semver`) the package's version does not
+  satisfy; an unparsable range or missing version also vetoes — and the veto is listed in
+  `analysis.limitations`; several candidates record no relation and `analysis.limitations` names
+  the package and its candidate roots; none is ordinary third-party handling. Full-mode TypeScript analysis resolves bare imports and `/// <reference types>` by the same
+  decisions (only names declared once in scope keep a global mapping; only tsconfigs under the scan
+  root are loaded), so component and code relations never cross into another root's same-named
+  package. A file belongs to a root only
   when that root is its nearest package; a non-member package under a root (with or without a
   lockfile) is in no workspace. An empty `workspaces` list still makes a root. The tooling container is anchored on a committed path: `scripts` at the scan root when it holds
   tooling files, else the shallowest `scripts/` directory that does (e.g. `typescript/scripts`), else
   the first tooling file's directory. The repository `README.md` stays the software system's evidence
-  under `--root`. Root `[patch]` overrides
-  are still read from the repository-root `Cargo.toml` only.
+  under `--root`. Each crate belongs to the Cargo context (the scan root or a nested `[workspace]`)
+  that contains it — a path dependency outside a workspace's directory never joins it — and that
+  context alone supplies its `[patch]` overrides, inherited `workspace = true` paths and inherited
+  version; a patch never reaches another context's crates. Explicit cross-context `path`
+  dependencies keep their crate edges. Dependency facts (versions only) may still be read from
+  manifests above `--root`.
+- **Rust semantic analysis (full mode) indexes one Cargo context per scan** (CLA-605; indexing
+  several is [CLA-644](https://linear.app/source-for/issue/CLA-644)): the scan root's context when
+  it has a `Cargo.toml` or crates (exactly the previous invocation), otherwise the single nested
+  context at any depth, otherwise none — rust-analyzer never indexes two contexts together. Every
+  context not indexed is named in one limitation linking CLA-644 and receives no Rust semantic
+  edges; its manifest and path dependency edges are kept. Only documents of the selected context's
+  crates are ingested (SCIP paths are mapped back to repository paths, `..` resolved), so a path
+  dependency into another context adds no semantic facts. The SCIP cache key keeps the
+  whole-tree input digest and adds the context directory only when it is not the scan root;
+  repository directories between the tree and the context get the same ownership, mode and
+  rust-project.json checks as operator ancestors, and their `Cargo.toml` / `.cargo/config(.toml)`
+  are listed and keyed. A `--root` inside an outer Cargo workspace with no manifest of its own (a
+  `crates/` directory) is indexed as before; its crates are not split into separate containers.
 - **`--root <subdir>`** scans one repository-relative directory of the pinned commit as if it were
   the workspace root. Commit SHA, tree, evidence paths and source links stay those of the whole
   repository (no `git subtree split`). Absolute or `..` paths are rejected, and a root that is
