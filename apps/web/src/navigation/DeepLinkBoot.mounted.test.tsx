@@ -70,11 +70,11 @@ function bootWithoutModelChildren() {
 }
 // A neighborhood boot above the 128-entity slice threshold: the bootstrap scene is the L1/L2 slice and
 // enrichment compiles the full packet (synchronously here: happy-dom has no Worker).
-async function largeNeighborhoodBoot() {
+async function largeNeighborhoodBoot(ownerId = 'code:web-shell:app') {
   const full = structuredClone(snapshot) as unknown as ArchitectureSnapshot;
   // Children under a code entity leave L1/L2 geometry unchanged, so initialSceneBandsMatch accepts the
   // enriched scene, as it does for the published atlas.
-  const owner = full.entities.find(entity => entity.id === 'code:web-shell:app')!;
+  const owner = full.entities.find(entity => entity.id === ownerId)!;
   full.entities.push(...Array.from({ length: 150 }, (_, index) => ({ id: `code:boot-${index}`, name: `declaration${index}`, kind: 'code' as const, parentId: owner.id, sourceRefs: [] })));
   const sliced = sliceArchitectureNeighborhood(full, view as ArchitectureView, { focusEntityId: 'system:okie' });
   const packet = { ...sliced, snapshot: full, view: view as ArchitectureView, childCounts: { ...sliced.childCounts, [owner.id]: 150 } };
@@ -157,6 +157,49 @@ describe('scan deep-link boot (CLA-584)', () => {
     expect(captured.scenes.at(-1)).toBe(delivered);
     expect(captured.scenes.at(-1)!.entities.length).toBeGreaterThan(bootstrap.entities.length);
     expect(host.textContent).not.toContain('Loading more detail…');
+  });
+
+  // "Loading more detail…" must never stick, and only an accepted enrichment may reach the renderer.
+  it.each([
+    ['fails', 'fail'],
+    ['returns no scene', 'none'],
+    ['is refused because it would move the L1/L2 boxes', 'refused'],
+    ['is cancelled by a level navigation', 'navigate'],
+  ] as const)('clears "Loading more detail…" and keeps a valid scene when the enrichment %s', async (_name, outcome) => {
+    // Children under a component grow its container, so initialSceneBandsMatch refuses the enriched scene.
+    await largeNeighborhoodBoot(outcome === 'refused' ? 'component:web-shell' : undefined);
+    const original = fixture.enrichInitialScene;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let delivered: unknown;
+    vi.spyOn(fixture, 'enrichInitialScene').mockImplementation(async signal => {
+      await held;
+      if (outcome === 'fail') throw new Error('enrichment failed');
+      if (outcome === 'none') return undefined;
+      delivered = await original(signal);
+      return delivered as never;
+    });
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => frames.push(callback)));
+    const draw = async () => { await act(async () => { for (const callback of frames.splice(0)) callback(performance.now()); }); };
+    captured.scenes = [];
+    await mount('');
+    await draw();
+    const bootstrap = captured.scenes.at(-1)!;
+    expect(host.textContent).toContain('Loading more detail…');
+    if (outcome === 'navigate') {
+      await act(async () => { host.querySelectorAll<HTMLButtonElement>('.level-rail button')[1]!.click(); });
+      expect(host.textContent).not.toContain('Loading more detail…');
+    }
+    await act(async () => { release(); });
+    for (let attempt = 0; attempt < 10; attempt += 1) await settle();
+    await draw();
+    expect(host.textContent).not.toContain('Loading more detail…');
+    expect(host.textContent).not.toContain('This view changed while navigation was being prepared.');
+    if (outcome === 'refused') expect(delivered).toBeDefined();
+    if (delivered) expect(captured.scenes).not.toContain(delivered);
+    if (outcome === 'navigate') expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-detail')).toBe('container');
+    else expect(captured.scenes.at(-1)).toBe(bootstrap);
   });
 
   it.each([
