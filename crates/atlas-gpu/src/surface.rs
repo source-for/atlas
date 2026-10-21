@@ -614,6 +614,7 @@ impl GpuRenderer {
     }
 
     pub fn reset_scene_diagnostics(&mut self) {
+        forget_scene_mesh(&mut self.cached_mesh);
         self.static_mesh_revision = 0;
         self.cumulative_geometry_upload_bytes = 0;
         self.cumulative_geometry_buffer_uploads = 0;
@@ -1022,6 +1023,13 @@ fn select_surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::Textur
         .or_else(|| formats.first().copied())
 }
 
+/// A full scene load starts a new engine, whose geometry epoch restarts at 0, and a view's
+/// scenes share one id and revision (a bootstrap scene and its enrichment, CLA-590). The
+/// cache key cannot tell the new scene from the old one, so a load drops the old mesh.
+fn forget_scene_mesh(cached: &mut Option<CachedMesh>) {
+    *cached = None;
+}
+
 #[cfg(test)]
 mod tests {
     use atlas_engine::{Camera, CameraLimits, ProtocolEngine, Vec2, Viewport};
@@ -1147,6 +1155,76 @@ mod tests {
             MeshCacheKey::new(&snapshot, &transitioning)
         );
         assert_ne!(first_styles, transitioning_styles);
+    }
+
+    #[test]
+    fn a_full_scene_load_with_the_same_id_and_revision_draws_its_own_mesh() {
+        // Mirrors `GpuRenderer::render`: rebuild when the key changes, then select ranges.
+        fn draw(
+            cached: &mut Option<CachedMesh>,
+            snapshot: &SceneSnapshot,
+            frame: &ProtocolFrame,
+        ) -> bool {
+            let key = MeshCacheKey::new(snapshot, frame);
+            let rebuilt = static_mesh_rebuild_required(cached.as_ref(), key);
+            if rebuilt {
+                *cached = Some(CachedMesh {
+                    key,
+                    mesh: build_mesh(snapshot, &GlyphAtlas::new()),
+                    span_styles: Vec::new(),
+                });
+            }
+            rebuilt
+        }
+        let camera = Camera::new(
+            Vec2::new(810.0, 450.0),
+            0.8,
+            Viewport::new(1200.0, 800.0, 1.0),
+            CameraLimits::default(),
+        );
+        let bootstrap: SceneSnapshot =
+            serde_json::from_str(include_str!("../../../fixtures/renderer/demo-scene.json"))
+                .unwrap();
+        // A different scene under the same id and revision, as the enrichment of a view is.
+        let mut enriched = bootstrap.clone();
+        enriched.paths.clear();
+        assert_eq!(
+            (&bootstrap.scene_id, bootstrap.revision),
+            (&enriched.scene_id, enriched.revision)
+        );
+        let bootstrap_frame = ProtocolEngine::try_new(bootstrap.clone(), camera)
+            .unwrap()
+            .prepare_frame(RendererBackend::Headless);
+        let mut engine = ProtocolEngine::try_new(enriched.clone(), camera).unwrap();
+        let enriched_frame = engine.prepare_frame(RendererBackend::Headless);
+        assert_eq!(
+            MeshCacheKey::new(&bootstrap, &bootstrap_frame),
+            MeshCacheKey::new(&enriched, &enriched_frame),
+            "the key alone cannot tell the scenes apart"
+        );
+
+        let mut cached = None;
+        assert!(draw(&mut cached, &bootstrap, &bootstrap_frame));
+        assert!(cached.as_ref().unwrap().mesh.path_vertex_count > 0);
+        forget_scene_mesh(&mut cached);
+        assert!(draw(&mut cached, &enriched, &enriched_frame));
+        let expected = build_mesh(&enriched, &GlyphAtlas::new());
+        let mesh = &cached.as_ref().unwrap().mesh;
+        assert_eq!(mesh.path_vertex_count, 0);
+        assert_eq!(mesh.vertices.len(), expected.vertices.len());
+        let stream = build_active_mesh_stream(mesh, &enriched_frame);
+        assert!(stream.partition_active > 0);
+        assert!(
+            stream
+                .indices
+                .iter()
+                .all(|&index| (index as usize) < expected.vertices.len())
+        );
+
+        // Camera-only frames of the loaded scene still reuse its mesh.
+        engine.pan_screen(Vec2::new(0.25, 0.25));
+        let panned = engine.prepare_frame(RendererBackend::Headless);
+        assert!(!draw(&mut cached, &enriched, &panned));
     }
 
     #[test]
