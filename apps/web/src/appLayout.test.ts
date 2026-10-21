@@ -679,8 +679,8 @@ describe('oEmbed embed chrome (CLA-85)', () => {
 
 describe('production dev-mode gate', () => {
   it('defaults dev mode off, persists it, and toggles with Shift+Alt+D', () => {
-    expect(app).toContain("localStorage.getItem('okie.devMode') === '1'");
-    expect(app).toContain("localStorage.setItem('okie.devMode', devMode ? '1' : '0')");
+    expect(app).toContain("localStore.getItem('okie.devMode') === '1'");
+    expect(app).toContain("localStore.setItem('okie.devMode', devMode ? '1' : '0')");
     expect(app).toContain('shouldToggleDevMode(event)');
     expect(app).toContain('setDevMode(value => !value)');
     expect(app).toContain("data-dev-mode={devMode ? 'true' : 'false'}");

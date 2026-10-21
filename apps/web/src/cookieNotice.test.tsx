@@ -133,10 +133,14 @@ describe('CLA-316 SPA cookie notice: remembering the dismissal', () => {
     expect(dismissCookieNotice(throwingStorage)).toBe(false);
     expect(initialCookieNoticeVisible(undefined)).toBe(true);
     expect(dismissCookieNotice(undefined)).toBe(false);
-    // Reading window.localStorage itself can throw (blocked site data).
-    expect(noticeStorage(Object.defineProperty({}, 'localStorage', { get() { throw new Error('SecurityError'); } }))).toBeUndefined();
+    // Reading window.localStorage itself can throw (blocked site data, opaque sandbox): OK hides it for this page only.
+    const blocked = noticeStorage(Object.defineProperty({}, 'localStorage', { get() { throw new Error('SecurityError'); } }));
+    expect(initialCookieNoticeVisible(blocked)).toBe(true);
+    expect(dismissCookieNotice(blocked)).toBe(false);
+    expect(initialCookieNoticeVisible(blocked)).toBe(false);
     const storage = memoryStorage() as unknown as Storage;
-    expect(noticeStorage({ localStorage: storage })).toBe(storage);
+    rememberCookieNoticeDismissed(noticeStorage({ localStorage: storage }));
+    expect(storage.getItem(COOKIE_NOTICE_STORAGE_KEY)).toBe('1');
   });
 });
 

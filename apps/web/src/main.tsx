@@ -31,6 +31,7 @@ import { createIndexedDbPortableStore, createPortablePersistence, portableStorag
 import { registerWebMcpFoundation } from './webmcp';
 import { applyPageMeta, SITE_NAME } from './siteMeta';
 import { bootPlan } from './bootPlan';
+import { indexedDbFactory, localStore } from './browserStorage';
 import { mountCookieNotice } from './cookieNotice';
 import { MobileNotice, mobileNoticeCopy, readMobileGateInput } from './mobileGate';
 import { NotFoundScreen } from './siteFooter';
@@ -59,8 +60,7 @@ import.meta.hot?.dispose(() => { startupLifetime.dispose(); performanceDiagnosti
 // CLA-149: read `?planner=jev` before anything can rewrite the URL.
 captureBlockPlannerQueryFlag(window.location.search);
 const root = createRoot(document.getElementById('root')!);
-let indexedDb: IDBFactory | undefined;
-try { indexedDb = window.indexedDB; } catch { /* Browser policy may deny even reading the factory. */ }
+const indexedDb = indexedDbFactory();
 let portablePersistence = createPortablePersistence(createIndexedDbPortableStore(indexedDb, `active-v1:${new URL('./', window.location.href).pathname}`));
 
 /**
@@ -118,8 +118,7 @@ let bootShellRoute: { route: AppRoute; key: string } | undefined;
 const bootShell = createBootShellOwner({
   render: ({ step, fontsReady, atlasRepositoryId }) => {
     if (!bootShellRoute) return;
-    const storage = readLocalStorage();
-    const layout = bootShellLayout(window, window.location.search, { storage, repositoryId: bootShellRepositoryId(window.location.href, atlasRepositoryId) });
+    const layout = bootShellLayout(window, window.location.search, { storage: localStore, repositoryId: bootShellRepositoryId(window.location.href, atlasRepositoryId) });
     root.render(<BootShell fontsReady={fontsReady} headerSlots={bootShellHeaderSlots(bootShellRoute.route, layout.embed)} layout={layout} step={step}/>);
   },
   fontsLoaded: () => BOOT_SHELL_FONTS.every(font => document.fonts.check(font)),
@@ -132,16 +131,12 @@ function renderRoot(node: ReactNode): void {
   root.render(node);
 }
 
-function readLocalStorage(): Storage | undefined {
-  try { return window.localStorage; } catch { return undefined; }
-}
-
 /** Paints the skeleton; the repository, once known, is remembered for this route's next visit. */
 function showBootShell(route: AppRoute, slug: string | undefined, step: BootShellStep, repositoryId?: string): void {
   const key = `${route.kind}:${slug ?? ''}`;
   if (bootShellRoute?.key !== key) bootShellRoute = { route, key };
-  if (repositoryId !== undefined) rememberRouteRepository(readLocalStorage(), key, repositoryId);
-  bootShell.show(step, repositoryId ?? (bootShell.owns ? undefined : recallRouteRepository(readLocalStorage(), key)));
+  if (repositoryId !== undefined) rememberRouteRepository(localStore, key, repositoryId);
+  bootShell.show(step, repositoryId ?? (bootShell.owns ? undefined : recallRouteRepository(localStore, key)));
 }
 
 async function tryBootNeighborhoodFixture(

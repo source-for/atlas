@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { browserStorage } from './browserStorage';
 import { isFramedBrowsingContext } from './embedCanvas';
 import { isEmbedChrome, isEmbedQueryFlag } from './embedChrome';
 import { isKnownAppPath } from './notFoundPage';
@@ -23,13 +24,9 @@ export const COOKIE_NOTICE_HEIGHT_VAR = '--cookie-notice-height';
 
 export type NoticeStorage = Pick<Storage, 'getItem' | 'setItem'>;
 
-/** The page's localStorage, or undefined when even reading it throws (blocked storage). */
-export function noticeStorage(win: { localStorage?: Storage } = window): NoticeStorage | undefined {
-  try {
-    return win.localStorage;
-  } catch {
-    return undefined;
-  }
+/** The page's localStorage; when it is blocked, a dismissal lasts for this page only (CLA-610). */
+export function noticeStorage(win: { localStorage?: Storage } = window): NoticeStorage {
+  return browserStorage('localStorage', win);
 }
 
 export function cookieNoticeDismissed(storage: NoticeStorage | undefined): boolean {
