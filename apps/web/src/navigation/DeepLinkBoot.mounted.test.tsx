@@ -10,7 +10,7 @@ import { sliceArchitectureNeighborhood, type ArchitectureSnapshot, type Architec
 import { setActiveScanFixture } from '../renderer/fixtureBundle';
 import type { NavigationHistoryController } from './historyController';
 
-const captured = vi.hoisted(() => ({ controller: undefined as NavigationHistoryController | undefined }));
+const captured = vi.hoisted(() => ({ controller: undefined as NavigationHistoryController | undefined, scenes: [] as { entities: unknown[] }[] }));
 vi.mock('./historyController', async importOriginal => {
   const original = await importOriginal<typeof import('./historyController')>();
   return { ...original, createNavigationHistoryController: (...args: Parameters<typeof original.createNavigationHistoryController>) => {
@@ -21,7 +21,7 @@ vi.mock('./historyController', async importOriginal => {
 vi.mock('../renderer/createRenderer', () => ({
   createRenderer: async (host: HTMLElement) => {
     const canvas = document.createElement('canvas'); host.replaceChildren(canvas);
-    return { canvas, renderer: { kind: 'canvas2d', setScene() {}, setCamera() {}, setRenderState() {}, resize() {}, render() {}, pick() {}, visibleScene: () => ({ objectIds: [], relationIds: [] }), lodState() {}, diagnostics: () => ({ requestedBackend: 'canvas2d', activeBackend: 'canvas2d', gpuAccelerated: false, lastFrameMs: 0, message: '', entityCount: 0, relationCount: 0 }), dispose() {} } };
+    return { canvas, renderer: { kind: 'canvas2d', setScene(scene: { entities: unknown[] }) { if (captured.scenes.at(-1) !== scene) captured.scenes.push(scene); }, setCamera() {}, setRenderState() {}, resize() {}, render() {}, pick() {}, visibleScene: () => ({ objectIds: [], relationIds: [] }), lodState() {}, diagnostics: () => ({ requestedBackend: 'canvas2d', activeBackend: 'canvas2d', gpuAccelerated: false, lastFrameMs: 0, message: '', entityCount: 0, relationCount: 0 }), dispose() {} } };
   }, recoverRenderer: vi.fn(),
 }));
 
@@ -67,6 +67,20 @@ function bootWithoutModelChildren() {
   });
   setActiveScanFixture(fixture);
   expect(fixture.snapshot.entities.some(entity => entity.id === 'component:model-scoping')).toBe(false);
+}
+// A neighborhood boot above the 128-entity slice threshold: the bootstrap scene is the L1/L2 slice and
+// enrichment compiles the full packet (synchronously here: happy-dom has no Worker).
+async function largeNeighborhoodBoot() {
+  const full = structuredClone(snapshot) as unknown as ArchitectureSnapshot;
+  // Children under a code entity leave L1/L2 geometry unchanged, so initialSceneBandsMatch accepts the
+  // enriched scene, as it does for the published atlas.
+  const owner = full.entities.find(entity => entity.id === 'code:web-shell:app')!;
+  full.entities.push(...Array.from({ length: 150 }, (_, index) => ({ id: `code:boot-${index}`, name: `declaration${index}`, kind: 'code' as const, parentId: owner.id, sourceRefs: [] })));
+  const sliced = sliceArchitectureNeighborhood(full, view as ArchitectureView, { focusEntityId: 'system:okie' });
+  const packet = { ...sliced, snapshot: full, view: view as ArchitectureView, childCounts: { ...sliced.childCounts, [owner.id]: 150 } };
+  fixture = compileScanNeighborhoodFixture(packet, story, { loadNeighborhood: async () => structuredClone(packet), loadStory: async () => story, loadExcerpts: async () => undefined });
+  await fixture.prepareInitialScene(undefined, { worker: false });
+  setActiveScanFixture(fixture);
 }
 async function holdRestoreCompile() {
   let release!: () => void;
@@ -118,12 +132,31 @@ describe('scan deep-link boot (CLA-584)', () => {
   it.each([
     ['a bare link', ''],
     ['a selection link the bootstrap scene already holds', '&sel=container%3Aweb-app'],
-  ])('delivers the bootstrap enrichment for %s without the restore aborting it', async (_name, search) => {
-    const enrich = vi.spyOn(fixture, 'enrichInitialScene');
+  ])('installs the bootstrap enrichment for %s, showing "Loading more detail…" only while it runs', async (_name, search) => {
+    await largeNeighborhoodBoot();
+    const original = fixture.enrichInitialScene;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let delivered: unknown;
+    const enrich = vi.spyOn(fixture, 'enrichInitialScene').mockImplementation(async signal => { await held; delivered = await original(signal); return delivered as never; });
+    // Queue frames so the canvas loop runs only when the test draws one.
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => frames.push(callback)));
+    const draw = async () => { await act(async () => { for (const callback of frames.splice(0)) callback(performance.now()); }); };
+    captured.scenes = [];
     await mount(search);
+    await draw();
     for (let attempt = 0; attempt < 20 && !enrich.mock.calls.length; attempt += 1) await settle();
     expect(enrich).toHaveBeenCalledTimes(1);
+    const bootstrap = captured.scenes.at(-1)!;
+    expect(host.textContent).toContain('Loading more detail…');
+    await act(async () => { release(); }); await settle(); await settle();
+    await draw();
     expect(enrich.mock.calls[0]![0]!.aborted).toBe(false);
+    expect(delivered).toBeDefined();
+    expect(captured.scenes.at(-1)).toBe(delivered);
+    expect(captured.scenes.at(-1)!.entities.length).toBeGreaterThan(bootstrap.entities.length);
+    expect(host.textContent).not.toContain('Loading more detail…');
   });
 
   it.each([
@@ -151,5 +184,32 @@ describe('scan deep-link boot (CLA-584)', () => {
     release();
     for (let attempt = 0; attempt < 10; attempt += 1) await settle();
     expect(enrich).not.toHaveBeenCalled();
+  });
+
+  // Sol's CLA-590 review case: the enriched scene must be published to sceneRef with its state, or a
+  // navigation begun before React commits captures the bootstrap scene and is then cancelled as obsolete.
+  it('keeps a navigation begun between enrichment resolution and its commit', async () => {
+    const bootstrap = fixture.createScene(fixture.navigation.rootEntityId);
+    const enriched = structuredClone(bootstrap);
+    enriched.title += ' enriched';
+    let deliver!: (scene: typeof enriched) => void;
+    vi.spyOn(fixture, 'enrichInitialScene').mockReturnValue(new Promise(resolve => { deliver = resolve; }));
+    vi.spyOn(fixture, 'ensureNeighborhood').mockResolvedValue(undefined);
+    let finish!: (scene: typeof enriched) => void;
+    const compile = vi.spyOn(fixture, 'createSceneAsync').mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    await mount('');
+    await act(async () => {
+      deliver(enriched);
+      await Promise.resolve();
+      host.querySelectorAll<HTMLButtonElement>('.level-rail button')[1]!.click();
+    });
+    for (let i = 0; i < 5; i++) await settle();
+    expect(host.textContent).not.toContain('This view changed while navigation was being prepared.');
+    expect(compile).toHaveBeenCalled();
+    const signal = compile.mock.calls.at(-1)![3]!;
+    expect(signal.aborted).toBe(false);
+    await act(async () => { finish(enriched); });
+    for (let i = 0; i < 5; i++) await settle();
+    expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-detail')).toBe('container');
   });
 });

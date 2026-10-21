@@ -2468,6 +2468,9 @@ export function App() {
       const detail = semanticLensSessionDetail(semanticLensSessionRef.current);
       if (detail !== 'context' && detail !== 'container') return;
       if (!initialSceneBandsMatch(goldenScene, enriched)) return;
+      // Publish the ref with the state, as every scene publisher does: navigation begun before React
+      // commits must capture the enriched scene, not the bootstrap one it is about to replace.
+      sceneRef.current = enriched;
       setScene(enriched);
     }).catch(() => { if (alive) setInitialDetailLoading(false); });
     return () => { alive = false; controller.abort(); };
