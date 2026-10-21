@@ -158,6 +158,8 @@ function parseComparator(text: string): SemverComparator | undefined {
   const match = new RegExp(String.raw`^(\^|~|=|>=|<=|>|<)?\s*v?(\d+)(?:\.(\d+|[*xX]))?(?:\.(\d+|[*xX]))?${SEMVER_PRE}$`).exec(text);
   if (!match) return undefined;
   const wildcard = (part: string | undefined): boolean => part !== undefined && /^[*xX]$/.test(part);
+  // Cargo rejects a number or prerelease after a wildcard (`1.*.3`, `1.2.*-beta`): unparsable.
+  if ((wildcard(match[3]) && match[4] !== undefined && !wildcard(match[4])) || ((wildcard(match[3]) || wildcard(match[4])) && match[5])) return undefined;
   const minor = match[3] === undefined || wildcard(match[3]) ? undefined : Number(match[3]);
   const patch = minor === undefined || match[4] === undefined || wildcard(match[4]) ? undefined : Number(match[4]);
   const pre = match[5] ? match[5].split(".") : [];

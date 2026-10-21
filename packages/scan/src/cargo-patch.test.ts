@@ -467,12 +467,17 @@ test("CLA-594: cargoRequirementMatches keeps an explicit operator alongside a wi
   for (const [requirement, version, expected] of [
     ["^1.2.*", "1.3.0", true], ["^1.2.*", "1.2.0", true], ["^1.2.*", "1.1.9", false], ["^1.2.*", "2.0.0", false],
     [">=1.*", "2.0.0", true], [">=1.*", "1.0.0", true], [">=1.*", "0.9.9", false],
-    ["<1.*", "0.9.9", true], ["<1.*", "1.0.0", false], [">1.*", "1.9.0", false], [">1.*", "2.0.0", true],
+    ["<1.*", "0.9.0", true], ["<1.*", "1.0.0", false], [">1.*", "1.9.0", false], [">1.*", "2.0.0", true],
+    [">1.2.*", "1.3.0", true], [">1.2.*", "1.2.9", false], ["<=1.2.*", "1.2.9", true], ["<=1.2.*", "1.3.0", false],
     ["~1.*", "1.9.0", true], ["~1.*", "2.0.0", false], ["=1.2.*", "1.2.7", true], ["=1.2.*", "1.3.0", false],
     // the implicit operator is still a wildcard
     ["1.2.*", "1.3.0", false], ["1.2.*", "1.2.9", true], ["1.*", "2.0.0", false], ["1.x", "1.4.0", true],
   ] as const) {
     assert.equal(cargoRequirementMatches(requirement, version), expected, `${requirement} vs ${version}`);
+  }
+  // Cargo rejects these requirements outright, so the helper reports them unparsable.
+  for (const requirement of ["1.*.3", "^1.X.3", "1.*-alpha", ">=1.2.*-beta"]) {
+    assert.equal(cargoRequirementMatches(requirement, "1.0.3"), undefined, requirement);
   }
 });
 
@@ -508,5 +513,8 @@ test("CLA-594: a quoted [package] \"version\" key is read, not treated as missin
   scanBothModes(CORE_APP(inheriting, 'core = "1"\n', '"version".workspace = true'), (mode, artifacts) => {
     assert.deepEqual(crateEdges(artifacts), [], `${mode}: quoted inheritance of a quoted workspace 2.0.0 rejects ^1`);
     assert.equal(patchLimitations(artifacts).length, 1, mode);
+  });
+  scanBothModes(CORE_APP(inheriting, 'core = "2"\n', "'version'.workspace = true"), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:8 app/Cargo.toml:6"], `${mode}: quoted inheritance of 2.0.0 satisfies ^2`);
   });
 });
