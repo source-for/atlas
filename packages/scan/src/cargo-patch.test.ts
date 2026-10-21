@@ -533,3 +533,44 @@ test("CLA-594: an unparsable version requirement records no [patch] edge and a l
     });
   }
 });
+
+// CLA-594 review (Sol): a requirement is a TOML string. A basic string's escapes are decoded
+// (TOML 1.0, as Cargo 1.87 reads it); a literal string stays raw; an escape or control
+// character TOML rejects keeps the raw text, which no requirement parses, so it is reported
+// unparsable and never treated like an absent requirement. Each case checked with offline
+// `cargo metadata` (1.87): the accepted forms resolve the patched core 1.3.0, the others
+// fail to select a version (`\u0032`) or fail to load the manifest.
+test("CLA-594: requirements are decoded TOML strings; invalid escapes are unparsable, not absent (quick + full)", () => {
+  const patched = `${MEMBERS}\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  const edge = ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"];
+  for (const dependency of [
+    'core = "\\u0031"', 'core = ">=1,\\u0020<2"', 'core = "\\U00000031"', 'core = { version = "\\u0031" }', 'core.version = "\\u0031"',
+  ]) {
+    scanBothModes(CORE_APP(patched, `${dependency}\n`, 'version = "1.3.0"'), (mode, artifacts) => {
+      assert.deepEqual(crateEdges(artifacts), edge, `${mode}: ${dependency}`);
+      assert.deepEqual(patchLimitations(artifacts), [], `${mode}: ${dependency}`);
+    });
+  }
+  scanBothModes(CORE_APP(patched, 'core = "\\u0032"\n', 'version = "1.3.0"'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: \\u0032 decodes to 2`);
+    assert.deepEqual(patchLimitations(artifacts), [
+      "Cargo [patch] accepted by no scanned crate's normal dependency: version 1.3.0 does not satisfy app/Cargo.toml:6 requires '2'; no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }",
+    ], mode);
+  });
+  for (const [dependency, raw] of [
+    ["core = '\\u0031'", "\\u0031"], ['core = "\\q1"', "\\q1"], ['core = "\\uD800"', "\\uD800"],
+    ['core = "\\e1"', "\\e1"], ['core = { version = "\\x31" }', "\\x31"],
+  ] as const) {
+    scanBothModes(CORE_APP(patched, `${dependency}\n`, 'version = "1.3.0"'), (mode, artifacts) => {
+      assert.deepEqual(crateEdges(artifacts), [], `${mode}: ${dependency}`);
+      assert.deepEqual(patchLimitations(artifacts), [
+        `Cargo [patch] not applied to a version requirement the scanner cannot parse: app/Cargo.toml:6 requires core '${raw}'; no crate edge recorded for it: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }`,
+      ], `${mode}: ${dependency} keeps its raw text`);
+    });
+  }
+  scanBothModes(CORE_APP(patched, 'core = "1\u0001"\n', 'version = "1.3.0"'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: a raw control character is invalid TOML`);
+    assert.equal(patchLimitations(artifacts).length, 1, mode);
+    assert.match(patchLimitations(artifacts)[0]!, /cannot parse: app\/Cargo\.toml:6 requires core /, mode);
+  });
+});

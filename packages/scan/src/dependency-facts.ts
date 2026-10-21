@@ -480,16 +480,43 @@ function bracketDepth(text: string): number {
   }
   return depth;
 }
+const TOML_ESCAPES: Readonly<Record<string, string>> = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", '"': '"', "\\": "\\" };
+/**
+ * A dependency requirement as Cargo reads it: a TOML 1.0 basic string (`basic`, raw
+ * between the quotes) with its escapes decoded, or a literal string (`literal`) as is.
+ * An escape or control character TOML rejects (`\q`, `\uD800`, `\e`) keeps the raw
+ * text; it contains a backslash or control character, so no requirement parses it and
+ * the requirement is reported unparsable rather than read as absent.
+ */
+function tomlRequirement(basic: string | undefined, literal: string | undefined): string | undefined {
+  if (basic === undefined) return literal;
+  if (/[\u0000-\u0008\u000A-\u001F\u007F]/.test(basic)) return basic;
+  let valid = true;
+  const decoded = basic.replace(/\\(?:([btnfr"\\])|u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|[\s\S])/g, (_, simple: string | undefined, short: string | undefined, long: string | undefined) => {
+    if (simple !== undefined) return TOML_ESCAPES[simple]!;
+    const code = short ?? long;
+    const scalar = code === undefined ? -1 : Number.parseInt(code, 16);
+    if (scalar >= 0 && scalar <= 0x10ffff && (scalar < 0xd800 || scalar > 0xdfff)) return String.fromCodePoint(scalar);
+    valid = false;
+    return "";
+  });
+  return valid ? decoded : basic;
+}
+function tomlStringMatch(text: string, key: string): RegExpExecArray | null {
+  return new RegExp(`(?:^|[{,\\s])${key}\\s*=\\s*(?:"((?:[^"\\\\]|\\\\.)*)"|'([^']*)')`).exec(stripTomlComment(text));
+}
 function tomlString(text: string, key: string): string | undefined {
-  const match = new RegExp(`(?:^|[{,\\s])${key}\\s*=\\s*(?:"((?:[^"\\\\]|\\\\.)*)"|'([^']*)')`).exec(stripTomlComment(text));
+  const match = tomlStringMatch(text, key);
   return match ? (match[1] ?? match[2]) : undefined;
 }
 function inlineSpec(text: string): CargoDependencySpec {
   const value = stripTomlComment(text).trim();
   const plain = /^"((?:[^"\\]|\\.)*)"|^'([^']*)'/.exec(value);
-  if (plain) return { version: plain[1] ?? plain[2]! };
+  if (plain) return { version: tomlRequirement(plain[1], plain[2])! };
   const spec: CargoDependencySpec = {};
-  for (const key of ["version", "path", "git", "package", "registry"] as const) {
+  const version = tomlStringMatch(value, "version");
+  if (version) spec.version = tomlRequirement(version[1], version[2])!;
+  for (const key of ["path", "git", "package", "registry"] as const) {
     const found = tomlString(value, key);
     if (found !== undefined) spec[key] = found;
   }
@@ -503,8 +530,9 @@ function assignField(spec: CargoDependencySpec, field: string, rawValue: string)
   if (field === "workspace") { if (/^true\b/.test(value)) spec.workspace = true; return; }
   const text = /^"((?:[^"\\]|\\.)*)"|^'([^']*)'/.exec(value);
   if (!text) return;
+  if (field === "version") { spec.version = tomlRequirement(text[1], text[2])!; return; }
   const content = text[1] ?? text[2]!;
-  if (field === "version" || field === "path" || field === "git" || field === "package" || field === "registry") spec[field] = content;
+  if (field === "path" || field === "git" || field === "package" || field === "registry") spec[field] = content;
   else if (field === "rev" || field === "tag" || field === "branch") spec.gitRef = content;
 }
 
