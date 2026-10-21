@@ -1847,21 +1847,31 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
   // Rust crate wiring is an observed fact in Cargo.toml — `path = "…"`
   // dependencies become container edges, so a crate is never a mystery island. An
   // inherited `foo = { workspace = true }` takes the root `[workspace.dependencies]`
-  // path (relative to the root).
-  let rootManifest = "";
-  try { if (discovery.units.some(unit => unit.kind === "rust")) rootManifest = readFile("Cargo.toml") ?? ""; } catch { /* no root manifest */ }
-  const workspacePaths = new Map(cargoPathDependencies(rootManifest).flatMap(dependency => dependency.workspace && !dependency.inherited ? [[dependency.name, dependency.path] as const] : []));
+  // path (relative to the crate's workspace root: the repository root, or the nested
+  // Cargo workspace that governs it, CLA-605).
+  const workspacePathsByManifest = new Map<string, Map<string, string>>();
+  const workspacePathsOf = (workspaceManifest: string): Map<string, string> => {
+    let paths = workspacePathsByManifest.get(workspaceManifest);
+    if (!paths) {
+      let text = "";
+      try { text = readFile(workspaceManifest) ?? ""; } catch { /* no workspace manifest */ }
+      paths = new Map(cargoPathDependencies(text).flatMap(dependency => dependency.workspace && !dependency.inherited ? [[dependency.name, dependency.path] as const] : []));
+      workspacePathsByManifest.set(workspaceManifest, paths);
+    }
+    return paths;
+  };
   for (const unit of discovery.units) {
     if (unit.kind !== "rust") continue;
     const manifestPath = `${unit.dir}/Cargo.toml`;
+    const workspaceManifest = unit.cargoWorkspace ? `${unit.cargoWorkspace}/Cargo.toml` : "Cargo.toml";
     let manifestText: string;
     try { manifestText = readFile(manifestPath); } catch { continue; }
     for (const dependency of cargoPathDependencies(manifestText)) {
       if (dependency.workspace) continue;
-      const inheritedPath = dependency.inherited ? workspacePaths.get(dependency.name) : undefined;
+      const inheritedPath = dependency.inherited ? workspacePathsOf(workspaceManifest).get(dependency.name) : undefined;
       if (dependency.inherited && inheritedPath === undefined) continue;
       const targetDir = inheritedPath !== undefined
-        ? resolveRelativeUnitImport("Cargo.toml", inheritedPath, unitDirs)
+        ? resolveRelativeUnitImport(workspaceManifest, inheritedPath, unitDirs)
         : resolveRelativeUnitImport(`${unit.dir}/Cargo.toml`, dependency.path, unitDirs);
       if (!targetDir || targetDir === unit.dir) continue;
       addRelation(

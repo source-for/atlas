@@ -21,7 +21,7 @@ import { attachCoverage, coverageByCodeIdFromEntities, parseLcov, readLcov, type
 import { attachPortableSourceExcerpts } from "./excerpt.js";
 import { buildOverviewStory } from "./overview-story.js";
 import { buildUserFlowStories, publishedStoryCatalog, type PublishedStoryCatalog } from "./flow-story.js";
-import { discoverExtractedTree, TOOLING_UNIT_KEY, type Discovery, type DiscoverySummary } from "./discover.js";
+import { discoverExtractedTree, normalizeScanRoot, TOOLING_UNIT_KEY, type Discovery, type DiscoverySummary } from "./discover.js";
 import { membershipDiagnostics, membershipReport, type MembershipReport } from "./container-membership.js";
 import {
   attachCyclomaticComplexity,
@@ -75,6 +75,12 @@ export interface ScanOptions {
   lcovText?: string;
   /** Local Git revision to scan (HEAD by default). */
   revision?: string;
+  /**
+   * CLA-605 `--root <subdir>`: scan only this repository-relative directory of the
+   * pinned commit as the workspace root. Commit identity and every evidence path stay
+   * those of the whole repository; a root missing at the revision is an error.
+   */
+  root?: string;
   /**
    * CLA-271: content-addressed rust-analyzer SCIP index cache directory. Off by default (every full scan runs
    * rust-analyzer). The same Rust inputs, analyzer version and invocation reuse an index across checkouts.
@@ -495,9 +501,11 @@ export function scanAcquiredRepository(acquired: Pick<AcquiredCommittedTree, "ro
   const fallbackName = acquired.sourceName;
   const repositorySlug = options.repositorySlug ?? slug(packageName ?? fallbackName);
   const systemName = options.systemName ?? packageName ?? (fallbackName.charAt(0).toUpperCase() + fallbackName.slice(1));
+  const scanRoot = options.root === undefined ? undefined : normalizeScanRoot(options.root);
   const discovery = discoverExtractedTree(sourceRoot, {
     ...(options.includeAllMembers ? { includeAllMembers: true } : {}),
     ...(acquired.skipped ? { skippedEntries: acquired.skipped } : {}),
+    ...(scanRoot ? { root: scanRoot } : {}),
   });
   const readFile = (repoRelativePath: string): string => readFileSync(`${sourceRoot}/${repoRelativePath}`, "utf8");
   // Read manifests/lockfiles BEFORE analyzers run: cargo/rust-analyzer may write a
@@ -556,9 +564,11 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
     const repositorySlug = options.repositorySlug ?? slug(`${source.owner}-${source.repo}`);
     const systemName = options.systemName ?? packageName ?? source.repo;
     const pin: RepositoryPin = { commitSha: commit.sha, treeHash: commit.treeSha, generatedAt: commit.generatedAt };
+    const scanRoot = options.root === undefined ? undefined : normalizeScanRoot(options.root);
     const discovery = discoverExtractedTree(acquired.root, {
       ...(options.includeAllMembers ? { includeAllMembers: true } : {}),
       skippedEntries: acquired.skipped,
+      ...(scanRoot ? { root: scanRoot } : {}),
     });
     const dependencyInputs = collectDependencyInputs(discovery.sourceFiles, readFile);
     const languageAnalysis = analyzeLanguages(acquired.root, discovery, options.analysisMode, undefined, options.rustIndexCacheDir, acquired.checkoutRoot);

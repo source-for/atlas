@@ -1,0 +1,5 @@
+{
+  "name": "aa-router-typescript",
+  "private": true,
+  "scripts": { "build": "tsx scripts/build.ts" }
+}

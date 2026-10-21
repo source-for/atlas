@@ -1,0 +1,7 @@
+{
+  "name": "aa-router-worker",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "dependencies": { "@aa/core": "file:../../packages/core" }
+}

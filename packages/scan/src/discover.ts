@@ -50,6 +50,13 @@ export interface SourceUnit {
   packageManifest: string | undefined;
   /** Repository-relative anchor for the container. */
   evidencePath: string;
+  /**
+   * On a `rust` unit governed by a nested Cargo workspace (CLA-605), that workspace's
+   * directory: its `Cargo.toml` holds the `[workspace.dependencies]` this crate inherits.
+   * Set whenever that workspace is not the repository root (including a `--root`
+   * scan's base); absent for the repository-root workspace.
+   */
+  cargoWorkspace?: string;
 }
 
 /**
@@ -98,6 +105,19 @@ export interface DiscoverySummary {
    * directory (see `isTestDataPath`). Present only when non-zero.
    */
   excludedTestDataFiles?: number;
+  /**
+   * Workspace roots below the scan root (CLA-605): directories with their own
+   * `pnpm-workspace.yaml`, `package.json` `workspaces` or `Cargo.toml` `[workspace]`.
+   * Sorted. Present only when non-empty.
+   */
+  nestedWorkspaceRoots?: string[];
+  /**
+   * Packages outside every workspace that carry their own lockfile (CLA-605), each
+   * scanned as its own container. Sorted. Present only when non-empty.
+   */
+  standalonePackages?: string[];
+  /** The `--root` subdirectory the scan was limited to (repo-relative). Present only when set. */
+  scanRoot?: string;
 }
 
 /** Why a `.js` file in a TypeScript repo was not scanned; see {@link jsSkipReason}. */
@@ -153,6 +173,49 @@ export interface DiscoverOptions {
   skippedEntries?: SkippedTreeEntries;
   /** Test seam: override {@link SCAN_SIZE_LIMITS} for the tracked-file listing. */
   limits?: Partial<ScanSizeLimits>;
+  /**
+   * `--root <subdir>` (CLA-605): scan only files under this repository-relative
+   * directory and treat it as the workspace root. Paths stay repository-relative.
+   * Must already be normalized (see {@link normalizeScanRoot}).
+   */
+  root?: string;
+}
+
+/**
+ * Validates and normalizes a `--root` value to a repository-relative POSIX directory
+ * (`./typescript/` -> `typescript`). Rejects absolute paths, `..` and backslashes;
+ * returns undefined for the repository root itself (`.` or empty).
+ */
+export function normalizeScanRoot(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("/") || /^[A-Za-z]:/.test(trimmed) || trimmed.includes("\\")) {
+    throw new Error(`--root must be a repository-relative directory, got “${value}”`);
+  }
+  const parts = trimmed.split("/").filter(part => part !== "" && part !== ".");
+  if (parts.includes("..")) throw new Error(`--root must stay inside the repository, got “${value}”`);
+  return parts.length === 0 ? undefined : parts.join("/");
+}
+
+/**
+ * Nested workspace or standalone-package roots that are never discovered (CLA-605):
+ * installed packages, vendored copies, and test/example scaffolding — the same
+ * directory names the member and `.js` filters already treat as non-architecture.
+ */
+const EXCLUDED_ROOT_PATTERN = /(^|\/)(node_modules|vendor|vendored|third_party|third-party|test|tests|__tests__|testdata|playgrounds?|examples?|example-[^/]*|e2e|fixtures?|__fixtures__|demos?|sandbox)(\/|$)/i;
+
+/** Lockfiles that make a package outside every workspace a container of its own. */
+const STANDALONE_LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "npm-shrinkwrap.json"] as const;
+
+/** `dir/name`, or `name` at the repository root. */
+function joinDir(dir: string, name: string): string {
+  return dir ? `${dir}/${name}` : name;
+}
+
+/** `path` relative to `dir` (which contains it), or undefined when it is outside. */
+function relativeTo(dir: string, path: string): string | undefined {
+  if (!dir) return path;
+  if (path === dir) return "";
+  return path.startsWith(`${dir}/`) ? path.slice(dir.length + 1) : undefined;
 }
 
 // Always scanned. `.js` is added for every repo; a TypeScript repo filters it (`jsSkipReason`).
@@ -234,8 +297,8 @@ function readRepositoryFile(sourceRoot: string, relativePath: string): string | 
   try { return readFileSync(path, "utf8"); } catch { return undefined; }
 }
 
-function hasRootTsconfig(sourceRoot: string): boolean {
-  return ["tsconfig.json", "tsconfig.base.json"].some(file => safeRegularFile(sourceRoot, file) !== undefined);
+function hasRootTsconfig(sourceRoot: string, base: string): boolean {
+  return ["tsconfig.json", "tsconfig.base.json"].some(file => safeRegularFile(sourceRoot, joinDir(base, file)) !== undefined);
 }
 
 /**
@@ -246,8 +309,9 @@ function hasRootTsconfig(sourceRoot: string): boolean {
  * dangling default `"main": "index.js"` is no entry surface) or runtime
  * `dependencies` (externals). Scripts, devDependencies and a name alone do not.
  */
-function rootManifestDeclaresFacts(sourceRoot: string, sourceFiles: ReadonlySet<string>): boolean {
-  const text = readRepositoryFile(sourceRoot, "package.json");
+function rootManifestDeclaresFacts(sourceRoot: string, base: string, sourceFiles: ReadonlySet<string>): boolean {
+  const manifestPath = joinDir(base, "package.json");
+  const text = readRepositoryFile(sourceRoot, manifestPath);
   if (text === undefined) return false;
   let manifest: Record<string, unknown>;
   try { manifest = JSON.parse(text) as Record<string, unknown>; } catch { return false; }
@@ -255,7 +319,7 @@ function rootManifestDeclaresFacts(sourceRoot: string, sourceFiles: ReadonlySet<
   const declared = (value: unknown): boolean =>
     typeof value === "string" ? value.trim() !== "" : value !== null && typeof value === "object" && Object.keys(value).length > 0;
   const namesSourceFile = (value: unknown): boolean =>
-    typeof value === "string" && value.trim() !== "" && resolveRelativeImport("package.json", value.trim(), sourceFiles) !== undefined;
+    typeof value === "string" && value.trim() !== "" && resolveRelativeImport(manifestPath, value.trim(), sourceFiles) !== undefined;
   return ["exports", "bin"].some(key => declared(manifest[key]))
     || ["main", "module", "types"].some(key => namesSourceFile(manifest[key]))
     || declared(manifest.dependencies);
@@ -278,9 +342,9 @@ function readPackageName(sourceRoot: string, dir: string): string | undefined {
   }
 }
 
-/** `packages:` entries of `pnpm-workspace.yaml` (a list of quoted or bare scalars). */
-function pnpmWorkspaceGlobs(sourceRoot: string): string[] {
-  const text = readRepositoryFile(sourceRoot, "pnpm-workspace.yaml");
+/** `packages:` entries of `dir`'s `pnpm-workspace.yaml` (a list of quoted or bare scalars). */
+function pnpmWorkspaceGlobs(sourceRoot: string, dir: string): string[] {
+  const text = readRepositoryFile(sourceRoot, joinDir(dir, "pnpm-workspace.yaml"));
   if (text === undefined) return [];
   const globs: string[] = [];
   let inPackages = false;
@@ -301,8 +365,8 @@ function pnpmWorkspaceGlobs(sourceRoot: string): string[] {
  * or yarn classic's object form `{ "packages": [...] }`. `nohoist` is ignored; any
  * other shape or an unparsable manifest declares nothing.
  */
-function packageJsonWorkspaceGlobs(sourceRoot: string): string[] {
-  const text = readRepositoryFile(sourceRoot, "package.json");
+function packageJsonWorkspaceGlobs(sourceRoot: string, dir: string): string[] {
+  const text = readRepositoryFile(sourceRoot, joinDir(dir, "package.json"));
   if (text === undefined) return [];
   let workspaces: unknown;
   try { workspaces = (JSON.parse(text) as { workspaces?: unknown }).workspaces; } catch { return []; }
@@ -332,10 +396,10 @@ function normalizeWorkspacePattern(pattern: string): string {
  * includes (order-independent, unlike pnpm's own last-match-wins). Patterns naming the
  * root itself (`.`) are dropped — the root manifest is never a member.
  */
-function workspacePatterns(sourceRoot: string): WorkspacePatterns {
+function workspacePatterns(sourceRoot: string, dir: string): WorkspacePatterns {
   const include = new Set<string>();
   const exclude = new Set<string>();
-  for (const raw of [...pnpmWorkspaceGlobs(sourceRoot), ...packageJsonWorkspaceGlobs(sourceRoot)]) {
+  for (const raw of [...pnpmWorkspaceGlobs(sourceRoot, dir), ...packageJsonWorkspaceGlobs(sourceRoot, dir)]) {
     const negated = raw.trim().startsWith("!");
     const pattern = normalizeWorkspacePattern(negated ? raw.trim().slice(1) : raw);
     if (!pattern || pattern === ".") continue;
@@ -519,52 +583,66 @@ function repositoryPathFrom(dir: string, path: string): string | undefined {
   return stack.join("/");
 }
 
+/** Whether a Cargo manifest declares a `[workspace]` table (or one of its subtables). */
+export function isCargoWorkspaceManifest(manifestText: string): boolean {
+  return manifestText.split(/\r?\n/).map(stripTomlComment).some(line => /^\s*\[\s*workspace\s*(\.[^\]]*)?\]\s*$/.test(line));
+}
+
 /**
- * Rust crate directories. With a root `Cargo.toml` `[workspace] members` list, a crate
- * is a directory matched by a member glob (or path), not under an `exclude` path, that
- * has a tracked `Cargo.toml`. Without declared members, the conventional
- * `crates/<name>/Cargo.toml` layout is used (unchanged behaviour), still minus any
- * declared `exclude`. Either way, Cargo's implicit members join: every `path`
- * dependency actually used — declared in the root package's or a crate's own
+ * Rust crate directories of the Cargo workspace rooted at `rootDir` (`""` is the
+ * repository root; all paths are repository-relative). With a `[workspace] members`
+ * list, a crate is a directory matched by a member glob (or path, relative to
+ * `rootDir`), not under an `exclude` path, that has a tracked `Cargo.toml`. Without
+ * declared members, the conventional `<rootDir>/crates/<name>/Cargo.toml` layout is
+ * used when `conventional` (the scan root keeps its pre-CLA-605 behaviour), still minus
+ * any declared `exclude`. Either way, Cargo's implicit members join: every `path`
+ * dependency actually used — declared in the workspace root package's or a crate's own
  * dependency tables, or inherited there (`foo = { workspace = true }`) from a
- * `[workspace.dependencies]` entry with a `path` — transitively, that stays inside the
- * repository, has a tracked `Cargo.toml` and is not excluded. An unused
- * `[workspace.dependencies]` path entry is not a member. The root itself (`.`) is
- * never a crate unit.
+ * `[workspace.dependencies]` entry with a `path` (relative to `rootDir`) — transitively,
+ * that stays inside the repository, has a tracked `Cargo.toml` and is not excluded. An
+ * unused `[workspace.dependencies]` path entry is not a member. `rootDir` itself is
+ * never returned (the caller decides whether a nested root package is a crate).
  */
-function rustCrateDirectories(sourceRoot: string, allFiles: readonly string[]): string[] {
+function rustCrateDirectories(sourceRoot: string, allFiles: readonly string[], rootDir: string, conventional: boolean): string[] {
   const manifestDirs = allFiles
     .filter(path => path.endsWith("/Cargo.toml"))
     .map(manifest => manifest.slice(0, -"/Cargo.toml".length));
-  const manifest = readRepositoryFile(sourceRoot, "Cargo.toml");
+  const manifest = readRepositoryFile(sourceRoot, joinDir(rootDir, "Cargo.toml"));
   const declared = manifest === undefined ? { members: [], exclude: [] } : cargoWorkspaceMembers(manifest);
   const members = declared.members.map(normalizeWorkspacePattern).filter(pattern => pattern && pattern !== ".");
   const excluded = declared.exclude.map(normalizeWorkspacePattern).filter(Boolean);
-  const isExcluded = (dir: string): boolean =>
-    excluded.some(pattern => dir === pattern || dir.startsWith(`${pattern}/`) || workspaceGlobToRegExp(pattern).test(dir));
-  const isMember = members.length === 0
-    ? (dir: string): boolean => /^crates\/[^/]+$/.test(dir)
-    : (dir: string): boolean => members.some(pattern => workspaceGlobToRegExp(pattern).test(dir));
+  const local = (dir: string): string | undefined => relativeTo(rootDir, dir);
+  const isExcluded = (dir: string): boolean => {
+    const rel = local(dir);
+    return rel !== undefined && excluded.some(pattern => rel === pattern || rel.startsWith(`${pattern}/`) || workspaceGlobToRegExp(pattern).test(rel));
+  };
+  const isMember = (dir: string): boolean => {
+    const rel = local(dir);
+    if (rel === undefined || rel === "") return false;
+    return members.length === 0
+      ? conventional && /^crates\/[^/]+$/.test(rel)
+      : members.some(pattern => workspaceGlobToRegExp(pattern).test(rel));
+  };
   const manifestDirSet = new Set(manifestDirs);
   const crates = new Set(manifestDirs.filter(dir => isMember(dir) && !isExcluded(dir)));
-  // `[workspace.dependencies]` paths are relative to the root and count only when inherited.
+  // `[workspace.dependencies]` paths are relative to the workspace root and count only when inherited.
   const workspacePaths = new Map((manifest === undefined ? [] : cargoManifestDependencies(manifest))
     .flatMap(dependency => dependency.scope === "workspace" && dependency.path !== undefined ? [[dependency.name, dependency.path] as const] : []));
-  const queue = ["", ...crates];
+  const queue = [rootDir, ...crates];
   const visited = new Set<string>();
   while (queue.length > 0) {
     const dir = queue.shift()!;
     if (visited.has(dir)) continue;
     visited.add(dir);
-    const text = dir ? readRepositoryFile(sourceRoot, `${dir}/Cargo.toml`) : manifest;
+    const text = dir === rootDir ? manifest : readRepositoryFile(sourceRoot, `${dir}/Cargo.toml`);
     if (text === undefined) continue;
     for (const dependency of cargoManifestDependencies(text)) {
       if (dependency.scope !== "own") continue;
       const inheritedPath = dependency.inherited ? workspacePaths.get(dependency.name) : undefined;
       const target = dependency.path !== undefined
         ? repositoryPathFrom(dir, dependency.path)
-        : inheritedPath !== undefined ? repositoryPathFrom("", inheritedPath) : undefined;
-      if (!target || !manifestDirSet.has(target) || isExcluded(target) || crates.has(target)) continue;
+        : inheritedPath !== undefined ? repositoryPathFrom(rootDir, inheritedPath) : undefined;
+      if (!target || target === rootDir || !manifestDirSet.has(target) || isExcluded(target) || crates.has(target)) continue;
       crates.add(target);
       queue.push(target);
     }
@@ -699,14 +777,22 @@ function walkExtractedTree(root: string, limits: ScanSizeLimits): { files: strin
  * so a repo scanned either way yields identical containers/units/sort — the property
  * the byte-identical determinism contract needs.
  */
-export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[], options: DiscoverOptions = {}): Discovery {
+export function discoverFromFiles(sourceRoot: string, listedFiles: readonly string[], options: DiscoverOptions = {}): Discovery {
+  // `--root <subdir>`: only files under it are scanned, and it stands in for the
+  // repository root as the workspace root. Paths stay repository-relative.
+  const base = options.root ?? "";
+  const allFiles = base ? listedFiles.filter(path => path.startsWith(`${base}/`)) : listedFiles;
+  if (base && allFiles.length === 0) {
+    throw new Error(`--root ${base}: no committed files under this directory (it is missing, a file, or a symlink at this revision)`);
+  }
   const candidates = allFiles.filter(path => hasExtension(path, true));
   // A pure-JS repo (no root tsconfig AND no TS source anywhere — a monorepo can be TS
   // without a root tsconfig) scans every `.js`. A TS repo scans `.js` too, except the
   // test/vendor, minified and compiled-sibling files `jsSkipReason` names (counted).
   const hasTypeScriptSource = candidates.some(path => /\.(ts|tsx|mts|cts)$/.test(path) && !isExcludedPath(path));
-  const includedJs = !hasRootTsconfig(sourceRoot) && !hasTypeScriptSource;
-  const trackedFiles = new Set(allFiles);
+  const includedJs = !hasRootTsconfig(sourceRoot, base) && !hasTypeScriptSource;
+  // The whole listing, so an import of an existing file outside `--root` is not "unresolved".
+  const trackedFiles = new Set(listedFiles);
   const skippedJsByReason: SkippedJsByReason = { testOrVendorDirectory: 0, minified: 0, compiledSibling: 0 };
   const sourceCandidates = candidates.filter(path => {
     if (isExcludedPath(path)) return false;
@@ -719,23 +805,75 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
   // Only files the testdata rule newly excludes (a testdata `.d.ts` / `*.test.ts` was already out).
   const excludedTestDataFiles = candidates.filter(path => isTestDataPath(path) && !isExcludedFile(path)).length;
 
-  const patterns = workspacePatterns(sourceRoot);
-  const memberDirs = new Set<string>();
+  // Nested workspace roots (CLA-605): any `pnpm-workspace.yaml`, `package.json` with
+  // `workspaces`, or `Cargo.toml` with `[workspace]` below the scan root, except under
+  // installed, vendored and test/example directories (`EXCLUDED_ROOT_PATTERN`).
+  const listedFileSet = new Set(allFiles);
+  const dirOfManifest = (path: string, name: string): string | undefined =>
+    path === joinDir(base, name) ? base : path.endsWith(`/${name}`) ? path.slice(0, -(name.length + 1)) : undefined;
+  const isDiscoverableDir = (dir: string): boolean => dir !== base && !EXCLUDED_ROOT_PATTERN.test(relativeTo(base, dir) ?? dir);
+  const nestedJsRoots = new Set<string>();
+  const nestedCargoRoots = new Set<string>();
   for (const path of allFiles) {
-    if (!path.endsWith("/package.json") && path !== "package.json") continue;
-    if (/(^|\/)node_modules\//.test(path)) continue; // an installed package is never a workspace member
-    if (path === "package.json") continue; // the root manifest is not a workspace member
-    const dir = path.slice(0, -"/package.json".length);
-    if (isWorkspaceMemberDir(dir, patterns)) memberDirs.add(dir);
+    const pnpmDir = dirOfManifest(path, "pnpm-workspace.yaml");
+    if (pnpmDir !== undefined && isDiscoverableDir(pnpmDir)) nestedJsRoots.add(pnpmDir);
+    const packageDir = dirOfManifest(path, "package.json");
+    if (packageDir !== undefined && isDiscoverableDir(packageDir) && packageJsonWorkspaceGlobs(sourceRoot, packageDir).length > 0) nestedJsRoots.add(packageDir);
+    const cargoDir = dirOfManifest(path, "Cargo.toml");
+    if (cargoDir !== undefined && isDiscoverableDir(cargoDir)) {
+      const text = readRepositoryFile(sourceRoot, path);
+      if (text !== undefined && isCargoWorkspaceManifest(text)) nestedCargoRoots.add(cargoDir);
+    }
   }
-  const rustCrateDirs = rustCrateDirectories(sourceRoot, allFiles);
+  const jsRoots = [base, ...[...nestedJsRoots].sort(compareText)];
+  const patternsByRoot = new Map(jsRoots.map(root => [root, workspacePatterns(sourceRoot, root)] as const));
+  /** The deepest of `roots` strictly containing `dir` (`""` contains everything). */
+  const deepestAncestor = (dir: string, roots: readonly string[]): string | undefined => {
+    let best: string | undefined;
+    for (const root of roots) {
+      if (root === dir || (root !== "" && !dir.startsWith(`${root}/`))) continue;
+      if (best === undefined || root.length > best.length) best = root;
+    }
+    return best;
+  };
+  const memberDirs = new Set<string>();
+  const packageDirs: string[] = [];
+  for (const path of allFiles) {
+    const dir = dirOfManifest(path, "package.json");
+    if (dir === undefined) continue;
+    if (/(^|\/)node_modules\//.test(path)) continue; // an installed package is never a workspace member
+    if (dir === base) continue; // the root manifest is not a workspace member
+    packageDirs.push(dir);
+    // Deepest workspace root wins: a package below a nested root is judged by that
+    // root's globs (relative to it), never by an ancestor's.
+    const root = deepestAncestor(dir, jsRoots);
+    if (root !== undefined && isWorkspaceMemberDir(relativeTo(root, dir)!, patternsByRoot.get(root)!)) memberDirs.add(dir);
+  }
+  // A package in no workspace that carries its own lockfile (aa-router's
+  // `typescript/apps/cloudflare-worker`) is a container of its own, not tooling.
+  const standalonePackages = packageDirs
+    .filter(dir => !memberDirs.has(dir) && !nestedJsRoots.has(dir) && isDiscoverableDir(dir))
+    .filter(dir => STANDALONE_LOCKFILES.some(lockfile => listedFileSet.has(`${dir}/${lockfile}`)))
+    .sort(compareText);
+  for (const dir of standalonePackages) memberDirs.add(dir);
+
+  // Every Cargo workspace's crates; a crate claimed by two workspaces goes to the
+  // deepest (its inherited `[workspace.dependencies]` resolve against that manifest).
+  // A nested workspace root that is also a package is a crate itself.
+  const cargoWorkspaceByCrate = new Map<string, string>();
+  for (const root of [base, ...nestedCargoRoots].sort((left, right) => right.length - left.length || compareText(left, right))) {
+    const crates = rustCrateDirectories(sourceRoot, allFiles, root, root === base);
+    if (root !== base && cargoPackageName(readRepositoryFile(sourceRoot, `${root}/Cargo.toml`) ?? "") !== undefined) crates.push(root);
+    for (const crate of crates) if (!cargoWorkspaceByCrate.has(crate)) cargoWorkspaceByCrate.set(crate, root);
+  }
+  const rustCrateDirs = [...cargoWorkspaceByCrate.keys()].sort(compareText);
   const rustCrateDirSet = new Set(rustCrateDirs);
   const rustCrateOf = (file: string): string | undefined => mostSpecificRoot(file, rustCrateDirs);
 
   const allMembers = [...memberDirs].sort();
   // Fixture/example/playground members are skipped the same way whether npm or Cargo
   // declares them (a Cargo `examples` member is test scaffolding like a JS one).
-  const isFixtureMember = (dir: string): boolean => !options.includeAllMembers && FIXTURE_MEMBER_PATTERN.test(dir);
+  const isFixtureMember = (dir: string): boolean => !options.includeAllMembers && FIXTURE_MEMBER_PATTERN.test(relativeTo(base, dir) ?? dir);
   const skippedMemberSet = new Set([...allMembers, ...rustCrateDirs].filter(isFixtureMember));
   const skippedMembers = [...skippedMemberSet].sort(compareText);
   const memberOf = (file: string): string | undefined => mostSpecificRoot(file, allMembers);
@@ -765,24 +903,25 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
     // or a tooling-only package.json, never yields an empty root container. Its key
     // never equals a crate dir (a crate `tokio` in a repo named tokio): NUL can't be a
     // path byte and `slug` drops it.
-    const rootPackage = readPackageName(sourceRoot, "");
-    const rootName = rootPackage ?? basename(sourceRoot);
+    const rootPackage = readPackageName(sourceRoot, base);
+    const rootName = rootPackage ?? basename(base || sourceRoot);
     const rootSlug = slug(rootName);
     const rootKey = rustCrateDirSet.has(rootSlug) ? `\0${rootSlug}` : rootSlug;
-    const hasRootManifest = safeRegularFile(sourceRoot, "package.json") !== undefined;
+    const rootManifest = joinDir(base, "package.json");
+    const hasRootManifest = safeRegularFile(sourceRoot, rootManifest) !== undefined;
     for (const file of sourceCandidates) {
       const owner = ownerOf(file);
       if (owner?.skipped) continue; // fixture/example crate — dropped
       unitByFile.set(file, owner?.dir ?? rootKey);
     }
-    if (sourceCandidates.some(file => unitByFile.get(file) === rootKey) || rootManifestDeclaresFacts(sourceRoot, new Set(sourceCandidates))) {
+    if (sourceCandidates.some(file => unitByFile.get(file) === rootKey) || rootManifestDeclaresFacts(sourceRoot, base, new Set(sourceCandidates))) {
       units.push({
         kind: "root",
         dir: rootKey,
         name: rootName,
         ...(rootPackage ? { packageName: rootPackage } : {}),
-        packageManifest: hasRootManifest ? "package.json" : undefined,
-        evidencePath: hasRootManifest ? "package.json" : rootSlug,
+        packageManifest: hasRootManifest ? rootManifest : undefined,
+        evidencePath: hasRootManifest ? rootManifest : base || rootSlug,
       });
       if (rootPackage) unitByPackageName.set(rootPackage, rootKey);
     }
@@ -821,6 +960,7 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
     // member's npm manifest facts and answers to its npm name.
     const isJsMember = memberDirs.has(dir);
     const packageName = isJsMember ? readPackageName(sourceRoot, dir) : undefined;
+    const cargoWorkspace = cargoWorkspaceByCrate.get(dir)!;
     units.push({
       kind: "rust",
       dir,
@@ -828,11 +968,13 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
       evidencePath: dir,
       ...(packageName ? { packageName } : {}),
       packageManifest: isJsMember ? `${dir}/package.json` : undefined,
+      ...(cargoWorkspace ? { cargoWorkspace } : {}),
     });
     if (packageName) unitByPackageName.set(packageName, dir);
   }
 
   const sourceFiles = [...unitByFile.keys()].sort();
+  const nestedWorkspaceRoots = [...new Set([...nestedJsRoots, ...nestedCargoRoots])].sort(compareText);
   return {
     sourceFiles,
     units,
@@ -849,6 +991,9 @@ export function discoverFromFiles(sourceRoot: string, allFiles: readonly string[
       ...(reexportAliases.length > 0 ? { reexportAliases } : {}),
       ...(hasSkippedEntries(options.skippedEntries) ? { skippedEntries: { ...options.skippedEntries } } : {}),
       ...(excludedTestDataFiles > 0 ? { excludedTestDataFiles } : {}),
+      ...(nestedWorkspaceRoots.length > 0 ? { nestedWorkspaceRoots } : {}),
+      ...(standalonePackages.length > 0 ? { standalonePackages } : {}),
+      ...(base ? { scanRoot: base } : {}),
     },
   };
 }

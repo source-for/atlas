@@ -16,6 +16,7 @@ sourcefor-atlas --source <path> --emit-prompt <dir>
 sourcefor-atlas --source <path> --enrich-from <dir>
 sourcefor-atlas --source <path> --lcov <path>
 sourcefor-atlas --source <path> --component-map <path>
+sourcefor-atlas --source <path> --root typescript   # one subfolder of the real commit
 ```
 
 Defaults: `--source` = cwd, `--out` = `<source>/fixtures/scan` (gitignored). Outputs
@@ -159,6 +160,20 @@ Discovery generalizes beyond Okie's own layout (validated against third-party cl
   entities named `default` (a default export) or `anonymous <kind>`, never a blank name. A name
   over the gate's 160 characters is shortened for display with an ellipsis (a file-component keeps
   its path tail); ids still derive from the full path/symbol and `sourceRefs.symbol` is never cut.
+- **Nested workspace roots** (CLA-605) are discovered automatically: any `pnpm-workspace.yaml`,
+  `package.json` with `workspaces`, or `Cargo.toml` with `[workspace]` below the scan root (except
+  under `node_modules`, vendored `vendor`/`third_party` and test/example/fixture directories). A
+  package is judged by the globs of the deepest JS workspace root above it (relative to that
+  root); a crate inherits `workspace = true` paths from the deepest Cargo workspace that lists it,
+  and a nested Cargo root that is also a `[package]` is a crate itself. Deepest-root-wins
+  membership is unchanged. A `package.json` in no workspace that has its own lockfile
+  (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock(b)`) is a container of its own;
+  its `@scope/*` imports resolve to workspace containers by package name. Root `[patch]` overrides
+  are still read from the repository-root `Cargo.toml` only.
+- **`--root <subdir>`** scans one repository-relative directory of the pinned commit as if it were
+  the workspace root. Commit SHA, tree, evidence paths and source links stay those of the whole
+  repository (no `git subtree split`). Absolute or `..` paths are rejected, and a root that is
+  missing, a file or a symlink at that revision fails instead of scanning the whole repository.
 - **Single-package repos** (no workspace members) become **one root container**, named and
   evidenced from the root `package.json` (falling back to the directory name). The synthetic
   `tooling` container only appears when non-member scripts sit beside real workspace members.

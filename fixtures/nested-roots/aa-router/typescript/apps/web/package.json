@@ -1,0 +1,6 @@
+{
+  "name": "@aa/web",
+  "private": true,
+  "type": "module",
+  "dependencies": { "@aa/sdk": "workspace:*" }
+}
