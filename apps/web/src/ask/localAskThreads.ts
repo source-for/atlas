@@ -1,3 +1,4 @@
+import { indexedDbFactory } from '../browserStorage';
 import { parseAskThreadTurns, type AskAtlasIdentity, type AskThreadView } from './askAtlas';
 
 const DATABASE = 'sourcefor-ask';
@@ -20,7 +21,9 @@ async function database(): Promise<IDBDatabase> {
     };
     const timer = setTimeout(fail, STORAGE_TIMEOUT_MS);
     let request: IDBOpenDBRequest;
-    try { request = indexedDB.open(DATABASE, 1); }
+    const factory = indexedDbFactory();
+    if (!factory) { fail(); return; }
+    try { request = factory.open(DATABASE, 1); }
     catch { fail(); return; }
     request.onupgradeneeded = () => {
       if (settled) { request.transaction?.abort(); return; }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import source from '../public/home.js?raw';
+import { browserStorage } from './browserStorage';
 import { AUTH_SLOT_HTML, COOKIE_NOTICE_HTML, SCAN_REQUEST_HREF, COOKIE_NOTICE_STORAGE_KEY, COOKIE_NOTICE_TEXT, homeAtlasCards, homeCardMatches, homeCountText, homePageHtml, matchesAtWordStart, normalizeHomeQuery } from './homePage';
 
 /**
@@ -20,6 +21,8 @@ type HomeScript = {
   init(doc: unknown, win: unknown): { update(): unknown } | undefined;
   AUTH_ME_PATH: string;
   COOKIE_NOTICE_KEY: string;
+  noticeDismissed(win: unknown): boolean;
+  rememberNoticeDismissed(win: unknown): void;
   cookieNoticeAllowed(me: unknown): boolean;
   initCookieNotice(doc: unknown, win: unknown, me: unknown): unknown;
   authLinks(me: unknown): Array<{ text: string; href?: string }> | null;
@@ -519,5 +522,54 @@ describe('CLA-316 home.js: the cookie notice', () => {
       expect(off.calls).toEqual(['/api/auth/me']);
       expect(off.notice.hidden).toBe(true);
     }
+  });
+});
+
+/**
+ * CLA-610 parity: home.js keeps an inline copy of src/browserStorage.ts's contract (it is not bundled). The same
+ * cases, with expectations written out here rather than taken from either implementation, run against both.
+ */
+describe.each([
+  ['src/browserStorage.ts', {
+    dismissed: (win: object) => browserStorage('localStorage', win).getItem(COOKIE_NOTICE_STORAGE_KEY) === '1',
+    dismiss: (win: object) => browserStorage('localStorage', win).setItem(COOKIE_NOTICE_STORAGE_KEY, '1'),
+  }],
+  ['public/home.js', { dismissed: (win: object) => script.noticeDismissed(win), dismiss: (win: object) => script.rememberNoticeDismissed(win) }],
+])('CLA-610 storage fallback parity: %s', (_name, runtime) => {
+  const store = () => {
+    const values = new Map<string, string>();
+    return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  };
+  const deniedGetter = () => Object.defineProperty({}, 'localStorage', { get() { throw new DOMException('sandboxed', 'SecurityError'); } });
+
+  it('working storage: the dismissal is saved and a reload sees it', () => {
+    const local = store();
+    runtime.dismiss({ localStorage: local });
+    expect(local.values.get(COOKIE_NOTICE_STORAGE_KEY)).toBe('1');
+    expect(runtime.dismissed({ localStorage: local })).toBe(true);
+  });
+
+  it('denied getter, missing storage, or throwing methods: this window only, never another window or a reload', () => {
+    for (const make of [deniedGetter, () => ({}), () => ({ localStorage: { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } } })]) {
+      const page = make();
+      expect(runtime.dismissed(page)).toBe(false);
+      runtime.dismiss(page);
+      expect(runtime.dismissed(page)).toBe(true);
+      expect(runtime.dismissed(make())).toBe(false);
+    }
+  });
+
+  it('a refused write shadows real storage until a later write succeeds; then another tab\'s change shows', () => {
+    const local = store();
+    let full = true;
+    const win = { localStorage: { getItem: local.getItem, setItem: (key: string, value: string) => { if (full) throw new DOMException('full', 'QuotaExceededError'); local.setItem(key, value); } } };
+    runtime.dismiss(win);
+    expect(local.values.has(COOKIE_NOTICE_STORAGE_KEY)).toBe(false);
+    expect(runtime.dismissed(win)).toBe(true);
+    full = false;
+    runtime.dismiss(win);
+    expect(local.values.get(COOKIE_NOTICE_STORAGE_KEY)).toBe('1');
+    local.values.delete(COOKIE_NOTICE_STORAGE_KEY);
+    expect(runtime.dismissed(win)).toBe(false);
   });
 });

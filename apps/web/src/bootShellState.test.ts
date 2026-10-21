@@ -56,7 +56,7 @@ describe('CLA-268 boot shell keeps the repository\'s saved inspector width', () 
   const repo = 'repo:source-for-atlas';
   it('App and the skeleton share one initializer', () => {
     const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
-    expect(app).toContain('const [detailsWidth, setDetailsWidth] = useState(() => initialInspectorWidth(window.innerWidth, () => localStorage, initialNavigation.repositoryId));');
+    expect(app).toContain('const [detailsWidth, setDetailsWidth] = useState(() => initialInspectorWidth(window.innerWidth, () => localStore, initialNavigation.repositoryId));');
     expect(app).not.toMatch(/localStorage\.getItem\(inspectorWidthStorageKey/);
   });
 
