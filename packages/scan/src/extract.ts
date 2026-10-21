@@ -943,6 +943,58 @@ export function resolvePackageImport(specifier: string, unitByPackageName: Reado
   return undefined;
 }
 
+/** A bare import whose package name several JS workspace roots own; no edge was recorded (CLA-605). */
+export interface AmbiguousPackageImport {
+  path: string;
+  /** 1-based line of the import. */
+  line: number;
+  specifier: string;
+  /** The workspace package name the specifier names. */
+  packageName: string;
+  /** Repository-relative roots (`.` = scan root) owning a package of that name; sorted. */
+  candidateRoots: string[];
+}
+
+/**
+ * CLA-605: the unit a bare import of a workspace package from `fromFile` resolves to.
+ * Without nested JS workspace roots this is exactly {@link resolvePackageImport}. With
+ * them, independent roots may each own a package of the same name (`@scope/core` in
+ * `a/` and `b/`), so: an importer inside a workspace (a member, or a file of the
+ * workspace's own root package) resolves within its own root first; otherwise — and
+ * always for an importer outside every workspace, such as a standalone package with its
+ * own lockfile — the import resolves only when exactly one unit has that name. Several
+ * candidates and none in the importer's root: `ambiguous`, never a guessed edge (and
+ * never a third-party import).
+ */
+export function resolveWorkspacePackageImport(
+  specifier: string,
+  fromFile: string,
+  discovery: Pick<Discovery, "units" | "unitByFile" | "unitByPackageName" | "jsWorkspaceRoots">,
+): { dir: string } | { ambiguous: { packageName: string; candidateRoots: string[] } } | undefined {
+  const roots = discovery.jsWorkspaceRoots;
+  if (!roots) {
+    const dir = resolvePackageImport(specifier, discovery.unitByPackageName);
+    return dir === undefined ? undefined : { dir };
+  }
+  const packageName = packageNameOfSpecifier(specifier);
+  const candidates = packageName === undefined ? [] : discovery.units.filter(unit => unit.packageName === packageName);
+  if (candidates.length === 0) return undefined;
+  if (candidates.length === 1) return { dir: candidates[0]!.dir };
+  const importer = discovery.units.find(unit => unit.dir === discovery.unitByFile.get(fromFile));
+  // A member belongs to the root that claimed it; a standalone package to none; any
+  // other file (the workspace root package's own scripts) to the deepest root holding it.
+  const importerRoot = importer?.jsWorkspaceRoot ?? (importer?.kind === "member" || importer?.kind === "rust"
+    ? undefined
+    : roots.reduce<string | undefined>((best, root) =>
+      (root === "" || fromFile.startsWith(`${root}/`)) && (best === undefined || root.length > best.length) ? root : best, undefined));
+  if (importerRoot !== undefined) {
+    const own = candidates.filter(unit => unit.jsWorkspaceRoot === importerRoot);
+    if (own.length === 1) return { dir: own[0]!.dir };
+  }
+  const candidateRoots = [...new Set(candidates.map(unit => unit.jsWorkspaceRoot === undefined ? unit.dir : unit.jsWorkspaceRoot || "."))].sort(compareText);
+  return { ambiguous: { packageName: packageName!, candidateRoots } };
+}
+
 /**
  * The npm package name a bare specifier belongs to: `react` and `react-dom/client` map to
  * `react`/`react-dom`; `@scope/pkg/sub` collapses to `@scope/pkg`. Relative specifiers and
@@ -1364,6 +1416,8 @@ export interface ExtractedArchitecture {
    * evidence of a gap (rendered into `analysis.limitations`), never extraction input.
    */
   unresolvedRelativeImports: readonly UnresolvedRelativeImport[];
+  /** CLA-605: bare imports of a package name several workspace roots own (no edge recorded); sorted. */
+  ambiguousPackageImports: readonly AmbiguousPackageImport[];
   /** Entity id → McCabe cyclomatic. Only function-like `kind: "code"` entities. */
   cyclomaticById: ReadonlyMap<string, number>;
   /** Clone pairs between existing function-like code ids. Never invents ids. */
@@ -1567,6 +1621,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
 
   const unitDirs = discovery.units.map(unit => unit.dir);
   const unresolvedRelativeImports: UnresolvedRelativeImport[] = [];
+  const ambiguousPackageImports: AmbiguousPackageImport[] = [];
   const trackedFiles: ReadonlySet<string> = discovery.trackedFiles ?? fileSet;
 
   for (const file of discovery.sourceFiles) {
@@ -1657,8 +1712,12 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
           }
         }
       } else {
-        const targetUnit = resolvePackageImport(dependency.specifier, discovery.unitByPackageName);
-        if (targetUnit) {
+        const resolved = resolveWorkspacePackageImport(dependency.specifier, file, discovery);
+        const targetUnit = resolved && "dir" in resolved ? resolved.dir : undefined;
+        if (resolved && "ambiguous" in resolved) {
+          // Several workspace roots own this name, none of them the importer's: no guessed edge.
+          ambiguousPackageImports.push({ path: file, line: dependency.startLine, specifier: dependency.specifier, ...resolved.ambiguous });
+        } else if (targetUnit) {
           if (targetUnit !== unitDir) {
             addRelation(unitDir, targetUnit, typedId("relation", unitDir, targetUnit), `unit:${unitDir}->${targetUnit}`, evidence);
           }
@@ -1959,6 +2018,8 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
     cyclomaticById,
     clonePairs: clonePairsFromBuckets(cloneBuckets),
     unresolvedRelativeImports: canonicalUnresolvedImports(unresolvedRelativeImports),
+    ambiguousPackageImports: [...ambiguousPackageImports].sort((left, right) =>
+      compareText(left.path, right.path) || left.line - right.line || compareText(left.specifier, right.specifier)),
   };
 }
 

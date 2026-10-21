@@ -168,7 +168,11 @@ Discovery generalizes beyond Okie's own layout (validated against third-party cl
   and a nested Cargo root that is also a `[package]` is a crate itself. Deepest-root-wins
   membership is unchanged. A `package.json` in no workspace that has its own lockfile
   (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock(b)`) is a container of its own;
-  its `@scope/*` imports resolve to workspace containers by package name. Root `[patch]` overrides
+  its `@scope/*` imports resolve to workspace containers by package name. Independent roots may
+  reuse a package name: an import resolves within the importer's own workspace root first; an
+  importer in no workspace (or whose root lacks the name) resolves only when exactly one package
+  has it, otherwise no relation is recorded and `analysis.limitations` names the package and its
+  candidate roots. An empty `workspaces` list still makes a root. Root `[patch]` overrides
   are still read from the repository-root `Cargo.toml` only.
 - **`--root <subdir>`** scans one repository-relative directory of the pinned commit as if it were
   the workspace root. Commit SHA, tree, evidence paths and source links stay those of the whole

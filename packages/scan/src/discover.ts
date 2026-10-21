@@ -57,6 +57,12 @@ export interface SourceUnit {
    * scan's base); absent for the repository-root workspace.
    */
   cargoWorkspace?: string;
+  /**
+   * CLA-605: the JS workspace root (repository-relative; `""` = the scan root's) whose
+   * globs claimed this member. Set only when the scan has a nested JS workspace root, and
+   * never on a standalone (own-lockfile) package, which belongs to no workspace.
+   */
+  jsWorkspaceRoot?: string;
 }
 
 /**
@@ -148,6 +154,13 @@ export interface Discovery {
   unitByFile: Map<string, string>;
   /** workspace package name -> owning unit dir. */
   unitByPackageName: Map<string, string>;
+  /**
+   * CLA-605: every JS workspace root (the scan root first, then each nested root),
+   * present only when a nested root exists. Two independent roots may reuse a package
+   * name; extraction then resolves a bare import within the importer's own root first
+   * (see `resolveWorkspacePackageImport`).
+   */
+  jsWorkspaceRoots?: string[];
   summary: DiscoverySummary;
   /**
    * Every listed repository file (source or not: assets, JSON, skipped `.js`), so an
@@ -374,6 +387,19 @@ function packageJsonWorkspaceGlobs(sourceRoot: string, dir: string): string[] {
     ? workspaces
     : workspaces && typeof workspaces === "object" ? (workspaces as { packages?: unknown }).packages : undefined;
   return Array.isArray(list) ? list.filter((glob): glob is string => typeof glob === "string") : [];
+}
+
+/**
+ * Whether `dir`'s `package.json` declares a `workspaces` field at all (array form, or
+ * yarn's object form with a `packages` array) — an empty list still makes `dir` a
+ * workspace root that governs the packages below it.
+ */
+function packageJsonDeclaresWorkspaces(sourceRoot: string, dir: string): boolean {
+  const text = readRepositoryFile(sourceRoot, joinDir(dir, "package.json"));
+  if (text === undefined) return false;
+  let workspaces: unknown;
+  try { workspaces = (JSON.parse(text) as { workspaces?: unknown }).workspaces; } catch { return false; }
+  return Array.isArray(workspaces) || Boolean(workspaces && typeof workspaces === "object" && Array.isArray((workspaces as { packages?: unknown }).packages));
 }
 
 /** Workspace member patterns: `include` globs and `!`-negated `exclude` globs. */
@@ -818,7 +844,7 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
     const pnpmDir = dirOfManifest(path, "pnpm-workspace.yaml");
     if (pnpmDir !== undefined && isDiscoverableDir(pnpmDir)) nestedJsRoots.add(pnpmDir);
     const packageDir = dirOfManifest(path, "package.json");
-    if (packageDir !== undefined && isDiscoverableDir(packageDir) && packageJsonWorkspaceGlobs(sourceRoot, packageDir).length > 0) nestedJsRoots.add(packageDir);
+    if (packageDir !== undefined && isDiscoverableDir(packageDir) && packageJsonDeclaresWorkspaces(sourceRoot, packageDir)) nestedJsRoots.add(packageDir);
     const cargoDir = dirOfManifest(path, "Cargo.toml");
     if (cargoDir !== undefined && isDiscoverableDir(cargoDir)) {
       const text = readRepositoryFile(sourceRoot, path);
@@ -837,6 +863,7 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
     return best;
   };
   const memberDirs = new Set<string>();
+  const jsRootByMember = new Map<string, string>();
   const packageDirs: string[] = [];
   for (const path of allFiles) {
     const dir = dirOfManifest(path, "package.json");
@@ -847,7 +874,10 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
     // Deepest workspace root wins: a package below a nested root is judged by that
     // root's globs (relative to it), never by an ancestor's.
     const root = deepestAncestor(dir, jsRoots);
-    if (root !== undefined && isWorkspaceMemberDir(relativeTo(root, dir)!, patternsByRoot.get(root)!)) memberDirs.add(dir);
+    if (root !== undefined && isWorkspaceMemberDir(relativeTo(root, dir)!, patternsByRoot.get(root)!)) {
+      memberDirs.add(dir);
+      jsRootByMember.set(dir, root);
+    }
   }
   // A package in no workspace that carries its own lockfile (aa-router's
   // `typescript/apps/cloudflare-worker`) is a container of its own, not tooling.
@@ -869,6 +899,11 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
   const rustCrateDirs = [...cargoWorkspaceByCrate.keys()].sort(compareText);
   const rustCrateDirSet = new Set(rustCrateDirs);
   const rustCrateOf = (file: string): string | undefined => mostSpecificRoot(file, rustCrateDirs);
+  /** The member's claiming JS root, only when nested JS roots make it meaningful. */
+  const jsRootField = (dir: string): { jsWorkspaceRoot?: string } => {
+    const root = nestedJsRoots.size > 0 ? jsRootByMember.get(dir) : undefined;
+    return root === undefined ? {} : { jsWorkspaceRoot: root };
+  };
 
   const allMembers = [...memberDirs].sort();
   // Fixture/example/playground members are skipped the same way whether npm or Cargo
@@ -943,7 +978,7 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
       .filter(dir => sourceCandidates.some(file => unitByFile.get(file) === dir));
     for (const dir of membersWithSource) {
       const name = readPackageName(sourceRoot, dir);
-      units.push({ kind: "member", dir, name: name ?? dir, evidencePath: dir, ...(name ? { packageName: name } : {}), packageManifest: `${dir}/package.json` });
+      units.push({ kind: "member", dir, name: name ?? dir, evidencePath: dir, ...(name ? { packageName: name } : {}), packageManifest: `${dir}/package.json`, ...jsRootField(dir) });
       if (name) unitByPackageName.set(name, dir);
     }
     if (hasTooling) {
@@ -969,6 +1004,7 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
       ...(packageName ? { packageName } : {}),
       packageManifest: isJsMember ? `${dir}/package.json` : undefined,
       ...(cargoWorkspace ? { cargoWorkspace } : {}),
+      ...(isJsMember ? jsRootField(dir) : {}),
     });
     if (packageName) unitByPackageName.set(packageName, dir);
   }
@@ -980,6 +1016,7 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
     units,
     unitByFile,
     unitByPackageName,
+    ...(nestedJsRoots.size > 0 ? { jsWorkspaceRoots: jsRoots } : {}),
     trackedFiles,
     summary: {
       singlePackage,

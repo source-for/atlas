@@ -178,3 +178,79 @@ test("nested roots: yarn object-form workspaces and a Cargo root package; the de
     assert.equal(discovery.unitByPackageName.get("@js/a"), "js/libs/a");
   });
 });
+
+/** A committed temporary Git repository holding exactly `files`. */
+function withCommittedRepo(files: Record<string, string>, run: (dir: string) => void): void {
+  withStagedRepo(files, dir => {
+    git(dir, ["commit", "-qm", "fixture"]);
+    run(dir);
+  });
+}
+
+/** Container-to-container edges keyed by each container's evidence path, sorted. */
+function edgesByPath(artifacts: ScanArtifacts): string[] {
+  const pathOf = new Map(artifacts.snapshot.entities.filter(entity => entity.kind === "container").map(entity => [entity.id, entity.sourceRefs[0]!.path]));
+  return artifacts.snapshot.relations
+    .filter(relation => pathOf.has(relation.from) && pathOf.has(relation.to))
+    .map(relation => `${pathOf.get(relation.from)} -> ${pathOf.get(relation.to)}`)
+    .sort();
+}
+
+const pkg = (name: string, extra: Record<string, unknown> = {}): string => JSON.stringify({ name, ...extra });
+
+test("independent nested roots reusing a package name: own root first; an outside-workspace importer resolves only a unique name, else no edge plus a limitation", () => {
+  withCommittedRepo({
+    "a/package.json": pkg("a-root", { private: true, workspaces: ["packages/*"] }),
+    "a/packages/core/package.json": pkg("@scope/core"),
+    "a/packages/core/index.ts": "export const core = 'a';\n",
+    "a/packages/core/sub.ts": "export const sub = 'a';\n",
+    "a/packages/unique/package.json": pkg("@scope/unique"),
+    "a/packages/unique/index.ts": "export const unique = 1;\n",
+    "a/packages/app/package.json": pkg("@scope/app-a"),
+    "a/packages/app/main.ts": "import { core } from \"@scope/core\";\nimport { sub } from \"@scope/core/sub\";\nexport const app = core + sub;\n",
+    // Physically under a/, but outside a's `packages/*` and with its own lockfile: in no workspace.
+    "a/apps/worker/package.json": pkg("worker"),
+    "a/apps/worker/package-lock.json": "{}",
+    "a/apps/worker/src/index.ts": "import { core } from \"@scope/core\";\nimport { unique } from \"@scope/unique\";\nexport const w = core + unique;\n",
+    "b/package.json": pkg("b-root", { private: true, workspaces: ["packages/*"] }),
+    "b/packages/core/package.json": pkg("@scope/core"),
+    "b/packages/core/index.ts": "export const core = 'b';\n",
+    "b/packages/app/package.json": pkg("@scope/app-b"),
+    "b/packages/app/main.ts": "import { core } from \"@scope/core\";\nexport const app = core;\n",
+  }, dir => {
+    const artifacts = scanRepository(dir, { analysisMode: "quick" });
+    assert.deepEqual(edgesByPath(artifacts), [
+      "a/apps/worker -> a/packages/unique",
+      "a/packages/app -> a/packages/core",
+      "b/packages/app -> b/packages/core",
+    ]);
+    const appEdge = artifacts.snapshot.relations.find(relation => relation.evidence.some(evidence => evidence.source.path === "a/packages/app/main.ts"))!;
+    assert.deepEqual(appEdge.evidence.map(evidence => evidence.source.startLine), [1, 2], "the scoped subpath import is evidence on the own-root edge");
+    const limitations = artifacts.analysis.limitations ?? [];
+    assert.ok(limitations.includes("Ambiguous workspace package import a/apps/worker/src/index.ts:1: '@scope/core' — @scope/core is defined in a, b"), limitations.join("\n"));
+    assert.equal(limitations.filter(line => line.startsWith("Ambiguous workspace package import")).length, 1);
+    // `--root a` leaves one @scope/core, so the worker's import is unique there.
+    assert.deepEqual(edgesByPath(scanRepository(dir, { analysisMode: "quick", root: "a" })), [
+      "a/apps/worker -> a/packages/core",
+      "a/apps/worker -> a/packages/unique",
+      "a/packages/app -> a/packages/core",
+    ]);
+  });
+});
+
+test("a nested package.json with an empty workspaces list is still a root: an outer `**` glob does not claim its packages", () => {
+  withStagedRepo({
+    "package.json": pkg("outer", { workspaces: ["js/**"] }),
+    "js/package.json": pkg("js-root", { workspaces: [] }),
+    "js/pkg/package.json": pkg("@js/pkg"),
+    "js/pkg/index.ts": "export const p = 1;\n",
+    "js/other/package.json": pkg("@js/other", { workspaces: { packages: [] } }),
+    "js/other/inner/package.json": pkg("@js/inner"),
+    "js/other/inner/index.ts": "export const i = 1;\n",
+  }, dir => {
+    const discovery = discoverRepository(dir);
+    assert.notEqual(discovery.unitByFile.get("js/pkg/index.ts"), "js/pkg");
+    assert.notEqual(discovery.unitByFile.get("js/other/inner/index.ts"), "js/other/inner");
+    assert.deepEqual(discovery.summary.nestedWorkspaceRoots, ["js", "js/other"]);
+  });
+});

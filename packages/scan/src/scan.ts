@@ -32,6 +32,7 @@ import {
   type ClonePair,
   type ExtractInput,
   type UnresolvedRelativeImport,
+  type AmbiguousPackageImport,
   resolveCargoPatches,
 } from "./extract.js";
 import { mergeEnrichment, type EnrichmentReport } from "./enrich.js";
@@ -221,6 +222,8 @@ export interface BuildScanArtifactsParams {
   clonePairs?: readonly ClonePair[];
   /** Unresolved relative imports from the same extract as `baseExtraction`. Recomputed from source when omitted. */
   unresolvedRelativeImports?: readonly UnresolvedRelativeImport[];
+  /** Ambiguous workspace-package imports from the same extract as `baseExtraction` (CLA-605). Recomputed when omitted. */
+  ambiguousPackageImports?: readonly AmbiguousPackageImport[];
   /** Optional lcov.info bytes. Conventional `coverage/lcov.info` is read when omitted. */
   lcovText?: string;
   /**
@@ -243,6 +246,8 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
     ...(params.languageAnalysis ? { languageAnalysis: params.languageAnalysis } : {}),
     ...(params.codeSurface ? { codeSurface: params.codeSurface } : {}),
   };
+  let recollected: ReturnType<typeof collectExtractedArchitecture> | undefined;
+  const recollect = (): ReturnType<typeof collectExtractedArchitecture> => (recollected ??= collectExtractedArchitecture(extractInput));
   const collected = params.baseExtraction
     ? {
       extraction: params.baseExtraction,
@@ -250,8 +255,8 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
         ?? cyclomaticByIdFromEntities(params.baseExtraction.entities, readFile),
       clonePairs: params.clonePairs
         ?? clonePairsFromEntities(params.baseExtraction.entities, readFile),
-      unresolvedRelativeImports: params.unresolvedRelativeImports
-        ?? collectExtractedArchitecture(extractInput).unresolvedRelativeImports,
+      unresolvedRelativeImports: params.unresolvedRelativeImports ?? recollect().unresolvedRelativeImports,
+      ambiguousPackageImports: params.ambiguousPackageImports ?? recollect().ambiguousPackageImports,
     }
     : collectExtractedArchitecture(extractInput);
   const baseExtraction = collected.extraction;
@@ -281,6 +286,7 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
   const scanLimitations = [
     ...discoveryLimitations(discovery.summary),
     ...unresolvedImportLimitations(collected.unresolvedRelativeImports),
+    ...ambiguousPackageImportLimitations(collected.ambiguousPackageImports),
     ...cargoPatchLimitations(discovery, readFile),
   ];
 
@@ -456,6 +462,24 @@ export function unresolvedImportLimitations(imports: readonly UnresolvedRelative
 }
 
 /**
+ * CLA-605: bare imports of a package name that several JS workspace roots own, where
+ * the importer's own root has none (e.g. a standalone package): no relation was
+ * recorded rather than a guessed one. One line each naming the package and candidate
+ * roots, capped like {@link unresolvedImportLimitations}. Empty when none.
+ */
+export function ambiguousPackageImportLimitations(imports: readonly AmbiguousPackageImport[]): string[] {
+  if (imports.length === 0) return [];
+  const shown = imports.slice(0, UNRESOLVED_IMPORTS_SHOWN).map(item =>
+    `Ambiguous workspace package import ${displayText(item.path)}:${item.line}: '${displayText(item.specifier)}' — ${displayText(item.packageName)} is defined in ${item.candidateRoots.map(root => displayText(root)).join(", ")}`);
+  const hidden = imports.length - shown.length;
+  return [
+    `${imports.length} package import(s) name a workspace package defined in more than one workspace root, none of them the importer's; no relation was recorded for them.`,
+    ...shown,
+    ...(hidden > 0 ? [`+${hidden} more ambiguous package import(s) not itemized.`] : []),
+  ];
+}
+
+/**
  * Root `Cargo.toml` `[patch.*]` path overrides that recorded no crate edge, one line
  * each: out-of-repository paths (never followed), paths naming no scanned crate, and
  * patches whose version no scanned crate's normal dependency requirement admits (an
@@ -585,6 +609,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
     let cyclomaticById: ReadonlyMap<string, number> | undefined;
     let clonePairs: readonly ClonePair[] | undefined;
     let unresolvedRelativeImports: readonly UnresolvedRelativeImport[] | undefined;
+    let ambiguousPackageImports: readonly AmbiguousPackageImport[] | undefined;
     let enrichmentDocs = options.enrichmentDocs;
     if ((!enrichmentDocs || enrichmentDocs.size === 0) && options.enrichWithPackets) {
       const collected = collectExtractedArchitecture({
@@ -599,6 +624,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
       cyclomaticById = collected.cyclomaticById;
       clonePairs = collected.clonePairs;
       unresolvedRelativeImports = collected.unresolvedRelativeImports;
+      ambiguousPackageImports = collected.ambiguousPackageImports;
       const sidecar = loadLcovSidecar(readFile, options.lcovText);
       const coverageByCodeId = coverageByCodeIdFromEntities(baseExtraction.entities, sidecar);
       // The live provider must see the same accepted component interpretation
@@ -628,6 +654,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
       ...(cyclomaticById ? { cyclomaticById } : {}),
       ...(clonePairs && clonePairs.length ? { clonePairs } : {}),
       ...(unresolvedRelativeImports ? { unresolvedRelativeImports } : {}),
+      ...(ambiguousPackageImports ? { ambiguousPackageImports } : {}),
       ...(options.lcovText ? { lcovText: options.lcovText } : {}),
     });
     return { source, commitSha: commit.sha, artifacts };
