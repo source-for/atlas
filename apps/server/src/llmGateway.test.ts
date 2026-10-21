@@ -14,7 +14,9 @@ import {
   DEFAULT_MAX_ENRICHMENT_TOKENS,
   DEFAULT_OPENROUTER_BASE_URL,
   DEFAULT_REQUEST_TIMEOUT_MS,
-  describeEnrichmentMode,
+  describeLlmStartup,
+  ignoredGenericLlmEnvNotice,
+  llmProviderArg,
   enrichmentModelId,
   enrichmentProviderLabel,
   hasLlmCredentials,
@@ -65,7 +67,7 @@ test("env maps onto base URL, model id, and gateway key", () => {
   const config = resolveLlmGatewayConfig({
     OKIE_LLM_BASE_URL: " https://example.gateway/v1 ",
     OKIE_LLM_MODEL: " acme/fast ",
-    OKIE_LLM_API_KEY: ` ${FAKE_GATEWAY_KEY} `,
+    OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: ` ${FAKE_GATEWAY_KEY} `,
   });
   assert.equal(config.baseUrl, "https://example.gateway/v1");
   assert.equal(config.modelId, "acme/fast");
@@ -73,25 +75,135 @@ test("env maps onto base URL, model id, and gateway key", () => {
   assert.equal(config.apiKey, FAKE_GATEWAY_KEY);
 });
 
-test("OPENROUTER_* / OPENAI_* aliases map when OKIE_LLM_* is unset", () => {
-  const openrouter = resolveLlmGatewayConfig({
+test("CLA-606: OPENROUTER_* / OPENAI_* / ANTHROPIC_* names are never read, even with a provider chosen", () => {
+  const generic = {
     OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
-    OPENROUTER_MODEL: "anthropic/claude-sonnet-4",
-    OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
-  });
-  assert.equal(openrouter.keySource, "gateway");
-  assert.equal(openrouter.apiKey, FAKE_GATEWAY_KEY);
-  assert.equal(openrouter.modelId, "anthropic/claude-sonnet-4");
-  assert.equal(openrouter.baseUrl, DEFAULT_OPENROUTER_BASE_URL);
-
-  const openai = resolveLlmGatewayConfig({
     OPENAI_API_KEY: FAKE_GATEWAY_KEY,
+    ANTHROPIC_API_KEY: FAKE_ANTHROPIC_KEY,
+    ANTHROPIC_AUTH_TOKEN: FAKE_ANTHROPIC_KEY,
+    OPENROUTER_MODEL: "anthropic/claude-sonnet-4",
     OPENAI_MODEL: "openai/gpt-4o-mini",
-    OPENAI_BASE_URL: "https://api.openai.com/v1",
-  });
-  assert.equal(openai.keySource, "gateway");
-  assert.equal(openai.baseUrl, "https://api.openai.com/v1");
-  assert.equal(openai.modelId, "openai/gpt-4o-mini");
+  };
+  for (const provider of [undefined, "openrouter", "anthropic"]) {
+    const config = resolveLlmGatewayConfig(provider ? { ...generic, OKIE_LLM_PROVIDER: provider } : generic);
+    assert.equal(config.keySource, "none", String(provider));
+    assert.equal("apiKey" in config, false);
+    assert.equal(config.modelId, DEFAULT_GATEWAY_MODEL_ID);
+  }
+  // OPENAI_BASE_URL is ignored too: openai-compatible still needs OKIE_LLM_BASE_URL.
+  assert.throws(() => resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openai-compatible", OPENAI_BASE_URL: "https://api.openai.com/v1", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }), /OKIE_LLM_BASE_URL/);
+  assert.match(ignoredGenericLlmEnvNotice({ ...generic, OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }) ?? "", /^LLM notice: ignoring OPENROUTER_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, OPENROUTER_MODEL, OPENAI_MODEL \(/);
+  assert.doesNotMatch(ignoredGenericLlmEnvNotice(generic) ?? "", new RegExp(`${FAKE_GATEWAY_KEY}|${FAKE_ANTHROPIC_KEY}`));
+  assert.equal(ignoredGenericLlmEnvNotice({ OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY, OPENAI_API_KEY: " " }), undefined);
+});
+
+test("CLA-606 review: ANTHROPIC_CUSTOM_HEADERS is named in the ignored-variables notice", () => {
+  assert.match(ignoredGenericLlmEnvNotice({ ANTHROPIC_CUSTOM_HEADERS: "x-api-key: okie-test-header-fake" }) ?? "", /ignoring ANTHROPIC_CUSTOM_HEADERS \(/);
+  assert.doesNotMatch(ignoredGenericLlmEnvNotice({ ANTHROPIC_CUSTOM_HEADERS: "x-api-key: okie-test-header-fake" }) ?? "", /okie-test-header-fake/);
+});
+
+test("CLA-606 review 2: ANTHROPIC_LOG and ANTHROPIC_PROFILE are named in the ignored-variables notice", () => {
+  assert.match(ignoredGenericLlmEnvNotice({ ANTHROPIC_LOG: "debug", ANTHROPIC_PROFILE: "work" }) ?? "", /ignoring ANTHROPIC_LOG, ANTHROPIC_PROFILE \(/);
+});
+
+test("CLA-606 review 3: anthropic refuses an OpenRouter / OpenAI-compatible-shaped base URL, never echoing it", () => {
+  const key = { OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY };
+  assert.throws(() => resolveLlmGatewayConfig(key, { baseUrl: "https://openrouter.ai/api/v1" }), /--llm-provider anthropic|OKIE_LLM_PROVIDER=anthropic/);
+  for (const baseUrl of ["https://openrouter.ai/api/v1", "https://openrouter.ai", "https://llm.example.test/v1", "https://llm.example.test/v1/chat/completions", TOKENIZED_GATEWAY_URL]) {
+    assert.throws(() => resolveLlmGatewayConfig({ ...key, OKIE_LLM_BASE_URL: baseUrl }), (error: Error) => {
+      assert.match(error.message, /openrouter or openai-compatible/);
+      for (const secret of [FAKE_URL_USERINFO, FAKE_URL_QUERY, "https://"]) assert.ok(!error.message.includes(secret), secret);
+      return true;
+    }, baseUrl);
+  }
+  // A real Messages root (or a proxy root) is still accepted.
+  assert.equal(resolveLlmGatewayConfig({ ...key, OKIE_LLM_BASE_URL: "https://proxy.example.test" }).baseUrl, "https://proxy.example.test");
+  assert.equal(resolveLlmGatewayConfig(key, { baseUrl: "https://api.anthropic.com/" }).keySource, "anthropic");
+});
+
+test("CLA-606 review 3: an unknown provider value is echoed only when it looks like a name", () => {
+  assert.throws(() => resolveLlmGatewayConfig({}, {}, "open-router"), /unknown LLM provider "open-router"/);
+  const keyShaped = "sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab";
+  for (const value of [keyShaped, "okie_test_value_1234", " spaced value "]) {
+    assert.throws(() => resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: value }), (error: Error) => {
+      assert.match(error.message, new RegExp(`unknown LLM provider \\(value hidden; ${value.trim().length} chars\\)`));
+      assert.ok(!error.message.includes(value.trim().slice(0, 6)), "no part of the value");
+      return true;
+    }, value);
+  }
+});
+
+test("CLA-606 review 3: off reasons and errors name where the provider came from", () => {
+  assert.match(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter" }).offReason ?? "", /^OKIE_LLM_PROVIDER=openrouter is chosen but OKIE_LLM_API_KEY is unset$/);
+  assert.match(resolveLlmGatewayConfig({}, {}, "openrouter").offReason ?? "", /^--llm-provider openrouter is chosen but OKIE_LLM_API_KEY is unset$/);
+  assert.equal(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "off" }).offReason, "OKIE_LLM_PROVIDER=off");
+  assert.equal(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter" }, {}, "off").offReason, "--llm-provider off");
+  assert.throws(() => resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }), /^Error: OKIE_LLM_PROVIDER=openai-compatible needs OKIE_LLM_BASE_URL/);
+  assert.throws(() => resolveLlmGatewayConfig({ OKIE_LLM_BASE_URL: "https://elsewhere.test/v1" }, {}, "openrouter"), /^Error: --llm-provider openrouter always sends to openrouter\.ai/);
+});
+
+test("CLA-606 review: the anthropic startup line and label show the real destination host", () => {
+  const custom = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_BASE_URL: "https://custom-gateway.example.test", OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY, OKIE_LLM_MODEL: "claude-x" });
+  assert.equal(enrichmentProviderLabel(custom), "custom-gateway.example.test");
+  assert.match(describeLlmStartup(custom, { serverMode: "default" }), /^LLM enrichment: on → custom-gateway\.example\.test \(model claude-x\)/);
+  // A tokenized Anthropic-root URL (a /v1 one is refused for anthropic; see review 3).
+  const tokenizedRoot = `https://okietest:${FAKE_URL_USERINFO}@example.invalid/?api_key=${FAKE_URL_QUERY}`;
+  const tokenized = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_BASE_URL: tokenizedRoot, OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY });
+  const line = describeLlmStartup(tokenized, { serverMode: "default" });
+  assert.match(line, /^LLM enrichment: on → example\.invalid /);
+  for (const secret of [FAKE_URL_USERINFO, FAKE_URL_QUERY, FAKE_ANTHROPIC_KEY, "https://"]) assert.ok(!line.includes(secret), secret);
+  const standard = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY });
+  assert.match(describeLlmStartup(standard, { serverMode: "default" }), /^LLM enrichment: on → api\.anthropic\.com /);
+});
+
+test("CLA-606: provider values, CLI precedence, and off reasons", () => {
+  assert.equal(llmProviderArg(["--llm-provider", "openrouter"]), "openrouter");
+  assert.equal(llmProviderArg(["--llm-provider=anthropic", "--dotenv"]), "anthropic");
+  assert.equal(llmProviderArg(["--dotenv"]), undefined);
+  // The CLI value beats OKIE_LLM_PROVIDER.
+  assert.equal(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }, {}, "off").keySource, "none");
+  assert.throws(() => resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter" }, {}, ""), /unknown LLM provider \(empty\) from --llm-provider/);
+  assert.equal(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "OpenRouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }).provider, "openrouter");
+
+  assert.match(resolveLlmGatewayConfig({}).offReason ?? "", /no --llm-provider/);
+  assert.match(resolveLlmGatewayConfig({ OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }).offReason ?? "", /no provider is chosen; pass --llm-provider/);
+  assert.match(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "off", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }).offReason ?? "", /^OKIE_LLM_PROVIDER=off$/);
+  assert.match(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter" }).offReason ?? "", /openrouter is chosen but OKIE_LLM_API_KEY is unset/);
+  for (const env of [{}, { OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }, { OKIE_LLM_PROVIDER: "openrouter" }]) {
+    assert.doesNotMatch(resolveLlmGatewayConfig(env).offReason ?? "", new RegExp(FAKE_GATEWAY_KEY));
+  }
+
+  // openrouter is pinned to openrouter.ai: an override elsewhere (env or okie.local.json) fails loudly; the same URL is fine.
+  assert.throws(() => resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }, { baseUrl: "https://elsewhere.test/v1" }), /openai-compatible/);
+  assert.equal(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_BASE_URL: "https://openrouter.ai/api/v1/", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }).baseUrl, DEFAULT_OPENROUTER_BASE_URL);
+  assert.throws(() => resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }), /needs OKIE_LLM_BASE_URL/);
+});
+
+test("CLA-606: the anthropic provider reads OKIE_LLM_API_KEY, never builds a gateway client", () => {
+  const config = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY, ANTHROPIC_BASE_URL: "https://sniffed.test" });
+  assert.equal(config.keySource, "anthropic");
+  assert.equal(config.apiKey, FAKE_ANTHROPIC_KEY);
+  assert.equal(config.baseUrl, "https://api.anthropic.com");
+  assert.equal(createLlmGatewayClient(config), undefined, "Anthropic keys must not be sent to the OpenAI-compatible gateway");
+  assert.equal(enrichmentProviderLabel(config), "api.anthropic.com");
+  assert.equal(resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_BASE_URL: "https://proxy.test", OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY }).baseUrl, "https://proxy.test");
+});
+
+test("CLA-606: one startup line per state, host only, never the key", () => {
+  const on = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY, OKIE_LLM_MODEL: "acme/fast" });
+  assert.equal(describeLlmStartup(on, { serverMode: "default", scanEnrich: "auto" }), "LLM enrichment: on → openrouter.ai (model acme/fast); scan enrichment, operator enrichment and Ask");
+  assert.equal(describeLlmStartup(on, { serverMode: "public-readonly" }), "LLM enrichment: on → openrouter.ai (model acme/fast); Ask only; no scan enrichment in public-readonly");
+  assert.match(describeLlmStartup(on, { serverMode: "default", scanEnrich: "off" }), /^LLM enrichment: on → openrouter\.ai .*scan enrichment off \(OKIE_SCAN_ENRICH=0\)/);
+  assert.equal(describeLlmStartup(resolveLlmGatewayConfig({}), { serverMode: "default" }), "LLM enrichment: off (no --llm-provider / OKIE_LLM_PROVIDER)");
+  const anthropic = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "anthropic", OKIE_LLM_API_KEY: FAKE_ANTHROPIC_KEY, OKIE_LLM_MODEL: "claude-x" });
+  assert.match(describeLlmStartup(anthropic, { serverMode: "default" }), /^LLM enrichment: on → api\.anthropic\.com \(model claude-x\); scan enrichment only; Ask and operator enrichment need/);
+  assert.match(describeLlmStartup(anthropic, { serverMode: "public-readonly" }), /^LLM enrichment: off \(anthropic serves scan enrichment only/);
+  const compatible = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_BASE_URL: TOKENIZED_GATEWAY_URL, OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY });
+  const line = describeLlmStartup(compatible, { serverMode: "default" });
+  assert.match(line, /^LLM enrichment: on → example\.invalid /);
+  for (const secret of [FAKE_GATEWAY_KEY, FAKE_ANTHROPIC_KEY, FAKE_URL_USERINFO, FAKE_URL_QUERY, "https://"]) {
+    for (const text of [line, describeLlmStartup(on, { serverMode: "default" }), describeLlmStartup(anthropic, { serverMode: "default" })]) assert.ok(!text.includes(secret), secret);
+  }
 });
 
 test("local config overlay wins for base URL and model id; keys stay env-only", () => {
@@ -99,7 +211,7 @@ test("local config overlay wins for base URL and model id; keys stay env-only", 
     {
       OKIE_LLM_BASE_URL: "https://from-env/v1",
       OKIE_LLM_MODEL: "env/model",
-      OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
+      OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
     },
     { baseUrl: "https://from-local/v1", modelId: "local/model" },
   );
@@ -109,17 +221,9 @@ test("local config overlay wins for base URL and model id; keys stay env-only", 
   assert.equal(config.keySource, "gateway");
 });
 
-test("ANTHROPIC_* remains a fallback when no gateway key is set", () => {
-  const config = resolveLlmGatewayConfig({ ANTHROPIC_API_KEY: FAKE_ANTHROPIC_KEY });
-  assert.equal(config.keySource, "anthropic-fallback");
-  assert.equal(config.apiKey, FAKE_ANTHROPIC_KEY);
-  assert.equal(config.baseUrl, DEFAULT_OPENROUTER_BASE_URL);
-  assert.equal(createLlmGatewayClient(config), undefined, "Anthropic keys must not be sent to the OpenAI-compatible gateway");
-});
-
 test("gateway key wins over ANTHROPIC_* so Anthropic is not the only provider path", () => {
   const config = resolveLlmGatewayConfig({
-    OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
+    OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
     ANTHROPIC_API_KEY: FAKE_ANTHROPIC_KEY,
   });
   assert.equal(config.keySource, "gateway");
@@ -164,7 +268,7 @@ test("local config file maps baseUrl/modelId and ignores a misplaced apiKey", ()
 });
 
 test("public view, inspect, and JSON never contain the key", () => {
-  const config = resolveLlmGatewayConfig({ OPENROUTER_API_KEY: FAKE_GATEWAY_KEY });
+  const config = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY });
   const client = createLlmGatewayClient(config);
   assert.ok(client);
 
@@ -173,7 +277,7 @@ test("public view, inspect, and JSON never contain the key", () => {
   const clientJson = JSON.stringify(client);
     const inspectedClient = inspect(client, { showHidden: true });
     const inspectedConfig = inspect(config, { showHidden: true });
-  const described = describeEnrichmentMode("auto", config);
+  const described = describeLlmStartup(config, { serverMode: "default" });
 
   for (const blob of [viewJson, configJson, clientJson, inspectedClient, inspectedConfig, described]) {
     assert.doesNotMatch(blob, new RegExp(FAKE_GATEWAY_KEY));
@@ -187,9 +291,9 @@ test("public view, inspect, and JSON never contain the key", () => {
 
 test("chatCompletions posts to the OpenAI-compatible path and redacts the key on errors", async () => {
   const config = resolveLlmGatewayConfig({
-    OPENAI_BASE_URL: "https://example.gateway/v1",
-    OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
-    OPENROUTER_MODEL: "acme/fast",
+    OKIE_LLM_BASE_URL: "https://example.gateway/v1",
+    OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
+    OKIE_LLM_MODEL: "acme/fast",
   });
   const calls: Array<{ url: string; authorization: string | null; body: unknown }> = [];
   const client = createLlmGatewayClient(config, {
@@ -226,9 +330,9 @@ test("chatCompletions posts to the OpenAI-compatible path and redacts the key on
 
 test("chatCompletions scrubs a planted token out of the outbound JSON body", async () => {
   const config = resolveLlmGatewayConfig({
-    OPENAI_BASE_URL: "https://example.gateway/v1",
-    OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
-    OPENROUTER_MODEL: "acme/fast",
+    OKIE_LLM_BASE_URL: "https://example.gateway/v1",
+    OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
+    OKIE_LLM_MODEL: "acme/fast",
   });
   const bodies: string[] = [];
   const client = createLlmGatewayClient(config, {
@@ -253,9 +357,9 @@ test("chatCompletions scrubs a planted token out of the outbound JSON body", asy
 
 test("chatCompletions always sends the configured model id, even if body.model is set", async () => {
   const config = resolveLlmGatewayConfig({
-    OPENAI_BASE_URL: "https://example.gateway/v1",
-    OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
-    OPENROUTER_MODEL: "operator/chosen",
+    OKIE_LLM_BASE_URL: "https://example.gateway/v1",
+    OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
+    OKIE_LLM_MODEL: "operator/chosen",
   });
   let posted: unknown;
   const client = createLlmGatewayClient(config, {
@@ -271,20 +375,20 @@ test("chatCompletions always sends the configured model id, even if body.model i
 
 test("present-but-empty model id does not fall back to the documented default", () => {
   const fromEnv = resolveLlmGatewayConfig({
-    OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
-    OPENROUTER_MODEL: "  ",
+    OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
+    OKIE_LLM_MODEL: "  ",
   });
   assert.equal(fromEnv.modelId, "");
   assert.equal(isUsableModelId(fromEnv.modelId), false);
 
   const fromLocal = resolveLlmGatewayConfig(
-    { OPENROUTER_API_KEY: FAKE_GATEWAY_KEY },
+    { OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY },
     { modelId: "" },
   );
   assert.equal(fromLocal.modelId, "");
   assert.throws(() => requireUsableModelId(fromLocal.modelId), /empty model id/);
 
-  const unset = resolveLlmGatewayConfig({ OPENROUTER_API_KEY: FAKE_GATEWAY_KEY });
+  const unset = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY });
   assert.equal(unset.modelId, DEFAULT_GATEWAY_MODEL_ID);
   assert.equal(isUsableModelId(unset.modelId), true);
 });
@@ -296,9 +400,9 @@ test("empty modelId in local config file is preserved as empty, not dropped", ()
     writeFileSync(path, JSON.stringify({ modelId: "   " }));
     const local = readLlmGatewayLocalConfigFile(path);
     assert.equal(local.modelId, "");
-    const config = resolveLlmGatewayConfig({ OPENROUTER_API_KEY: FAKE_GATEWAY_KEY }, local);
+    const config = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY }, local);
     assert.equal(config.modelId, "");
-    assert.match(describeEnrichmentMode("auto", config), /empty model id/);
+    assert.match(describeLlmStartup(config, { serverMode: "default" }), /empty model id/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -318,13 +422,13 @@ test("redactGatewayText applies the existing GitHub token scrub and the operator
   assert.match(redacted, /\[redacted-llm-key\]/);
 });
 
-test("describeEnrichmentMode never includes the key", () => {
+test("describeLlmStartup never includes the key", () => {
   const none = resolveLlmGatewayConfig({});
-  assert.match(describeEnrichmentMode("auto", none), /no key; enrichment skipped/);
-  assert.doesNotMatch(describeEnrichmentMode("off", none), /openrouter\.ai/);
+  assert.match(describeLlmStartup(none, { serverMode: "default" }), /^LLM enrichment: off \(/);
+  assert.doesNotMatch(describeLlmStartup(none, { serverMode: "default", scanEnrich: "off" }), /openrouter\.ai/);
 
-  const keyed = resolveLlmGatewayConfig({ OPENROUTER_API_KEY: FAKE_GATEWAY_KEY });
-  const line = describeEnrichmentMode("auto", keyed);
+  const keyed = resolveLlmGatewayConfig({ OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY });
+  const line = describeLlmStartup(keyed, { serverMode: "default" });
   assert.doesNotMatch(line, new RegExp(FAKE_GATEWAY_KEY));
   assert.match(line, /openrouter\.ai/);
   assert.match(line, /model xiaomi\/mimo-v2\.6-pro/);
@@ -332,12 +436,12 @@ test("describeEnrichmentMode never includes the key", () => {
   assert.doesNotMatch(line, /https:\/\//);
 });
 
-test("describeEnrichmentMode and public views strip tokenized gateway URLs", () => {
+test("describeLlmStartup and public views strip tokenized gateway URLs", () => {
   const config = resolveLlmGatewayConfig({
-    OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
+    OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
     OKIE_LLM_BASE_URL: TOKENIZED_GATEWAY_URL,
   });
-  const line = describeEnrichmentMode("auto", config);
+  const line = describeLlmStartup(config, { serverMode: "default" });
   assert.match(line, /example\.invalid/);
   assert.doesNotMatch(line, new RegExp(FAKE_URL_USERINFO));
   assert.doesNotMatch(line, new RegExp(FAKE_URL_QUERY));
@@ -388,8 +492,8 @@ test("redactTokenizedUrls does not stop at an apostrophe inside userinfo", () =>
 
 test("inspect and public views redact a model id that equals the API key", () => {
   const config = resolveLlmGatewayConfig({
-    OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
-    OPENROUTER_MODEL: FAKE_GATEWAY_KEY,
+    OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
+    OKIE_LLM_MODEL: FAKE_GATEWAY_KEY,
   });
   const view = JSON.stringify(publicLlmGatewayView(config));
   const inspected = inspect(config, { showHidden: true });
@@ -404,29 +508,27 @@ test("inspect and public views redact a model id that equals the API key", () =>
 
 test("enrichmentModelId omits a model field that is the API key or a tokenized URL", () => {
   const keyed = resolveLlmGatewayConfig({
-    OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
-    OPENROUTER_MODEL: FAKE_GATEWAY_KEY,
+    OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
+    OKIE_LLM_MODEL: FAKE_GATEWAY_KEY,
   });
   assert.equal(enrichmentModelId(keyed), undefined);
-  const described = describeEnrichmentMode("auto", keyed);
+  const described = describeLlmStartup(keyed, { serverMode: "default" });
   assert.match(described, /model \[redacted\]/);
   assert.doesNotMatch(described, new RegExp(FAKE_GATEWAY_KEY));
 
   const tokenized = resolveLlmGatewayConfig({
-    OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
-    OPENROUTER_MODEL: TOKENIZED_GATEWAY_URL,
+    OKIE_LLM_PROVIDER: "openrouter", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
+    OKIE_LLM_MODEL: TOKENIZED_GATEWAY_URL,
   });
   assert.equal(enrichmentModelId(tokenized), undefined);
-  assert.doesNotMatch(describeEnrichmentMode("auto", tokenized), new RegExp(FAKE_URL_USERINFO));
+  assert.doesNotMatch(describeLlmStartup(tokenized, { serverMode: "default" }), new RegExp(FAKE_URL_USERINFO));
 });
 
-test("force without a gateway key names anthropic, not the unused OpenRouter host", () => {
+test("CLA-606: without a key nothing is described as on, whatever OKIE_SCAN_ENRICH says", () => {
   const none = resolveLlmGatewayConfig({});
-  assert.equal(enrichmentProviderLabel(none, "force"), "anthropic");
-  assert.equal(enrichmentProviderLabel(none, "auto"), "openrouter.ai");
-  const forced = describeEnrichmentMode("force", none);
-  assert.match(forced, /provider anthropic model /);
-  assert.doesNotMatch(forced, /openrouter\.ai/);
+  for (const scanEnrich of ["auto", "force", "off"] as const) {
+    assert.match(describeLlmStartup(none, { serverMode: "default", scanEnrich }), /^LLM enrichment: off \(/);
+  }
 });
 
 test("resolveEnrichmentBudget reads env and keeps documented defaults", () => {
@@ -524,9 +626,9 @@ test("chatCompletions times out against a hung fake HTTP gateway", async () => {
   });
   try {
     const client = createLlmGatewayClient(resolveLlmGatewayConfig({
-      OPENAI_BASE_URL: fake.baseUrl,
-      OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
-      OPENROUTER_MODEL: "acme/fast",
+      OKIE_LLM_BASE_URL: fake.baseUrl,
+      OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
+      OKIE_LLM_MODEL: "acme/fast",
     }), { timeoutMs: 80 });
     assert.ok(client);
     await assert.rejects(
@@ -564,9 +666,9 @@ test("chatCompletions parses usage from a fake HTTP gateway and redacts 429 bodi
   });
   try {
     const client = createLlmGatewayClient(resolveLlmGatewayConfig({
-      OPENAI_BASE_URL: fake.baseUrl,
-      OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
-      OPENROUTER_MODEL: "acme/fast",
+      OKIE_LLM_BASE_URL: fake.baseUrl,
+      OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
+      OKIE_LLM_MODEL: "acme/fast",
     }), { timeoutMs: 2_000 });
     assert.ok(client);
     const ok = await client.chatCompletions({ messages: [] });
@@ -594,8 +696,8 @@ test("chatCompletions maps 5xx from a fake HTTP gateway", async () => {
   });
   try {
     const client = createLlmGatewayClient(resolveLlmGatewayConfig({
-      OPENAI_BASE_URL: fake.baseUrl,
-      OPENROUTER_API_KEY: FAKE_GATEWAY_KEY,
+      OKIE_LLM_BASE_URL: fake.baseUrl,
+      OKIE_LLM_PROVIDER: "openai-compatible", OKIE_LLM_API_KEY: FAKE_GATEWAY_KEY,
     }), { timeoutMs: 2_000 });
     assert.ok(client);
     await assert.rejects(

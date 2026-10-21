@@ -86,7 +86,6 @@ if (!existsSync(join(dist, "publishAtlas.js"))) {
   process.exit(1);
 }
 const publish = await import(pathToFileURL(join(dist, "publishAtlas.js")).href);
-const { loadOperatorDotenv } = await import(pathToFileURL(join(dist, "llmGateway.js")).href);
 
 if ([args["backfill-names"], args["backfill-meta"], args["backfill-cards"]].filter(Boolean).length > 1) usage("pass one of --backfill-names, --backfill-meta and --backfill-cards (--backfill-meta also fills missing names)");
 const backfill = args["backfill-meta"] ? "--backfill-meta" : args["backfill-names"] ? "--backfill-names" : args["backfill-cards"] ? "--backfill-cards" : undefined;
@@ -105,8 +104,9 @@ const rollback = args["set-latest"];
 if (rollback !== undefined && args["license-override"] !== undefined) usage("--license-override does not apply to --set-latest");
 if (rollback !== undefined && args["dry-run"] && !args.out) usage("--set-latest --dry-run needs --out <dir> (the directory store to roll back)");
 
-// Same .env the server loads; values stay in process.env and are only handed to the wrangler child by name.
-loadOperatorDotenv(repoRoot);
+// The repo-root .env (publish/wrangler credentials), loaded unconditionally as before CLA-606, which made the server's
+// load opt-in. Never overrides variables already set; values stay in process.env and reach the wrangler child by name only.
+if (existsSync(join(repoRoot, ".env"))) process.loadEnvFile(join(repoRoot, ".env"));
 
 const scanRoot = resolve(args["scan-root"] ?? process.env.OKIE_SCAN_ROOT ?? join(repoRoot, "fixtures/scan"));
 const log = line => process.stdout.write(`[publish:atlas] ${line}\n`);

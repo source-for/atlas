@@ -1,11 +1,12 @@
 import { scanCodeRevealWindow, type ScanCodeRevealWindow } from './semantic/scanCodeRevealWindow';
 import { scenePreparationFailureMessage, ScanWorkerUnavailableError } from './renderer/scanFixture';
-import { completeFixturePreparation } from './renderer/fixturePreparation';
+import { useInspectorSourceExcerpt } from './inspector/inspectorSourceExcerpt';
 import { inspectorEntityForFraming, resolveInspectorEntity, retainResidentInspectorEntity } from './inspector/inspectorEntity';
 import { navigationEntityReference } from './navigation/entityReferences';
 import { prepareLevelSceneWithDeadline, clearLevelScenePreparation, levelScenePreparationPending, runLevelSceneGesture, LEVEL_SCENE_PREPARING } from './renderer/levelScenePreparation';
 import { compileCurrentGeneration } from './renderer/compileCurrentGeneration';
 import { navigateResidentInspectorChild } from './inspector/residentInspectorChild';
+import { createPendingInspectorChildSlot, inspectorLevelLabel, pendingInspectorChild, PendingInspectorChildView, visiblePendingInspectorChild, type PendingInspectorChild } from './inspector/pendingInspectorChild';
 import { prepareReverseScene } from './renderer/reverseScenePreparation';
 import { initialSceneBandsMatch } from './renderer/initialSceneCompatibility';
 import { recordAtlasFirstFrame } from './performance/loadTimings';
@@ -107,10 +108,10 @@ import { resolveExplanationExcerpt } from './explanation/explanationSource';
 import { getDraftPreviewContext } from './operator/previewContext';
 import { OperatorMenuLink } from './operator/OperatorMenuLink';
 import { buildArchitectureBrief, clampInspectorWidth, defaultInspectorWidth, initialInspectorWidth, inspectorAcceptedSummary, inspectorCanShowSource, inspectorDiagramCount, inspectorEntityLead, inspectorCyclomatic, inspectorCoverage, inspectorDuplicates, inspectorUntestedBehaviours, formatCoverageRange, inspectorNotationDetailsView, inspectorNotationScope, inspectorPathOwners, inspectorSecondaryCopy, inspectorTabForEntity, inspectorWidthRange, inspectorWidthStorageKey, presentInspectorNotationDiagnostics, selectedEntityReframePlan, selectedRelationPresentation, type InspectorTab } from './inspector/inspectorSupport';
-import { inspectorHistoryRestorePlan, popInspectorHistory, pushInspectorHistory, type InspectorHistorySubject } from './inspector/inspectorHistory';
+import { inspectorHistoryRestorePlan, popInspectorHistory, pushInspectorHistory, withdrawInspectorHistory, type InspectorHistorySubject } from './inspector/inspectorHistory';
 import { createInspectorNeighborhoodRequest, inspectorNavigationIdentity } from './inspector/inspectorNeighborhoodRequest';
 import { readDemoQuery } from './renderer/query';
-import { loadStressFixture } from './renderer/stressFixture';
+import { loadStressFixture, stressPlaceholder } from './renderer/stressFixture';
 import type { AtlasRenderer, AtlasScene, Camera, PickResult, RendererDiagnostics, RendererLodState, SceneEntity, SceneRelation, SceneSourceExcerpt } from './renderer/types';
 import type { ProjectionOverride } from './renderer/types';
 import {
@@ -309,9 +310,9 @@ function summarizeIds(ids: readonly string[], maximumInlineIds = 48) {
 function stressLoadingScene(): AtlasScene {
   return {
     id: 'stress-loading',
-    title: 'Loading stress fixture…',
-    subtitle: 'deterministic · lazy renderer payload',
-    entities: [{ id: 'stress-loading', name: 'Preparing 5k scene', kind: 'system', responsibility: 'Loading the generated renderer stress fixture', x: -110, y: -65, width: 220, height: 130, confidence: 1 }],
+    title: stressPlaceholder.title,
+    subtitle: stressPlaceholder.subtitle,
+    entities: [{ id: 'stress-loading', name: stressPlaceholder.name, kind: 'system', responsibility: stressPlaceholder.responsibility, x: -110, y: -65, width: 220, height: 130, confidence: 1 }],
     relations: [],
     regions: [],
   };
@@ -1736,6 +1737,8 @@ export function App() {
   const foregroundPreparationKindRef = useRef<'story-step' | 'history-restore' | 'navigation'>('navigation');
   const storyPreparationStatusRef = useRef(createForegroundRequestStatus(pending => { storyPreparationActiveRef.current = pending; setStoryPreparing(pending); }));
   const foregroundRequestStatusRef = useRef(createForegroundRequestStatus(setForegroundViewLoading));
+  const [pendingChild, setPendingChild] = useState<PendingInspectorChild>();
+  const pendingChildSlotRef = useRef(createPendingInspectorChildSlot(setPendingChild));
   const foregroundSceneRequestRef = useRef(createForegroundSceneRequestOwner());
   const foregroundFixtureRef = useRef(scanFixture);
   foregroundFixtureRef.current = scanFixture;
@@ -1977,7 +1980,7 @@ export function App() {
       },
     })) return;
     if (scanFixture && !importedAtlasRef.current) {
-      await runForegroundScanNavigation('Preparing inspector child', async request => {
+      const navigation = runForegroundScanNavigation('Preparing inspector child', async request => {
         request.generationFence.allowChanges();
         await request.fixture.ensureNeighborhood(id, request.signal);
         requireForegroundSceneRequest(request);
@@ -2001,6 +2004,22 @@ export function App() {
           navigateInspectorHierarchy(entity, compiled);
         };
       });
+      // Shown after the navigation began (beginning cancels any older pending child).
+      // Code children keep their own path (scene code entities carry kind 'component', detail 'code').
+      // The header is the entity the loaded inspector will resolve, so its kicker matches byte for byte.
+      const canonicalChild = activeSnapshot.entities.find(entity => entity.id === id);
+      const child = canonicalChild || sceneRef.current.entities.some(entity => entity.id === id)
+        ? resolveInspectorEntity(activeSnapshot, sceneRef.current.entities, id, publishedInspector) : undefined;
+      const pending = child && child.detail !== 'code' && canonicalChild?.kind !== 'code' ? pendingChildSlotRef.current.show(pendingInspectorChild(child, selected.id)) : undefined;
+      if (pending && child) setLiveMessage(`Loading ${child.name}…`);
+      // Back during the wait returns to the selection the view replaced. The commit records the
+      // same subject (deduplicated); a failed open leaves the reader here, so it drops the entry.
+      const fromSubject = pending ? currentInspectorHistorySubject() : undefined;
+      let beforePush: InspectorHistorySubject[] = [];
+      if (fromSubject) setInspectorHistory(current => { beforePush = current; return pushInspectorHistory(current, fromSubject); });
+      try { await navigation; } finally {
+        if (pending?.settle() && fromSubject) setInspectorHistory(current => withdrawInspectorHistory(current, beforePush, fromSubject));
+      }
       return;
     }
 
@@ -2051,29 +2070,28 @@ export function App() {
   const selectedHasChildren = scanFixture
     ? scanEntityHasChildren(activeSnapshot, selected.id)
     : selectedChildren.length > 0;
-  const selectedLevel = Math.max(0, semanticDetails.indexOf(selected.detail ?? 'context'));
-  const selectedLevelLabel = `${levels[selectedLevel]?.short ?? 'L1'} · ${(selected.kindLabel ?? selected.detail ?? selected.kind).toUpperCase()}`;
+  const selectedLevelLabel = inspectorLevelLabel(selected);
   const detailsWidthRange = inspectorWidthRange(window.innerWidth);
   useEffect(() => {
     if (inspectorSelectionRef.current === selected.id) return;
     inspectorSelectionRef.current = selected.id;
   }, [selected.detail, selected.id, selected.sourceExcerpts, selected.sourceRefs]);
-  useEffect(() => {
-    if (getActivePortableAtlas() || !scanFixture || inspectorTab !== 'source' || selected.detail !== 'code') return;
-    if (selected.sourceExcerpts?.length) return;
-    if (foregroundViewLoading) return;
-    let cancelled = false;
-    void completeFixturePreparation(scanFixture.ensureExcerpts(selected.id), () => !cancelled, excerpts => {
-      if (cancelled || !excerpts?.length) return;
-      setScene(current => ({
-        ...current,
-        entities: current.entities.map(entity => entity.id === selected.id
-          ? { ...entity, sourceExcerpts: excerpts.map(excerpt => ({ ...excerpt, lines: [...excerpt.lines] })) }
-          : entity),
-      }));
-    }, () => setLiveMessage('Source excerpts could not be loaded. Try again.'));
-    return () => { cancelled = true; };
-  }, [inspectorTab, selected.detail, selected.id, selected.sourceExcerpts, foregroundViewLoading]);
+  const visiblePendingChild = visiblePendingInspectorChild(pendingChild, selected.id, Boolean(pickedRelationId));
+  const selectedExcerptStatus = useInspectorSourceExcerpt({
+    entityId: selected.id,
+    wanted: !getActivePortableAtlas() && Boolean(scanFixture) && inspectorTab === 'source' && selected.detail === 'code',
+    hasExcerpts: Boolean(selected.sourceExcerpts?.length),
+    blocked: foregroundViewLoading,
+    // Called from the effect of the same render, so selected.id is the hook's entityId.
+    load: () => scanFixture!.ensureExcerpts(selected.id),
+    attach: (id, excerpts) => setScene(current => ({
+      ...current,
+      entities: current.entities.map(entity => entity.id === id
+        ? { ...entity, sourceExcerpts: excerpts.map(excerpt => ({ ...excerpt, lines: [...excerpt.lines] })) }
+        : entity),
+    })),
+    onFailure: () => setLiveMessage('Source excerpts could not be loaded. Try again.'),
+  });
   useEffect(() => () => inspectorCameraFlightControllerRef.current?.dispose(), []);
   useEffect(() => {
     setDetailsWidth(current => clampInspectorWidth(current, window.innerWidth));
@@ -4224,6 +4242,7 @@ export function App() {
     if (storyPreparationActiveRef.current) pauseStoryWithoutHistory(renderedCameraRef.current);
     foregroundSceneRequestRef.current.cancel();
     foregroundRequestStatusRef.current.cancel();
+    pendingChildSlotRef.current.clear();
     storyPreparationStatusRef.current.cancel();
     levelCompileAbortRef.current?.abort();
     if (pending) {
@@ -5101,6 +5120,15 @@ export function App() {
       }, navigationDefaults),
       historyMode: plan.mode,
     });
+  }
+
+  /** The pending view's Cancel: the inspector's Back, then focus returns to the row that opened it. */
+  function cancelPendingInspectorChild(childId: string) {
+    navigateInspectorBack();
+    window.setTimeout(() => {
+      const row = Array.from(detailsPanelRef.current?.querySelectorAll<HTMLElement>('.inspector-link-list button[data-inspector-entity-id]') ?? []).find(button => button.dataset.inspectorEntityId === childId);
+      row?.focus({ preventScroll: true });
+    }, 0);
   }
 
   function navigateInspectorBack() {
@@ -7285,7 +7313,7 @@ export function App() {
             <button aria-controls="details-panel" aria-selected={!(inspectorAskActive && askPanelVisible) && inspectorTab === 'details'} id="details-tab" onClick={() => selectInspectorTab('details')} ref={detailsTabRef} role="tab" tabIndex={!(inspectorAskActive && askPanelVisible) && inspectorTab === 'details' ? 0 : -1} type="button">Details</button>
             {!portableAtlas && !askHidden ? <button aria-controls="ask-panel" aria-selected={inspectorAskActive && askPanelVisible} id="ask-tab" onClick={openDockedAsk} ref={askTabRef} role="tab" tabIndex={inspectorAskActive && askPanelVisible ? 0 : -1} type="button">Ask</button> : null}
           </div>
-          {inspectorAskActive && askPanelVisible ? <div aria-labelledby="ask-tab" className="inspector-ask-panel" id="ask-panel" role="tabpanel">{askPanelView}</div> : inspectorTab === 'overview' ? <div aria-labelledby="overview-tab" className="details-scroll overview-panel" data-testid="inspector-overview" id="overview-panel" role="tabpanel">
+          {inspectorAskActive && askPanelVisible ? <div aria-labelledby="ask-tab" className="inspector-ask-panel" id="ask-panel" role="tabpanel">{askPanelView}</div> : visiblePendingChild ? <div aria-labelledby={`${inspectorTab}-tab`} className="details-scroll" id={`${inspectorTab}-panel`} role="tabpanel"><PendingInspectorChildView onCancel={() => cancelPendingInspectorChild(visiblePendingChild.id)} pending={visiblePendingChild}/></div> : inspectorTab === 'overview' ? <div aria-labelledby="overview-tab" className="details-scroll overview-panel" data-testid="inspector-overview" id="overview-panel" role="tabpanel">
             <ContextualOverviewView key={contextualOverview?.entity.id} overview={contextualOverview} explanation={draftPreviewContext?.explanationsByEntityId.get(selected.id)} entityName={id => activeSnapshot.entities.find(entity => entity.id === id)?.name} onOpenEntity={id => { void openInspectorChild(id).catch(() => setLiveMessage('Unable to load this part of the map. Please try again.')); }}
               onOpenEvidence={evidence => { void resolveExplanationExcerpt(activeSnapshot, evidence, id => scanFixture?.ensureExcerpts(id)).then(found => { if (!found) { setLiveMessage(`A source excerpt for ${evidence.path ?? 'this evidence'} isn't available here.`); return; } openPathExcerptRef.current(found.entityId, found.excerpt); if (!found.exact) setLiveMessage(`Line ${evidence.startLine} of ${evidence.path} wasn't captured; showing the nearest captured excerpt.`); }).catch(() => setLiveMessage('Unable to open this source evidence. Please try again.')); }}/>
             {contextualOverview?.entity.id === scene.rootEntityId ? <ArchitectureBriefView
@@ -7299,7 +7327,7 @@ export function App() {
             /> : null}
           </div> : inspectorTab === 'source' ? <div aria-labelledby="source-tab" className="source-panel" id="source-panel" role="tabpanel">
             {sourceAvailable && <button className="primary-detail-action" onClick={openSourceTab} type="button">Open source in a tab</button>}
-            {contextualOverview?.implementationFiles ? <ComponentImplementation key={selected.id} files={contextualOverview.implementationFiles} onOpenEntity={id => { void openInspectorChild(id).catch(() => setLiveMessage('Unable to load this part of the map. Please try again.')); }}/> : sourceAvailable ? <SourceViewer sourceContext={scanFixture && askAtlasIdentity ? { scanBasePath: `/scan${(() => { const route = parseAppRoute(window.location.pathname); const slug = route.kind === 'repo' ? route.slug : query.scanRepo; return slug ? `/${encodeURIComponent(slug)}` : ''; })()}`, owner: askAtlasIdentity.owner, repo: askAtlasIdentity.repo, ...(scanFixture.publication ? { publicationVersion: scanFixture.publication.versionId } : {}) } : undefined} excerpt={selectedExcerpt} localWorkspace={localWorkspace} onFeedback={setLiveMessage}/> : <section className="detail-section" data-testid="source-unavailable"><div className="section-title"><h3>Source unavailable</h3></div><p className="detail-muted">No source evidence was captured for {selected.name}. Select another tab to inspect the available architecture evidence.</p></section>}
+            {contextualOverview?.implementationFiles ? <ComponentImplementation key={selected.id} files={contextualOverview.implementationFiles} onOpenEntity={id => { void openInspectorChild(id).catch(() => setLiveMessage('Unable to load this part of the map. Please try again.')); }}/> : sourceAvailable ? <SourceViewer sourceContext={scanFixture && askAtlasIdentity ? { scanBasePath: `/scan${(() => { const route = parseAppRoute(window.location.pathname); const slug = route.kind === 'repo' ? route.slug : query.scanRepo; return slug ? `/${encodeURIComponent(slug)}` : ''; })()}`, owner: askAtlasIdentity.owner, repo: askAtlasIdentity.repo, ...(scanFixture.publication ? { publicationVersion: scanFixture.publication.versionId } : {}) } : undefined} excerpt={selectedExcerpt} {...(selectedExcerptStatus === 'loading' || selectedExcerptStatus === 'failed' ? { pending: selectedExcerptStatus } : {})} localWorkspace={localWorkspace} onFeedback={setLiveMessage}/> : <section className="detail-section" data-testid="source-unavailable"><div className="section-title"><h3>Source unavailable</h3></div><p className="detail-muted">No source evidence was captured for {selected.name}. Select another tab to inspect the available architecture evidence.</p></section>}
           </div> : <div aria-labelledby="details-tab" className="details-scroll" id="details-panel" role="tabpanel">
             {pathView && pathDraft && pathAvailable && <PathExplorer canLoadExcerpts={Boolean(scanFixture)} onClear={() => updatePathDraft(undefined, 'push')} onOpenEvidence={(hop, evidence) => { void openPathEvidence(hop, evidence); }} onShowHop={showPathHopOnMap} onSwap={() => updatePathDraft(swapPathEndpoints(pathDraft), 'push')} onToggleContainment={() => updatePathDraft(setPathOption(pathDraft, { containment: !pathDraft.containment }), 'replace')} onToggleKind={kind => updatePathDraft(togglePathKind(pathDraft, kind), 'replace')} onToggleScope={() => updatePathDraft(setPathOption(pathDraft, { scope: pathDraft.scope === 'subtree' ? 'exact' : 'subtree' }), 'replace')} view={pathView}/>}
             {pickedCanonicalRelation && <section className="detail-section" data-testid="canonical-relation-evidence"><div className="section-title"><h3>{pickedCanonicalRelation.label ?? pickedCanonicalRelation.kind}</h3><span>{pickedCanonicalRelation.evidence.length}</span></div><p>{activeSnapshot.entities.find(entity => entity.id === pickedCanonicalRelation.from)?.name ?? pickedCanonicalRelation.from} → {activeSnapshot.entities.find(entity => entity.id === pickedCanonicalRelation.to)?.name ?? pickedCanonicalRelation.to}</p>{detailListVisible('relation-evidence', pickedCanonicalRelation.evidence).map((item, index) => <p key={index}>{item.reason}<br/>{item.source.path} · line {item.source.startLine} · {item.source.commitSha}</p>)}{pickedCanonicalRelation.evidence.length > 5 && <button aria-expanded={expandedDetailLists.has('relation-evidence')} onClick={() => toggleDetailList('relation-evidence')}>{expandedDetailLists.has('relation-evidence') ? 'Show fewer' : `Show all ${pickedCanonicalRelation.evidence.length}`}</button>}{!pickedRelationPresentation && <p>The endpoints are outside this map neighborhood. Captured evidence remains available above.</p>}</section>}

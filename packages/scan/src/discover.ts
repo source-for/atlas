@@ -1,7 +1,7 @@
 import { scanExecFileSync } from "./scan-env.js";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import ts from "typescript";
+import { ts } from "./analyzers.js";
 import { resolveRelativeImport } from "./extract.js";
 import { slug } from "./ids.js";
 import {

@@ -880,6 +880,29 @@ a.icon-button { text-decoration: none; }
 .source-unavailable { margin: 18px; padding: 16px; border: 1px dashed var(--atlas-line); border-radius: 9px; color: var(--atlas-muted); }
 .source-unavailable strong { font-size: 11px; }
 .source-unavailable p { margin: 6px 0 0; color: var(--atlas-quiet); font-size: 11px; line-height: 1.5; }
+/* CLA-581 inspector skeletons: placeholders in the final content's boxes. The pulse is the boot shell's and stops under reduced motion. */
+.inspector-skeleton-line { display: block; height: 10px; border-radius: 5px; background: rgba(255,255,255,.06); animation: boot-pulse 1.8s ease-in-out infinite; }
+.source-meta .inspector-skeleton-line { height: 9px; }
+.source-meta .inspector-skeleton-line + .inspector-skeleton-line { margin-top: 6px; }
+.source-viewer-loading .source-line { align-items: center; }
+.source-viewer-loading .source-line .inspector-skeleton-line { height: 8px; }
+.source-loading-status { margin: 0; padding: 9px 12px; border-top: 1px solid var(--atlas-line); background: #101516; color: var(--atlas-quiet); font-size: 10px; }
+.inspector-skeleton-block { display: block; height: 35px; border-radius: 9px; background: rgba(255,255,255,.04); animation: boot-pulse 1.8s ease-in-out infinite; }
+.inspector-pending-lead { display: grid; gap: 9px; margin-top: 14px; }
+.inspector-pending-section-title { width: 38%; height: 9px; }
+.inspector-pending-row { height: 52px; margin-top: 8px; }
+/* Open-inside: the target's header shows at once; the placeholders appear only if the map takes over 120 ms. */
+/* Focus lands on the pending heading only because the activated row was replaced; no ring for that hand-off. */
+#inspector-pending-title:focus { outline: none; }
+.inspector-pending .entity-hero { position: relative; }
+.inspector-pending-cancel { position: absolute; top: -3px; right: 0; padding: 3px 8px; border: 1px solid var(--atlas-line); border-radius: 999px; background: transparent; color: var(--atlas-quiet); font-family: var(--atlas-font-mono); font-size: 10px; letter-spacing: .05em; cursor: pointer; }
+.inspector-pending-cancel:hover, .inspector-pending-cancel:focus-visible { color: var(--atlas-muted); border-color: var(--atlas-muted); }
+.inspector-pending-body { animation: inspector-pending-reveal 1ms 120ms both; }
+@keyframes inspector-pending-reveal { from { visibility: hidden; } to { visibility: visible; } }
+@media (prefers-reduced-motion: reduce) {
+  .inspector-skeleton-line,
+  .inspector-skeleton-block { animation: none; }
+}
 
 .import-mermaid-backdrop {
   position: fixed;

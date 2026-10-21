@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { parsePortableAtlas } from '@okie/architecture';
-import { packagePortableViewer } from './package-viewer.js';
+import { packagePortableViewer, runPackageViewer } from './package-viewer.js';
 
 test('static export keeps its bundled artifact and assets usable under a host subpath', () => {
   const root = mkdtempSync(join(tmpdir(), 'okie-package-viewer-'));
@@ -30,4 +30,9 @@ test('static export keeps its bundled artifact and assets usable under a host su
     writeFileSync(join(viewer, 'index.html'), '<html><head><script src="/assets/app.js"></script></head></html>');
     assert.throws(() => packagePortableViewer(bundleFile, viewer, join(root, 'absolute-assets')), /relative assets/);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('export without --viewer needs the packaged CLI and says how to build a viewer from source', () => {
+  assert.throws(() => runPackageViewer(['--bundle', 'atlas.okie.json', '--out', 'site']), /No bundled viewer: this CLI is running from source\. .*pnpm build:portable.*--viewer apps\/web\/dist-portable/);
+  assert.throws(() => runPackageViewer(['--bundle', 'atlas.okie.json']), /Export requires --bundle and --out\. Usage: sourcefor-atlas export/);
 });

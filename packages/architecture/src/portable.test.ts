@@ -161,3 +161,12 @@ test('portable scan-level limitations (CLA-299) round-trip and must be strings',
     assert.throws(() => parsePortableAtlas(JSON.stringify(bad)), /limitations list/);
   }
 });
+
+test('portable generator (CLA-604) is optional, round-trips at version 1, and must name a tool and version', () => {
+  const bundle = { ...fixture(), generator: { name: '@sourcefor/atlas', version: '0.1.0' } };
+  assert.deepEqual(parsePortableAtlas(serializePortableAtlas(bundle)), bundle);
+  assert.equal(parsePortableAtlas(serializePortableAtlas(bundle)).version, 1);
+  for (const generator of [null, 'sourcefor-atlas', { name: '@sourcefor/atlas' }, { name: '', version: '0.1.0' }, { name: '@sourcefor/atlas', version: 1 }, { name: 'x'.repeat(201), version: '0.1.0' }]) {
+    assert.throws(() => parsePortableAtlas(JSON.stringify({ ...fixture(), generator })), /generator/, JSON.stringify(generator));
+  }
+});

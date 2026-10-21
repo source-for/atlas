@@ -31,10 +31,14 @@ export interface PortableMembershipReport {
   diagnostics: PortableMembershipDiagnostic[];
 }
 
+export interface PortableAtlasGenerator { name: string; version: string }
+
 /** A portable semantic artifact. Renderer scenes are compiled by the matching viewer. */
 export interface PortableAtlas {
   format: 'okie-atlas';
   version: 1;
+  /** Optional: the tool and version that wrote this artifact. Informational; never gates parsing. */
+  generator?: PortableAtlasGenerator;
   repository: { commitSha: string; treeHash: string; url?: string };
   snapshot: ArchitectureSnapshot;
   view: ArchitectureView;
@@ -70,6 +74,8 @@ export function parsePortableAtlas(text: string): PortableAtlas {
   let raw: unknown;
   try { raw = JSON.parse(text); } catch { throw new Error('Scan bundle is not valid JSON.'); }
   if (!record(raw) || raw.format !== 'okie-atlas' || raw.version !== 1) throw new Error('Unsupported scan bundle. Expected okie-atlas version 1.');
+  if (raw.generator !== undefined && (!record(raw.generator)
+    || ![raw.generator.name, raw.generator.version].every(value => typeof value === 'string' && value.length > 0 && value.length <= 200))) throw new Error('Scan bundle generator must name a tool and version.');
   if (!record(raw.repository) || typeof raw.repository.commitSha !== 'string' || !commitPattern.test(raw.repository.commitSha)
     || typeof raw.repository.treeHash !== 'string' || !commitPattern.test(raw.repository.treeHash)) throw new Error('Scan bundle must identify a committed source revision and tree.');
   if (raw.repository.url !== undefined) {

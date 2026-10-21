@@ -1,6 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve, relative } from 'node:path';
 import { parsePortableAtlas, serializePortableAtlas } from '@okie/architecture';
+import { bundledViewerDirectory, product } from './product.js';
 
 /** Assemble a fresh static directory; never overwrite a user's existing site. */
 export function packagePortableViewer(bundleFile: string, viewerDirectory: string, outputDirectory: string): void {
@@ -24,14 +25,17 @@ export function packagePortableViewer(bundleFile: string, viewerDirectory: strin
 }
 
 export function runPackageViewer(args: readonly string[]): void {
+  const usage = `Usage: ${product.bin} export --bundle atlas.okie.json --out <empty-site-dir> [--viewer <built-viewer-dir>]`;
   const values = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
     const key = args[i]; const value = args[i + 1];
-    if (!key || !['--bundle', '--viewer', '--out'].includes(key) || !value || value.startsWith('--')) throw new Error('Usage: okie-scan export --bundle atlas.okie.json --viewer <built-viewer-dir> --out <empty-site-dir>');
+    if (!key || !['--bundle', '--viewer', '--out'].includes(key) || !value || value.startsWith('--')) throw new Error(usage);
     values.set(key, value);
   }
-  const bundle = values.get('--bundle'), viewer = values.get('--viewer'), out = values.get('--out');
-  if (!bundle || !viewer || !out) throw new Error('Export requires --bundle, --viewer and --out.');
+  const bundle = values.get('--bundle'), out = values.get('--out');
+  if (!bundle || !out) throw new Error(`Export requires --bundle and --out. ${usage}`);
+  const viewer = values.get('--viewer') ?? bundledViewerDirectory();
+  if (!viewer) throw new Error('No bundled viewer: this CLI is running from source. Build one with pnpm build:portable and pass --viewer apps/web/dist-portable.');
   packagePortableViewer(bundle, viewer, out);
   process.stdout.write(`Static atlas written to ${resolve(out)}. Serve this folder with a static HTTP server.\n`);
 }
