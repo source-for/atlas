@@ -17,6 +17,18 @@ export function compareEntityId(left: string, right: string): number {
   return compareText(left, right);
 }
 
+/**
+ * Story display text (a title, a narration) within an authoring limit. Repository
+ * names (a package name may be 214 characters) and entity names (up to 160) are
+ * interpolated into prose, so text over `limit` code points is cut, never splitting a
+ * surrogate pair, and ends with an ellipsis instead of failing story validation.
+ * Display only: ids, entity names and source refs are never derived from it.
+ */
+export function boundedDisplayText(text: string, limit: number): string {
+  const codePoints = Array.from(text);
+  return codePoints.length <= limit ? text : `${codePoints.slice(0, limit - 1).join("")}…`;
+}
+
 export function citedRefs(entity: ArchitectureEntity | undefined): SourceRef[] | undefined {
   if (!entity?.sourceRefs.length) return undefined;
   return entity.sourceRefs.slice(0, MAX_SOURCE_REFS).map(ref => ({ ...ref }));
@@ -68,11 +80,11 @@ export function authoredStoryStep(params: {
   const sourceRefs = citedRefs(params.evidenceFrom ?? params.focus[0]);
   return {
     id: params.id,
-    title: params.title,
+    title: boundedDisplayText(params.title, STORY_AUTHORING_LIMITS.maxStepTitleCharacters),
     focusEntityIds,
     ...(traceRelationIds ? { traceRelationIds } : {}),
     reveal: params.reveal,
-    narration: params.narration,
+    narration: boundedDisplayText(params.narration, STORY_AUTHORING_LIMITS.maxNarrationCharacters),
     ...(sourceRefs ? { sourceRefs } : {}),
     durationMs: params.durationMs,
   };

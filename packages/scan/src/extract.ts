@@ -10,6 +10,7 @@ import {
   type ArchitectureExtractionRelation,
   type ArchitectureExtractionSourceRef,
   type ArchitectureSnapshot,
+  SOURCE_EXCERPT_LIMITS,
   compareText,
 } from "@okie/architecture";
 import type { Discovery } from "./discover.js";
@@ -1364,6 +1365,12 @@ export interface ExtractedArchitecture {
    * evidence of a gap (rendered into `analysis.limitations`), never extraction input.
    */
   unresolvedRelativeImports: readonly UnresolvedRelativeImport[];
+  /**
+   * Declarations whose identifier exceeds the evidence gate's symbol limit (see
+   * {@link OversizedSymbol}). Sorted by path, line; scan-time evidence of a gap
+   * (rendered into `analysis.limitations`), never extraction input.
+   */
+  oversizedSymbols: readonly OversizedSymbol[];
   /** Entity id → McCabe cyclomatic. Only function-like `kind: "code"` entities. */
   cyclomaticById: ReadonlyMap<string, number>;
   /** Clone pairs between existing function-like code ids. Never invents ids. */
@@ -1427,6 +1434,20 @@ export interface UnresolvedRelativeImport {
   /** 1-based line of the import. */
   line: number;
   specifier: string;
+}
+
+/**
+ * A declaration whose identifier is longer than `SOURCE_EXCERPT_LIMITS.maxSymbolCharacters`
+ * code points (CLA-594). Its evidence anchors (sourceRefs and moduleExport) omit `symbol`
+ * and keep the exact path and line range: a truncated symbol would name something that
+ * is not in the source, so the scan reports the gap instead.
+ */
+export interface OversizedSymbol {
+  path: string;
+  /** 1-based first line of the declaration. */
+  line: number;
+  /** Identifier length in code points. */
+  characters: number;
 }
 
 /** 0 for observed entities; 1 for those that must never take an id an observed one desires. */
@@ -1567,6 +1588,14 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
 
   const unitDirs = discovery.units.map(unit => unit.dir);
   const unresolvedRelativeImports: UnresolvedRelativeImport[] = [];
+  const oversizedSymbols: OversizedSymbol[] = [];
+  /** The anchor symbol, or undefined (recorded as a gap) when it exceeds the evidence limit. */
+  const anchorSymbol = (path: string, line: number, name: string): string | undefined => {
+    const characters = Array.from(name).length;
+    if (characters <= SOURCE_EXCERPT_LIMITS.maxSymbolCharacters) return name;
+    oversizedSymbols.push({ path, line, characters });
+    return undefined;
+  };
   const trackedFiles: ReadonlySet<string> = discovery.trackedFiles ?? fileSet;
 
   for (const file of discovery.sourceFiles) {
@@ -1589,13 +1618,14 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
         ? outlined.filter(item => item.exported)
         : outlined;
       items.forEach((item, index) => {
+        const symbol = anchorSymbol(file, item.startLine, item.name);
         entityDescriptors.push({
           naturalKey: `${file}#${index}`,
           desiredId: typedId("code", file, item.name),
           kind: "code",
           name: item.name,
           parentKey: file,
-          sourceRefs: [{ path: file, symbol: item.name, startLine: item.startLine, endLine: item.endLine }],
+          sourceRefs: [{ path: file, ...(symbol !== undefined ? { symbol } : {}), startLine: item.startLine, endLine: item.endLine }],
         });
       });
       continue;
@@ -1611,8 +1641,11 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
       const cyclomaticComplexity = cyclomaticForDeclaration(declaration);
       const cloneFingerprint = cloneFingerprintForDeclaration(declaration);
       // A recovered `anonymous <kind>` name is not in the source, so its evidence carries
-      // no symbol (path + lines only). `default` is: the keyword is on the line.
-      const symbol = declaration.recovered && declaration.name !== "default" ? undefined : declaration.name;
+      // no symbol (path + lines only). `default` is: the keyword is on the line. An
+      // identifier over the symbol limit is likewise anchored on path + lines (CLA-594).
+      const symbol = declaration.recovered && declaration.name !== "default"
+        ? undefined
+        : anchorSymbol(file, declaration.startLine, declaration.name);
       const anchor = { path: file, ...(symbol !== undefined ? { symbol } : {}), startLine: declaration.startLine, endLine: declaration.endLine };
       entityDescriptors.push({
         naturalKey,
@@ -1949,6 +1982,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
     cyclomaticById,
     clonePairs: clonePairsFromBuckets(cloneBuckets),
     unresolvedRelativeImports: canonicalUnresolvedImports(unresolvedRelativeImports),
+    oversizedSymbols: oversizedSymbols.sort((left, right) => compareText(left.path, right.path) || left.line - right.line),
   };
 }
 

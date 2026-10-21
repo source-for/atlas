@@ -4,6 +4,7 @@ import {
   ASPECT_PRESET_TARGET,
   buildC4ProjectionBundle,
   sanitizeControlCharacters,
+  SOURCE_EXCERPT_LIMITS,
   validateSnapshot,
   validateStory,
   validateView,
@@ -32,7 +33,9 @@ import {
   type ClonePair,
   type ExtractInput,
   type UnresolvedRelativeImport,
+  type OversizedSymbol,
   resolveCargoPatches,
+  entityDisplayName,
 } from "./extract.js";
 import { mergeEnrichment, type EnrichmentReport } from "./enrich.js";
 import { applyComponentMembership, type ComponentMapInput, type ComponentMapReport } from './component-map.js';
@@ -215,6 +218,8 @@ export interface BuildScanArtifactsParams {
   clonePairs?: readonly ClonePair[];
   /** Unresolved relative imports from the same extract as `baseExtraction`. Recomputed from source when omitted. */
   unresolvedRelativeImports?: readonly UnresolvedRelativeImport[];
+  /** Oversized declaration identifiers from the same extract as `baseExtraction`. Recomputed from source when omitted. */
+  oversizedSymbols?: readonly OversizedSymbol[];
   /** Optional lcov.info bytes. Conventional `coverage/lcov.info` is read when omitted. */
   lcovText?: string;
   /**
@@ -237,6 +242,9 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
     ...(params.languageAnalysis ? { languageAnalysis: params.languageAnalysis } : {}),
     ...(params.codeSurface ? { codeSurface: params.codeSurface } : {}),
   };
+  // Scan-time gaps not carried by a supplied base extraction are recomputed once.
+  let recollected: ReturnType<typeof collectExtractedArchitecture> | undefined;
+  const recollect = () => (recollected ??= collectExtractedArchitecture(extractInput));
   const collected = params.baseExtraction
     ? {
       extraction: params.baseExtraction,
@@ -244,8 +252,8 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
         ?? cyclomaticByIdFromEntities(params.baseExtraction.entities, readFile),
       clonePairs: params.clonePairs
         ?? clonePairsFromEntities(params.baseExtraction.entities, readFile),
-      unresolvedRelativeImports: params.unresolvedRelativeImports
-        ?? collectExtractedArchitecture(extractInput).unresolvedRelativeImports,
+      unresolvedRelativeImports: params.unresolvedRelativeImports ?? recollect().unresolvedRelativeImports,
+      oversizedSymbols: params.oversizedSymbols ?? recollect().oversizedSymbols,
     }
     : collectExtractedArchitecture(extractInput);
   const baseExtraction = collected.extraction;
@@ -275,6 +283,7 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
   const scanLimitations = [
     ...discoveryLimitations(discovery.summary),
     ...unresolvedImportLimitations(collected.unresolvedRelativeImports),
+    ...oversizedSymbolLimitations(collected.oversizedSymbols),
     ...cargoPatchLimitations(discovery, readFile),
   ];
 
@@ -308,18 +317,22 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
   const system = snapshot.entities.find(entity => entity.kind === "softwareSystem");
   if (!system) throw new Error("Scanned snapshot has no softwareSystem root");
 
-  const view = buildView(snapshot, system.id, repositorySlug, systemName);
+  // Presentation-only bound (CLA-594): a package name may be 214 characters, so the
+  // view name and story prose use the same bounded name as the softwareSystem entity.
+  // Ids and the system slug above still derive from the full systemName.
+  const displayName = entityDisplayName("softwareSystem", systemName);
+  const view = buildView(snapshot, system.id, repositorySlug, displayName);
   const viewIssues = validateView(snapshot, view);
   if (viewIssues.length) {
     throw new Error(`Scanned view failed validation:\n${viewIssues.map(i => `${i.path}: ${i.message}`).join("\n")}`);
   }
 
-  const story = buildOverviewStory(snapshot, view, system.id, repositorySlug, systemName);
+  const story = buildOverviewStory(snapshot, view, system.id, repositorySlug, displayName);
   const storyIssues = validateStory(snapshot, view, story);
   if (storyIssues.length) {
     throw new Error(`Scanned story failed validation:\n${storyIssues.map(i => `${i.path}: ${i.message}`).join("\n")}`);
   }
-  const flowStories = buildUserFlowStories(snapshot, view, repositorySlug, systemName);
+  const flowStories = buildUserFlowStories(snapshot, view, repositorySlug, displayName);
   for (const flow of flowStories) {
     const flowIssues = validateStory(snapshot, view, flow);
     if (flowIssues.length) {
@@ -408,6 +421,29 @@ export function discoveryLimitations(summary: DiscoverySummary): string[] {
     ...skippedEntryLimitations(summary.skippedEntries),
     ...(summary.excludedTestDataFiles ? [`${summary.excludedTestDataFiles} source file(s) under testdata/ directories were excluded as test data.`] : []),
     ...skippedJsLimitations(summary),
+  ];
+}
+
+/** At most this many oversized declaration identifiers are itemized; the rest are counted. */
+export const OVERSIZED_SYMBOLS_SHOWN = 20;
+
+/**
+ * Declarations whose identifier is over the evidence symbol limit (CLA-594): their
+ * sourceRefs and moduleExport evidence keep the exact path and lines but carry no
+ * symbol, so symbol-anchored lookups cannot find them. One header line, then one
+ * `path:line (N characters)` line each, capped like unresolved imports. Empty when
+ * every identifier fits, so ordinary repositories keep a byte-identical bundle.
+ */
+export function oversizedSymbolLimitations(symbols: readonly OversizedSymbol[]): string[] {
+  if (symbols.length === 0) return [];
+  const limit = SOURCE_EXCERPT_LIMITS.maxSymbolCharacters;
+  const shown = symbols.slice(0, OVERSIZED_SYMBOLS_SHOWN).map(item =>
+    `Oversized identifier ${displayText(item.path)}:${item.line} (${item.characters} characters)`);
+  const hidden = symbols.length - shown.length;
+  return [
+    `${symbols.length} declaration identifier(s) exceed the ${limit}-character evidence symbol limit; their evidence carries path and lines but no symbol.`,
+    ...shown,
+    ...(hidden > 0 ? [`+${hidden} more oversized identifier(s) not itemized.`] : []),
   ];
 }
 
@@ -575,6 +611,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
     let cyclomaticById: ReadonlyMap<string, number> | undefined;
     let clonePairs: readonly ClonePair[] | undefined;
     let unresolvedRelativeImports: readonly UnresolvedRelativeImport[] | undefined;
+    let oversizedSymbols: readonly OversizedSymbol[] | undefined;
     let enrichmentDocs = options.enrichmentDocs;
     if ((!enrichmentDocs || enrichmentDocs.size === 0) && options.enrichWithPackets) {
       const collected = collectExtractedArchitecture({
@@ -589,6 +626,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
       cyclomaticById = collected.cyclomaticById;
       clonePairs = collected.clonePairs;
       unresolvedRelativeImports = collected.unresolvedRelativeImports;
+      oversizedSymbols = collected.oversizedSymbols;
       const sidecar = loadLcovSidecar(readFile, options.lcovText);
       const coverageByCodeId = coverageByCodeIdFromEntities(baseExtraction.entities, sidecar);
       // The live provider must see the same accepted component interpretation
@@ -618,6 +656,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
       ...(cyclomaticById ? { cyclomaticById } : {}),
       ...(clonePairs && clonePairs.length ? { clonePairs } : {}),
       ...(unresolvedRelativeImports ? { unresolvedRelativeImports } : {}),
+      ...(oversizedSymbols ? { oversizedSymbols } : {}),
       ...(options.lcovText ? { lcovText: options.lcovText } : {}),
     });
     return { source, commitSha: commit.sha, artifacts };
