@@ -969,7 +969,7 @@ export interface AmbiguousPackageImport {
 export function resolveWorkspacePackageImport(
   specifier: string,
   fromFile: string,
-  discovery: Pick<Discovery, "units" | "unitByFile" | "unitByPackageName" | "jsWorkspaceRoots">,
+  discovery: Pick<Discovery, "units" | "unitByFile" | "unitByPackageName" | "jsWorkspaceRoots" | "trackedFiles">,
 ): { dir: string } | { ambiguous: { packageName: string; candidateRoots: string[] } } | undefined {
   const roots = discovery.jsWorkspaceRoots;
   if (!roots) {
@@ -981,12 +981,23 @@ export function resolveWorkspacePackageImport(
   if (candidates.length === 0) return undefined;
   if (candidates.length === 1) return { dir: candidates[0]!.dir };
   const importer = discovery.units.find(unit => unit.dir === discovery.unitByFile.get(fromFile));
-  // A member belongs to the root that claimed it; a standalone package to none; any
-  // other file (the workspace root package's own scripts) to the deepest root holding it.
-  const importerRoot = importer?.jsWorkspaceRoot ?? (importer?.kind === "member" || importer?.kind === "rust"
-    ? undefined
-    : roots.reduce<string | undefined>((best, root) =>
-      (root === "" || fromFile.startsWith(`${root}/`)) && (best === undefined || root.length > best.length) ? root : best, undefined));
+  // A member belongs to the root that claimed it; a standalone package to none. Any other
+  // file belongs to a root only when that root's directory is its nearest package: the
+  // first ancestor directory that is either a workspace root or has a package.json.
+  // A non-member package (with or without a lockfile) owns its files, so physical
+  // descent under a root never makes them part of that root's workspace.
+  const nearestRoot = (): string | undefined => {
+    const rootSet = new Set(roots);
+    const tracked = discovery.trackedFiles ?? new Set<string>();
+    let dir = fromFile.includes("/") ? fromFile.slice(0, fromFile.lastIndexOf("/")) : "";
+    for (;;) {
+      if (rootSet.has(dir)) return dir;
+      if (tracked.has(dir ? `${dir}/package.json` : "package.json")) return undefined;
+      if (dir === "") return undefined;
+      dir = dir.includes("/") ? dir.slice(0, dir.lastIndexOf("/")) : "";
+    }
+  };
+  const importerRoot = importer?.jsWorkspaceRoot ?? (importer?.kind === "member" || importer?.kind === "rust" ? undefined : nearestRoot());
   if (importerRoot !== undefined) {
     const own = candidates.filter(unit => unit.jsWorkspaceRoot === importerRoot);
     if (own.length === 1) return { dir: own[0]!.dir };

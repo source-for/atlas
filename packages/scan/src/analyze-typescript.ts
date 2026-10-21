@@ -68,7 +68,15 @@ export function relativizeCompilerMessage(text: string, root: string, paths: Com
 }
 
 /** Real project-aware compiler analysis; unresolved dependencies remain explicit limitations. */
-export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly string[], installationRoot?: string, checkoutRoot?: string): LanguageAnalysis {
+/**
+ * CLA-605: decides which workspace package directory (repository-relative) a bare
+ * import from `fromFile` (repository-relative) names: a directory, `null` for an
+ * ambiguous name (left unresolved, so no semantic edge is guessed), or undefined to
+ * fall back to the compiler's normal resolution.
+ */
+export type WorkspacePackageResolver = (specifier: string, fromFile: string) => string | null | undefined;
+
+export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly string[], installationRoot?: string, checkoutRoot?: string, resolveWorkspacePackage?: WorkspacePackageResolver): LanguageAnalysis {
   const root = resolve(sourceRoot);
   const paths: string[] = [];
   const configs: string[] = [];
@@ -139,7 +147,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
       if (directory === root) break;
     }
   }
-  const virtualPath = (path: string): string => {
+  const virtualPath = (path: string, override?: { name: string; directory: string }): string => {
     const normalized = path.split(sep).join("/");
     const marker = normalized.lastIndexOf("/node_modules/");
     let mapped = path;
@@ -147,7 +155,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
       const suffix = normalized.slice(marker + 14);
       const segments = suffix.split("/");
       const name = suffix.startsWith("@") ? segments.slice(0, 2).join("/") : segments[0]!;
-      const directory = packages.get(name);
+      const directory = override?.name === name ? override.directory : packages.get(name);
       if (directory) mapped = resolve(directory, ...segments.slice(name.startsWith("@") ? 2 : 1));
     }
     return sourceForOutput.get(resolve(mapped)) ?? dependencies.path(mapped);
@@ -182,6 +190,28 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
     host.getDirectories = path => ts.sys.getDirectories(virtualPath(path));
     host.getSourceFile = (path, languageVersion, onError, shouldCreateNewSourceFile) =>
       originalGetSourceFile(virtualPath(path), languageVersion, onError, shouldCreateNewSourceFile);
+    if (resolveWorkspacePackage) {
+      // Nested workspace roots may reuse a package name, so the global name -> directory
+      // map above is not enough: resolve each bare workspace import for ITS importer.
+      const overrideHost = (override: { name: string; directory: string }): TS.ModuleResolutionHost => ({
+        readFile: path => originalReadFile(virtualPath(path, override)),
+        fileExists: path => originalFileExists(virtualPath(path, override)),
+        directoryExists: path => originalDirectoryExists?.(virtualPath(path, override))
+          || outputDirectories.has(virtualPath(path, override))
+          || /(?:^|\/)node_modules(?:\/@[^/]+)?$/.test(path.split(sep).join("/")),
+        realpath: path => virtualPath(path, override),
+        getDirectories: path => ts.sys.getDirectories(virtualPath(path, override)),
+      });
+      host.resolveModuleNameLiterals = (literals, containingFile, redirectedReference, options, containingSourceFile) => literals.map(literal => {
+        const mode = ts.getModeForUsageLocation(containingSourceFile, literal, options);
+        const specifier = literal.text;
+        const decision = !specifier.startsWith(".") && inside(containingFile) ? resolveWorkspacePackage(specifier, relativePath(containingFile)) : undefined;
+        if (decision === null) return { resolvedModule: undefined };
+        const name = specifier.startsWith("@") ? specifier.split("/").slice(0, 2).join("/") : specifier.split("/")[0]!;
+        const resolutionHost = decision === undefined ? host : overrideHost({ name, directory: resolve(root, decision) });
+        return ts.resolveModuleName(specifier, containingFile, options, resolutionHost, undefined, redirectedReference, mode);
+      });
+    }
     // Permit source redirects through project references without requiring emitted .d.ts files.
     (host as TS.CompilerHost & { useSourceOfProjectReferenceRedirect?: () => boolean }).useSourceOfProjectReferenceRedirect = () => true;
     const program = ts.createProgram({ rootNames: project.fileNames, options: project.options, host,

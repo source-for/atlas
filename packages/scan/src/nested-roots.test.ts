@@ -207,43 +207,60 @@ function edgesByPath(artifacts: ScanArtifacts): string[] {
 
 const pkg = (name: string, extra: Record<string, unknown> = {}): string => JSON.stringify({ name, ...extra });
 
-test("independent nested roots reusing a package name: own root first; an outside-workspace importer resolves only a unique name, else no edge plus a limitation", () => {
+test("independent nested roots reusing a package name (full mode, every band): own root first; an importer in no workspace resolves only a unique name, else no relation plus a limitation", () => {
+  const core = (label: string): string => `export function calculate(): string {\n  return "${label}";\n}\n`;
   withCommittedRepo({
     "a/package.json": pkg("a-root", { private: true, workspaces: ["packages/*"] }),
-    "a/packages/core/package.json": pkg("@scope/core"),
-    "a/packages/core/index.ts": "export const core = 'a';\n",
-    "a/packages/core/sub.ts": "export const sub = 'a';\n",
-    "a/packages/unique/package.json": pkg("@scope/unique"),
-    "a/packages/unique/index.ts": "export const unique = 1;\n",
+    "a/packages/core/package.json": pkg("@scope/core", { main: "./index.ts" }),
+    "a/packages/core/index.ts": core("a"),
+    "a/packages/core/sub.ts": "export function sub(): string {\n  return \"a\";\n}\n",
+    "a/packages/unique/package.json": pkg("@scope/unique", { main: "./index.ts" }),
+    "a/packages/unique/index.ts": "export function unique(): number {\n  return 1;\n}\n",
     "a/packages/app/package.json": pkg("@scope/app-a"),
-    "a/packages/app/main.ts": "import { core } from \"@scope/core\";\nimport { sub } from \"@scope/core/sub\";\nexport const app = core + sub;\n",
-    // Physically under a/, but outside a's `packages/*` and with its own lockfile: in no workspace.
+    "a/packages/app/main.ts": "import { calculate } from \"@scope/core\";\nimport { sub } from \"@scope/core/sub\";\nexport function app(): string {\n  return calculate() + sub();\n}\n",
+    // The a/ root package's own tooling: its nearest package is the root, so it resolves in a/.
+    "a/scripts/build.ts": "import { calculate } from \"@scope/core\";\nexport function build(): string {\n  return calculate();\n}\n",
+    // Physically under a/, but outside a's `packages/*`: in no workspace, with or without a lockfile.
     "a/apps/worker/package.json": pkg("worker"),
     "a/apps/worker/package-lock.json": "{}",
-    "a/apps/worker/src/index.ts": "import { core } from \"@scope/core\";\nimport { unique } from \"@scope/unique\";\nexport const w = core + unique;\n",
+    "a/apps/worker/src/index.ts": "import { calculate } from \"@scope/core\";\nimport { unique } from \"@scope/unique\";\nexport function work(): string {\n  return calculate() + unique();\n}\n",
+    "a/apps/unlocked/package.json": pkg("unlocked"),
+    "a/apps/unlocked/index.ts": "import { calculate } from \"@scope/core\";\nexport function loose(): string {\n  return calculate();\n}\n",
     "b/package.json": pkg("b-root", { private: true, workspaces: ["packages/*"] }),
-    "b/packages/core/package.json": pkg("@scope/core"),
-    "b/packages/core/index.ts": "export const core = 'b';\n",
+    "b/packages/core/package.json": pkg("@scope/core", { main: "./index.ts" }),
+    "b/packages/core/index.ts": core("b"),
     "b/packages/app/package.json": pkg("@scope/app-b"),
-    "b/packages/app/main.ts": "import { core } from \"@scope/core\";\nexport const app = core;\n",
+    "b/packages/app/main.ts": "import { calculate } from \"@scope/core\";\nexport function app(): string {\n  return calculate();\n}\n",
   }, dir => {
-    const artifacts = scanRepository(dir, { analysisMode: "quick" });
+    const artifacts = scanRepository(dir, { analysisMode: "full" });
     assert.deepEqual(edgesByPath(artifacts), [
       "a/apps/worker -> a/packages/unique",
       "a/packages/app -> a/packages/core",
+      "a/scripts -> a/packages/core",
       "b/packages/app -> b/packages/core",
     ]);
-    const appEdge = artifacts.snapshot.relations.find(relation => relation.evidence.some(evidence => evidence.source.path === "a/packages/app/main.ts"))!;
+    // Every band (container, component, code `uses`/`calls`), keyed by the entities' paths.
+    const pathOf = new Map(artifacts.snapshot.entities.map(entity => [entity.id, entity.sourceRefs[0]?.path ?? ""]));
+    const relations = artifacts.snapshot.relations.map(relation => ({ from: pathOf.get(relation.from)!, to: pathOf.get(relation.to)!, kind: relation.kind }));
+    const between = (from: string, to: string) => relations.filter(relation => relation.from.startsWith(from) && relation.to.startsWith(to));
+    assert.deepEqual(between("a/", "b/"), [], "nothing under a/ points into b/");
+    assert.deepEqual(between("b/", "a/"), [], "nothing under b/ points into a/");
+    for (const ambiguous of ["a/apps/worker", "a/apps/unlocked"]) {
+      assert.deepEqual(between(ambiguous, "a/packages/core"), [], `${ambiguous} gets no relation to either @scope/core`);
+    }
+    assert.ok(between("a/packages/app/main.ts", "a/packages/core/index.ts").some(relation => relation.kind === "calls"), "own-root semantic call edge");
+    assert.ok(between("b/packages/app/main.ts", "b/packages/core/index.ts").some(relation => relation.kind === "calls"));
+    assert.ok(between("a/scripts/build.ts", "a/packages/core/index.ts").some(relation => relation.kind === "calls"), "the root package's own tooling resolves in its root");
+    assert.ok(between("a/apps/worker/src/index.ts", "a/packages/unique/index.ts").some(relation => relation.kind === "calls"), "a unique name still resolves for a standalone package");
+    const appEdge = artifacts.snapshot.relations.find(relation => pathOf.get(relation.from) === "a/packages/app" && pathOf.get(relation.to) === "a/packages/core")!;
     assert.deepEqual(appEdge.evidence.map(evidence => evidence.source.startLine), [1, 2], "the scoped subpath import is evidence on the own-root edge");
-    const limitations = artifacts.analysis.limitations ?? [];
-    assert.ok(limitations.includes("Ambiguous workspace package import a/apps/worker/src/index.ts:1: '@scope/core' — @scope/core is defined in a, b"), limitations.join("\n"));
-    assert.equal(limitations.filter(line => line.startsWith("Ambiguous workspace package import")).length, 1);
-    // `--root a` leaves one @scope/core, so the worker's import is unique there.
-    assert.deepEqual(edgesByPath(scanRepository(dir, { analysisMode: "quick", root: "a" })), [
-      "a/apps/worker -> a/packages/core",
-      "a/apps/worker -> a/packages/unique",
-      "a/packages/app -> a/packages/core",
+    const ambiguity = (artifacts.analysis.limitations ?? []).filter(line => line.startsWith("Ambiguous workspace package import"));
+    assert.deepEqual(ambiguity, [
+      "Ambiguous workspace package import a/apps/unlocked/index.ts:1: '@scope/core' — @scope/core is defined in a, b",
+      "Ambiguous workspace package import a/apps/worker/src/index.ts:1: '@scope/core' — @scope/core is defined in a, b",
     ]);
+    // `--root a` leaves one @scope/core, so the worker's import is unique there.
+    assert.ok(edgesByPath(scanRepository(dir, { analysisMode: "quick", root: "a" })).includes("a/apps/worker -> a/packages/core"));
   });
 });
 

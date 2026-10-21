@@ -34,6 +34,7 @@ import {
   type UnresolvedRelativeImport,
   type AmbiguousPackageImport,
   resolveCargoPatches,
+  resolveWorkspacePackageImport,
 } from "./extract.js";
 import { mergeEnrichment, type EnrichmentReport } from "./enrich.js";
 import { applyComponentMembership, type ComponentMapInput, type ComponentMapReport } from './component-map.js';
@@ -515,7 +516,15 @@ function skippedJsLimitations(summary: DiscoverySummary): string[] {
 /** Runs the local scan pipeline against an already-acquired committed tree. */
 function analyzeLanguages(root: string, discovery: Discovery, mode: ScanOptions['analysisMode'], installationRoot?: string, rustIndexCacheDir?: string, checkoutRoot?: string): LanguageAnalysis | undefined {
   if (mode !== 'full') return undefined;
-  const analyses = [analyzeTypeScript(root, discovery.sourceFiles, installationRoot, checkoutRoot), analyzeRust(root, discovery.sourceFiles, { ...(rustIndexCacheDir ? { indexCacheDir: rustIndexCacheDir } : {}), ...(checkoutRoot ? { checkoutRoot } : {}) })];
+  // CLA-605: with nested JS workspace roots, semantic resolution of bare workspace
+  // imports follows the same per-importer rule as container edges (no global name map).
+  const workspaceResolver = discovery.jsWorkspaceRoots
+    ? (specifier: string, fromFile: string): string | null | undefined => {
+      const resolved = resolveWorkspacePackageImport(specifier, fromFile, discovery);
+      return resolved === undefined ? undefined : "ambiguous" in resolved ? null : resolved.dir;
+    }
+    : undefined;
+  const analyses = [analyzeTypeScript(root, discovery.sourceFiles, installationRoot, checkoutRoot, workspaceResolver), analyzeRust(root, discovery.sourceFiles, { ...(rustIndexCacheDir ? { indexCacheDir: rustIndexCacheDir } : {}), ...(checkoutRoot ? { checkoutRoot } : {}) })];
   return { schemaVersion: 1, definitions: analyses.flatMap(item => item.definitions), references: analyses.flatMap(item => item.references), modules: analyses.flatMap(item => item.modules), externalReferences: analyses.flatMap(item => item.externalReferences ?? []), coverage: analyses.flatMap(item => item.coverage) };
 }
 
