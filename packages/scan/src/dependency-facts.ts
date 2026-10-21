@@ -158,11 +158,14 @@ function parseComparator(text: string): SemverComparator | undefined {
   const match = new RegExp(String.raw`^(\^|~|=|>=|<=|>|<)?\s*v?(\d+)(?:\.(\d+|[*xX]))?(?:\.(\d+|[*xX]))?${SEMVER_PRE}$`).exec(text);
   if (!match) return undefined;
   const wildcard = (part: string | undefined): boolean => part !== undefined && /^[*xX]$/.test(part);
+  // Cargo rejects a number or prerelease after a wildcard (`1.*.3`, `1.2.*-beta`): unparsable.
+  if ((wildcard(match[3]) && match[4] !== undefined && !wildcard(match[4])) || ((wildcard(match[3]) || wildcard(match[4])) && match[5])) return undefined;
   const minor = match[3] === undefined || wildcard(match[3]) ? undefined : Number(match[3]);
   const patch = minor === undefined || match[4] === undefined || wildcard(match[4]) ? undefined : Number(match[4]);
   const pre = match[5] ? match[5].split(".") : [];
-  // `1.*` / `1.2.*` are wildcards (the `semver` crate's Op::Wildcard, matched like `=`).
-  const op = wildcard(match[3]) || wildcard(match[4]) ? "*" : (match[1] ?? "^") as SemverComparator["op"];
+  // `1.*` / `1.2.*` are wildcards (the `semver` crate's Op::Wildcard, matched like `=`), but
+  // only without an explicit operator: `^1.2.*` is `^1.2` and `>=1.*` is `>=1`.
+  const op = (match[1] ?? (wildcard(match[3]) || wildcard(match[4]) ? "*" : "^")) as SemverComparator["op"];
   return { op, major: Number(match[2]), ...(minor !== undefined ? { minor } : {}), ...(patch !== undefined ? { patch } : {}), pre };
 }
 
@@ -229,6 +232,10 @@ function matchesComparator(cmp: SemverComparator, v: SemverVersion): boolean {
 export function cargoRequirementMatches(requirement: string, version: string): boolean | undefined {
   const target = parseSemver(version);
   if (!target) return undefined;
+  // Only characters Cargo's requirement grammar uses, with ASCII space as its only
+  // whitespace: a control character or Unicode whitespace (raw, or decoded from a TOML
+  // escape) is unparsable, never trimmed away. A repertoire gate, not full validation.
+  if (/[^0-9A-Za-z*.,+^~<=> -]/.test(requirement)) return undefined;
   const parts = requirement.split(",").map(part => part.trim());
   if (parts.length === 1 && /^[*xX]?$/.test(parts[0]!)) return target.pre.length === 0; // `*` / empty: any release
   const comparators: SemverComparator[] = [];
@@ -477,16 +484,43 @@ function bracketDepth(text: string): number {
   }
   return depth;
 }
+const TOML_ESCAPES: Readonly<Record<string, string>> = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", '"': '"', "\\": "\\" };
+/**
+ * A dependency requirement as Cargo reads it: a TOML 1.0 basic string (`basic`, raw
+ * between the quotes) with its escapes decoded, or a literal string (`literal`) as is.
+ * An escape or control character TOML rejects (`\q`, `\uD800`, `\e`) keeps the raw
+ * text; it contains a backslash or control character, so no requirement parses it and
+ * the requirement is reported unparsable rather than read as absent.
+ */
+function tomlRequirement(basic: string | undefined, literal: string | undefined): string | undefined {
+  if (basic === undefined) return literal;
+  if (/[\u0000-\u0008\u000A-\u001F\u007F]/.test(basic)) return basic;
+  let valid = true;
+  const decoded = basic.replace(/\\(?:([btnfr"\\])|u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|[\s\S])/g, (_, simple: string | undefined, short: string | undefined, long: string | undefined) => {
+    if (simple !== undefined) return TOML_ESCAPES[simple]!;
+    const code = short ?? long;
+    const scalar = code === undefined ? -1 : Number.parseInt(code, 16);
+    if (scalar >= 0 && scalar <= 0x10ffff && (scalar < 0xd800 || scalar > 0xdfff)) return String.fromCodePoint(scalar);
+    valid = false;
+    return "";
+  });
+  return valid ? decoded : basic;
+}
+function tomlStringMatch(text: string, key: string): RegExpExecArray | null {
+  return new RegExp(`(?:^|[{,\\s])${key}\\s*=\\s*(?:"((?:[^"\\\\]|\\\\.)*)"|'([^']*)')`).exec(stripTomlComment(text));
+}
 function tomlString(text: string, key: string): string | undefined {
-  const match = new RegExp(`(?:^|[{,\\s])${key}\\s*=\\s*(?:"((?:[^"\\\\]|\\\\.)*)"|'([^']*)')`).exec(stripTomlComment(text));
+  const match = tomlStringMatch(text, key);
   return match ? (match[1] ?? match[2]) : undefined;
 }
 function inlineSpec(text: string): CargoDependencySpec {
   const value = stripTomlComment(text).trim();
   const plain = /^"((?:[^"\\]|\\.)*)"|^'([^']*)'/.exec(value);
-  if (plain) return { version: plain[1] ?? plain[2]! };
+  if (plain) return { version: tomlRequirement(plain[1], plain[2])! };
   const spec: CargoDependencySpec = {};
-  for (const key of ["version", "path", "git", "package", "registry"] as const) {
+  const version = tomlStringMatch(value, "version");
+  if (version) spec.version = tomlRequirement(version[1], version[2])!;
+  for (const key of ["path", "git", "package", "registry"] as const) {
     const found = tomlString(value, key);
     if (found !== undefined) spec[key] = found;
   }
@@ -500,8 +534,9 @@ function assignField(spec: CargoDependencySpec, field: string, rawValue: string)
   if (field === "workspace") { if (/^true\b/.test(value)) spec.workspace = true; return; }
   const text = /^"((?:[^"\\]|\\.)*)"|^'([^']*)'/.exec(value);
   if (!text) return;
+  if (field === "version") { spec.version = tomlRequirement(text[1], text[2])!; return; }
   const content = text[1] ?? text[2]!;
-  if (field === "version" || field === "path" || field === "git" || field === "package" || field === "registry") spec[field] = content;
+  if (field === "path" || field === "git" || field === "package" || field === "registry") spec[field] = content;
   else if (field === "rev" || field === "tag" || field === "branch") spec.gitRef = content;
 }
 
@@ -595,12 +630,14 @@ export function parseCargoManifest(text: string): CargoManifest {
     }
     if (context.kind === "package" || context.kind === "workspace-package") {
       const text = /^"([^"]*)"|^'([^']*)'/.exec(value);
-      if (context.kind === "package" && left === "name" && text) manifest.packageName = text[1] ?? text[2]!;
-      else if (left === "version" && text) {
+      // A quoted `"version"` key is the same field; without this it reads as no version (0.0.0).
+      const field = /^(["'])version\1(?=\.|$)/.test(left) ? `version${left.slice(9)}` : left;
+      if (context.kind === "package" && field === "name" && text) manifest.packageName = text[1] ?? text[2]!;
+      else if (field === "version" && text) {
         if (context.kind === "package") manifest.packageVersion = text[1] ?? text[2]!;
         else manifest.workspacePackageVersion = text[1] ?? text[2]!;
-      } else if (context.kind === "package" && ((left === "version.workspace" && /^true\b/.test(value))
-        || (left === "version" && /^\{(?:[^}]*[,\s])?workspace\s*=\s*true\b/.test(value)))) {
+      } else if (context.kind === "package" && ((field === "version.workspace" && /^true\b/.test(value))
+        || (field === "version" && /^\{(?:[^}]*[,\s])?workspace\s*=\s*true\b/.test(value)))) {
         // `version.workspace = true` or the inline `version = { workspace = true }`.
         manifest.packageVersionInherited = true;
       }

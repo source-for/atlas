@@ -10,6 +10,7 @@ import {
   type ArchitectureExtractionRelation,
   type ArchitectureExtractionSourceRef,
   type ArchitectureSnapshot,
+  SOURCE_EXCERPT_LIMITS,
   compareText,
 } from "@okie/architecture";
 import type { Discovery } from "./discover.js";
@@ -820,10 +821,13 @@ export interface UnfollowedCargoPatch extends CargoPatchPath {
    * no scanned crate; `version-mismatch`: every scanned crate's normal dependency on it
    * rejects the patched crate's version. (Cargo may still use the patch for a
    * dev/build dependency, the root package or a transitive crate — not checked.)
+   * `unparsable-requirement`: a scanned crate's dependency on it has a version requirement
+   * `cargoRequirementMatches` cannot parse, so no edge is recorded for that dependency.
    */
-  reason: "outside-repository" | "no-crate" | "version-mismatch";
-  /** `version-mismatch` only: the patched crate's version and the rejecting requirements. */
+  reason: "outside-repository" | "no-crate" | "version-mismatch" | "unparsable-requirement";
+  /** `version-mismatch` only: the patched crate's version. */
   version?: string;
+  /** `version-mismatch`: the rejecting requirements; `unparsable-requirement`: the unparsable ones. */
   rejected?: ReadonlyArray<{ path: string; line: number; requirement: string }>;
 }
 
@@ -856,9 +860,10 @@ export interface CargoPatchEdge {
  * package from the same source — declared in the crate, or inherited by key from a
  * path-less `[workspace.dependencies]` entry — and, as in Cargo, only when the patched
  * crate's version (`[package] version`, or the `[workspace.package]` one it inherits)
- * satisfies that dependency's requirement (`cargoRequirementMatches`; an unparsable or
- * absent requirement or version does not reject). A patch whose dependents all reject
- * it is reported `version-mismatch`. Deterministic: discovery's unit order, then
+ * satisfies that dependency's requirement (`cargoRequirementMatches`; an absent requirement
+ * or an unparsable version does not reject). A requirement the helper cannot parse records
+ * no edge and is reported `unparsable-requirement` (Cargo refuses such a manifest). A patch
+ * whose dependents all reject it is reported `version-mismatch`. Deterministic: discovery's unit order, then
  * manifest order.
  */
 export function resolveCargoPatches(discovery: Discovery, readFile: (path: string) => string): { edges: CargoPatchEdge[]; unfollowed: UnfollowedCargoPatch[] } {
@@ -896,11 +901,17 @@ export function resolveCargoPatches(discovery: Discovery, readFile: (path: strin
     if (toDir === undefined) continue;
     const version = versionOf(toDir);
     const rejected: Array<{ path: string; line: number; requirement: string }> = [];
+    const unparsable: Array<{ path: string; line: number; requirement: string }> = [];
     let used = false;
     for (const crate of dependents) {
       if (crate.dir === toDir) continue;
       for (const dependency of crate.dependencies) {
         if (dependency.name !== patch.name || !cargoPatchApplies(patch.source, dependency.source)) continue;
+        // 0.0.0 always parses, so `undefined` here means the requirement itself does not.
+        if (dependency.version !== undefined && cargoRequirementMatches(dependency.version, "0.0.0") === undefined) {
+          unparsable.push({ path: crate.manifestPath, line: dependency.line, requirement: dependency.version });
+          continue;
+        }
         if (version !== undefined && dependency.version !== undefined && cargoRequirementMatches(dependency.version, version) === false) {
           rejected.push({ path: crate.manifestPath, line: dependency.line, requirement: dependency.version });
           continue;
@@ -910,6 +921,7 @@ export function resolveCargoPatches(discovery: Discovery, readFile: (path: strin
       }
     }
     if (!used && rejected.length > 0) unfollowed.push({ ...patch, reason: "version-mismatch", version: version!, rejected });
+    if (unparsable.length > 0) unfollowed.push({ ...patch, reason: "unparsable-requirement", rejected: unparsable });
   }
   unfollowed.sort((left, right) => left.line - right.line);
   return { edges, unfollowed };
@@ -1364,6 +1376,12 @@ export interface ExtractedArchitecture {
    * evidence of a gap (rendered into `analysis.limitations`), never extraction input.
    */
   unresolvedRelativeImports: readonly UnresolvedRelativeImport[];
+  /**
+   * Declarations whose identifier exceeds the evidence gate's symbol limit (see
+   * {@link OversizedSymbol}). Sorted by path, line; scan-time evidence of a gap
+   * (rendered into `analysis.limitations`), never extraction input.
+   */
+  oversizedSymbols: readonly OversizedSymbol[];
   /** Entity id → McCabe cyclomatic. Only function-like `kind: "code"` entities. */
   cyclomaticById: ReadonlyMap<string, number>;
   /** Clone pairs between existing function-like code ids. Never invents ids. */
@@ -1427,6 +1445,20 @@ export interface UnresolvedRelativeImport {
   /** 1-based line of the import. */
   line: number;
   specifier: string;
+}
+
+/**
+ * A declaration whose identifier is longer than `SOURCE_EXCERPT_LIMITS.maxSymbolCharacters`
+ * code points (CLA-594). Its evidence anchors (sourceRefs and moduleExport) omit `symbol`
+ * and keep the exact path and line range: a truncated symbol would name something that
+ * is not in the source, so the scan reports the gap instead.
+ */
+export interface OversizedSymbol {
+  path: string;
+  /** 1-based first line of the declaration. */
+  line: number;
+  /** Identifier length in code points. */
+  characters: number;
 }
 
 /** 0 for observed entities; 1 for those that must never take an id an observed one desires. */
@@ -1567,6 +1599,14 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
 
   const unitDirs = discovery.units.map(unit => unit.dir);
   const unresolvedRelativeImports: UnresolvedRelativeImport[] = [];
+  const oversizedSymbols: OversizedSymbol[] = [];
+  /** The anchor symbol, or undefined (recorded as a gap) when it exceeds the evidence limit. */
+  const anchorSymbol = (path: string, line: number, name: string): string | undefined => {
+    const characters = Array.from(name).length;
+    if (characters <= SOURCE_EXCERPT_LIMITS.maxSymbolCharacters) return name;
+    oversizedSymbols.push({ path, line, characters });
+    return undefined;
+  };
   const trackedFiles: ReadonlySet<string> = discovery.trackedFiles ?? fileSet;
 
   for (const file of discovery.sourceFiles) {
@@ -1589,13 +1629,14 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
         ? outlined.filter(item => item.exported)
         : outlined;
       items.forEach((item, index) => {
+        const symbol = anchorSymbol(file, item.startLine, item.name);
         entityDescriptors.push({
           naturalKey: `${file}#${index}`,
           desiredId: typedId("code", file, item.name),
           kind: "code",
           name: item.name,
           parentKey: file,
-          sourceRefs: [{ path: file, symbol: item.name, startLine: item.startLine, endLine: item.endLine }],
+          sourceRefs: [{ path: file, ...(symbol !== undefined ? { symbol } : {}), startLine: item.startLine, endLine: item.endLine }],
         });
       });
       continue;
@@ -1611,8 +1652,11 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
       const cyclomaticComplexity = cyclomaticForDeclaration(declaration);
       const cloneFingerprint = cloneFingerprintForDeclaration(declaration);
       // A recovered `anonymous <kind>` name is not in the source, so its evidence carries
-      // no symbol (path + lines only). `default` is: the keyword is on the line.
-      const symbol = declaration.recovered && declaration.name !== "default" ? undefined : declaration.name;
+      // no symbol (path + lines only). `default` is: the keyword is on the line. An
+      // identifier over the symbol limit is likewise anchored on path + lines (CLA-594).
+      const symbol = declaration.recovered && declaration.name !== "default"
+        ? undefined
+        : anchorSymbol(file, declaration.startLine, declaration.name);
       const anchor = { path: file, ...(symbol !== undefined ? { symbol } : {}), startLine: declaration.startLine, endLine: declaration.endLine };
       entityDescriptors.push({
         naturalKey,
@@ -1949,6 +1993,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
     cyclomaticById,
     clonePairs: clonePairsFromBuckets(cloneBuckets),
     unresolvedRelativeImports: canonicalUnresolvedImports(unresolvedRelativeImports),
+    oversizedSymbols: oversizedSymbols.sort((left, right) => compareText(left.path, right.path) || left.line - right.line),
   };
 }
 
