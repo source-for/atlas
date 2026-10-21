@@ -79,6 +79,22 @@ test("P7 selection: base context wins, else the one nested context at any depth,
     assert.equal(scope.indexDir, "deep/rust");
     assert.deepEqual(scope.deferred, []);
   });
+  // Loose .rs with no root Cargo.toml is in no Cargo context: the one nested context is still selected.
+  withCommittedRepo({ "tools/sample.rs": "pub fn example() -> u32 {\n    3\n}\n", ...workspace("deep/rust", "r") }, dir => {
+    const scope = scopeOf(dir);
+    assert.equal(scope.indexDir, "deep/rust");
+    assert.deepEqual(scope.deferred, []);
+  });
+  // Empty root [workspace] + loose .rs + one nested context: still the nested context.
+  withCommittedRepo({ "Cargo.toml": "[workspace]\nmembers = []\n", "tools/sample.rs": "pub fn example() -> u32 {\n    3\n}\n", ...workspace("deep/rust", "r") }, dir => {
+    assert.equal(scopeOf(dir).indexDir, "deep/rust");
+  });
+  // Loose .rs + two nested contexts: loose files manufacture no base context, so no run and both named.
+  withCommittedRepo({ "tools/sample.rs": "pub fn example() -> u32 {\n    3\n}\n", ...workspace("a", "a"), ...workspace("deep/b", "b") }, dir => {
+    const scope = scopeOf(dir);
+    assert.equal(scope.indexDir, undefined);
+    assert.deepEqual(scope.deferred, ["a", "deep/b"]);
+  });
   // A root [package] with its own src/ owns Rust: it stays indexed and the nested context is deferred.
   withCommittedRepo({ "Cargo.toml": crate("top"), "src/lib.rs": "pub fn top() {}\n", ...workspace("deep/rust", "r") }, dir => {
     const scope = scopeOf(dir);
@@ -129,19 +145,22 @@ function callEdges(artifacts: ScanArtifacts): string[] {
 
 test("P7 real rust-analyzer: one context at depth 1 / depth 2 / --root gets semantic calls with repository paths; several contexts never run", { timeout: 600_000 }, t => {
   if (!rustAnalyzerVersion()) { t.skip("rust-analyzer is not installed"); return; }
-  const positive = (files: Record<string, string>, prefix: string, root?: string) => withCommittedRepo(files, dir => {
+  const positive = (files: Record<string, string>, prefix: string, root?: string, notIndexed: string[] = []) => withCommittedRepo(files, dir => {
     const artifacts = scanRepository(dir, { analysisMode: "full", ...(root ? { root } : {}) });
     const coverage = rustCoverage(artifacts);
     assert.equal(coverage?.coverage, "semantic", JSON.stringify(coverage));
-    assert.ok(!coverage!.limitations.some(line => line.startsWith("Not indexed")), coverage!.limitations.join("\n"));
+    assert.deepEqual(coverage!.limitations.filter(line => line.startsWith("Not indexed")), notIndexed.length ? [`Not indexed by rust-analyzer SCIP: ${notIndexed.join(", ")}`] : [], coverage!.limitations.join("\n"));
     assert.ok(callEdges(artifacts).includes(`${prefix}/crates/app/src/lib.rs -> ${prefix}/crates/core/src/lib.rs`), callEdges(artifacts).join("\n"));
   });
   positive(workspace("rust", "r"), "rust");
   positive(workspace("services/rust", "r"), "services/rust");
   positive({ "Cargo.toml": "[workspace]\nmembers = []\n", ...workspace("deep/rust", "r") }, "deep/rust");
+  // Loose source is in no Cargo context: the one nested context is indexed and the loose file is disclosed.
+  positive({ "tools/sample.rs": "pub fn example() -> u32 {\n    3\n}\n", ...workspace("deep/rust", "r") }, "deep/rust", undefined, ["tools/sample.rs"]);
+  positive({ "Cargo.toml": "[workspace]\nmembers = []\n", "tools/sample.rs": "pub fn example() -> u32 {\n    3\n}\n", ...workspace("deep/rust", "r") }, "deep/rust", undefined, ["tools/sample.rs"]);
   positive({ ...workspace("a", "a"), ...workspace("deep/b", "b") }, "deep/b", "deep/b");
 
-  for (const files of [{ ...workspace("a", "a"), ...workspace("b", "b") }, { ...workspace("a", "a"), ...workspace("deep/b", "b") }]) {
+  for (const files of [{ ...workspace("a", "a"), ...workspace("b", "b") }, { ...workspace("a", "a"), ...workspace("deep/b", "b") }, { ...workspace("a", "a"), ...workspace("b", "b"), "tools/sample.rs": "pub fn example() -> u32 {\n    3\n}\n" }]) {
     withCommittedRepo(files, dir => {
       const spawned: string[] = [];
       observeScanSpawns(spawn => { spawned.push(spawn.file); });

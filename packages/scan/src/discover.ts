@@ -146,6 +146,8 @@ export interface CargoContext {
   dir: string;
   /** Its `Cargo.toml`, when tracked. */
   manifest?: string;
+  /** That manifest declares a `[package]` (the context's own root package, whose source is in no member crate). */
+  rootPackage?: boolean;
   /** Crate directories it governs (deepest workspace claiming each), sorted; includes skipped fixture crates. */
   crates: string[];
 }
@@ -1089,6 +1091,7 @@ export function discoverFromFiles(sourceRoot: string, listedFiles: readonly stri
       return {
         dir,
         ...(listedFileSet.has(manifest) ? { manifest } : {}),
+        ...(listedFileSet.has(manifest) && cargoPackageName(readRepositoryFile(sourceRoot, manifest) ?? "") !== undefined ? { rootPackage: true } : {}),
         crates: rustCrateDirs.filter(crate => cargoWorkspaceByCrate.get(crate) === dir),
       };
     });
@@ -1158,8 +1161,8 @@ export interface RustAnalysisScope {
 
 /**
  * CLA-605 selection (coordinator rule (b); several contexts per scan are CLA-644):
- * the scan root's context when it owns scanned Rust source (crates it governs, or `.rs`
- * files in no crate and outside every nested context) — every nested context is then deferred; otherwise the one nested context
+ * the scan root's context when it owns scanned Rust source (crates it governs, or its own
+ * root `[package]` with `.rs` files in no crate and outside every nested context) — every nested context is then deferred; otherwise the one nested context
  * with scanned source, at any depth; otherwise none (never two contexts in one run).
  * With no Cargo context at all the scan root is indexed, as before. A file belongs to
  * the context governing its crate; a file in no crate to the scan root's context, or to
@@ -1178,10 +1181,11 @@ export function rustAnalysisScope(discovery: Pick<Discovery, "units" | "unitByFi
     const unit = discovery.unitByFile.get(file);
     return unit === undefined ? undefined : contextOfCrate.get(unit);
   };
-  // The base owns Rust only through scanned source: crates it governs, or `.rs` files in no crate and under no nested
-  // context (a root `[package]`'s own `src/`). A manifest alone (an empty `[workspace]`) owns nothing.
-  const baseOwns = (baseContext !== undefined && contributes(baseContext))
-    || rustFiles.some(file => contextOf(file) === undefined && !nested.some(dir => file.startsWith(`${dir}/`)));
+  // The base owns Rust only through a Cargo context with scanned source: crates it governs, or its own root
+  // `[package]` with `.rs` files in no crate and under no nested context. A manifest alone (an empty `[workspace]`)
+  // owns nothing, and neither do loose `.rs` files with no root `Cargo.toml` (they are in no Cargo context).
+  const baseOwns = baseContext !== undefined && (contributes(baseContext)
+    || (baseContext.rootPackage === true && rustFiles.some(file => contextOf(file) === undefined && !nested.some(dir => file.startsWith(`${dir}/`)))));
   const indexDir = baseOwns || nested.length === 0 ? base : nested.length === 1 ? nested[0]! : undefined;
   const deferred = nested.filter(dir => dir !== indexDir);
   const deferredSet = new Set(deferred);
