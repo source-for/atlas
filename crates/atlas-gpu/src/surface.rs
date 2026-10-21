@@ -1214,6 +1214,7 @@ mod tests {
         assert_eq!(mesh.vertices.len(), expected.vertices.len());
         let stream = build_active_mesh_stream(mesh, &enriched_frame);
         assert!(stream.partition_active > 0);
+        assert!(!stream.indices.is_empty());
         assert!(
             stream
                 .indices
