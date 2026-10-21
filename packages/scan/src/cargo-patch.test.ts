@@ -460,3 +460,53 @@ test("round 4: a patched crate without [package] version is 0.0.0 in the version
     assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], `${mode}: ^0 admits 0.0.0`);
   });
 });
+
+// CLA-594 item 1: an explicit operator keeps its meaning when the version has a wildcard
+// (`^1.2.*` is `^1.2`, `>=1.*` is `>=1`); only an implicit operator makes `1.2.*` a wildcard.
+test("CLA-594: cargoRequirementMatches keeps an explicit operator alongside a wildcard", () => {
+  for (const [requirement, version, expected] of [
+    ["^1.2.*", "1.3.0", true], ["^1.2.*", "1.2.0", true], ["^1.2.*", "1.1.9", false], ["^1.2.*", "2.0.0", false],
+    [">=1.*", "2.0.0", true], [">=1.*", "1.0.0", true], [">=1.*", "0.9.9", false],
+    ["<1.*", "0.9.9", true], ["<1.*", "1.0.0", false], [">1.*", "1.9.0", false], [">1.*", "2.0.0", true],
+    ["~1.*", "1.9.0", true], ["~1.*", "2.0.0", false], ["=1.2.*", "1.2.7", true], ["=1.2.*", "1.3.0", false],
+    // the implicit operator is still a wildcard
+    ["1.2.*", "1.3.0", false], ["1.2.*", "1.2.9", true], ["1.*", "2.0.0", false], ["1.x", "1.4.0", true],
+  ] as const) {
+    assert.equal(cargoRequirementMatches(requirement, version), expected, `${requirement} vs ${version}`);
+  }
+});
+
+test("CLA-594: explicit-operator wildcard requirements meet a patch like Cargo (quick + full)", () => {
+  const patched = `${MEMBERS}\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  for (const [requirement, coreVersion] of [["^1.2.*", "1.3.0"], [">=1.*", "2.0.0"]] as const) {
+    scanBothModes(CORE_APP(patched, `core = "${requirement}"\n`, `version = "${coreVersion}"`), (mode, artifacts) => {
+      assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], `${mode}: ${requirement} admits ${coreVersion}`);
+      assert.deepEqual(patchLimitations(artifacts), [], `${mode}: ${requirement}`);
+    });
+  }
+  scanBothModes(CORE_APP(patched, 'core = "1.2.*"\n', 'version = "1.3.0"'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: the implicit wildcard 1.2.* still rejects 1.3.0`);
+    assert.equal(patchLimitations(artifacts).length, 1, mode);
+  });
+});
+
+// CLA-594 item 2: a quoted `"version"` key in [package] is the same field as `version`; it
+// must not fall back to the 0.0.0 of a package that has no version.
+test("CLA-594: a quoted [package] \"version\" key is read, not treated as missing (quick + full)", () => {
+  const patched = `${MEMBERS}\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  scanBothModes(CORE_APP(patched, 'core = "1"\n', '"version" = "1.0.0"'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], `${mode}: quoted 1.0.0 satisfies ^1`);
+    assert.deepEqual(patchLimitations(artifacts), [], mode);
+  });
+  scanBothModes(CORE_APP(patched, 'core = "1"\n', "'version' = '2.0.0'"), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: quoted 2.0.0 does not satisfy ^1`);
+    assert.deepEqual(patchLimitations(artifacts), [
+      "Cargo [patch] accepted by no scanned crate's normal dependency: version 2.0.0 does not satisfy app/Cargo.toml:6 requires '1'; no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }",
+    ], `${mode}: the mismatch cites the version as written`);
+  });
+  const inheriting = `${MEMBERS}\n[workspace.package]\n"version" = "2.0.0"\n\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  scanBothModes(CORE_APP(inheriting, 'core = "1"\n', '"version".workspace = true'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: quoted inheritance of a quoted workspace 2.0.0 rejects ^1`);
+    assert.equal(patchLimitations(artifacts).length, 1, mode);
+  });
+});

@@ -161,8 +161,9 @@ function parseComparator(text: string): SemverComparator | undefined {
   const minor = match[3] === undefined || wildcard(match[3]) ? undefined : Number(match[3]);
   const patch = minor === undefined || match[4] === undefined || wildcard(match[4]) ? undefined : Number(match[4]);
   const pre = match[5] ? match[5].split(".") : [];
-  // `1.*` / `1.2.*` are wildcards (the `semver` crate's Op::Wildcard, matched like `=`).
-  const op = wildcard(match[3]) || wildcard(match[4]) ? "*" : (match[1] ?? "^") as SemverComparator["op"];
+  // `1.*` / `1.2.*` are wildcards (the `semver` crate's Op::Wildcard, matched like `=`), but
+  // only without an explicit operator: `^1.2.*` is `^1.2` and `>=1.*` is `>=1`.
+  const op = (match[1] ?? (wildcard(match[3]) || wildcard(match[4]) ? "*" : "^")) as SemverComparator["op"];
   return { op, major: Number(match[2]), ...(minor !== undefined ? { minor } : {}), ...(patch !== undefined ? { patch } : {}), pre };
 }
 
@@ -595,12 +596,14 @@ export function parseCargoManifest(text: string): CargoManifest {
     }
     if (context.kind === "package" || context.kind === "workspace-package") {
       const text = /^"([^"]*)"|^'([^']*)'/.exec(value);
-      if (context.kind === "package" && left === "name" && text) manifest.packageName = text[1] ?? text[2]!;
-      else if (left === "version" && text) {
+      // A quoted `"version"` key is the same field; without this it reads as no version (0.0.0).
+      const field = /^(["'])version\1(?=\.|$)/.test(left) ? `version${left.slice(9)}` : left;
+      if (context.kind === "package" && field === "name" && text) manifest.packageName = text[1] ?? text[2]!;
+      else if (field === "version" && text) {
         if (context.kind === "package") manifest.packageVersion = text[1] ?? text[2]!;
         else manifest.workspacePackageVersion = text[1] ?? text[2]!;
-      } else if (context.kind === "package" && ((left === "version.workspace" && /^true\b/.test(value))
-        || (left === "version" && /^\{(?:[^}]*[,\s])?workspace\s*=\s*true\b/.test(value)))) {
+      } else if (context.kind === "package" && ((field === "version.workspace" && /^true\b/.test(value))
+        || (field === "version" && /^\{(?:[^}]*[,\s])?workspace\s*=\s*true\b/.test(value)))) {
         // `version.workspace = true` or the inline `version = { workspace = true }`.
         manifest.packageVersionInherited = true;
       }
