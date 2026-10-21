@@ -8,6 +8,7 @@ import {
   type EntityKind,
   type RelationId,
   type StoryDetail,
+  compareText,
 } from "@okie/architecture";
 import { typedId } from "./ids.js";
 import { authoredStoryStep, kindLabel, withAcceptedSummary } from "./story-authoring.js";
@@ -181,14 +182,14 @@ export function findFlowEntity(
     if (match.kind && entity.kind !== match.kind) return false;
     return pathMatches(entity, match);
   });
-  direct.sort((left, right) => left.id.localeCompare(right.id));
+  direct.sort((left, right) => compareText(left.id, right.id));
   if (direct[0]) return direct[0];
   if (!match.kind || match.kind === "code") return undefined;
   const leafMatch: FlowEntityMatch = match.symbol
     ? { path: match.path, symbol: match.symbol }
     : { path: match.path };
   const leaves = entities.filter(entity => pathMatches(entity, leafMatch));
-  leaves.sort((left, right) => left.id.localeCompare(right.id));
+  leaves.sort((left, right) => compareText(left.id, right.id));
   for (const leaf of leaves) {
     const ancestor = ancestorOfKind(leaf, match.kind, byId);
     if (ancestor) return ancestor;

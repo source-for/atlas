@@ -11,6 +11,7 @@ import {
 } from "./packet.js";
 import { pathOwnerFacts, type CodeOwnerRule, type PathOwnerFact } from "./codeowners.js";
 import { scrubGithubTokens } from "./redact.js";
+import { compareText } from "@okie/architecture";
 
 /**
  * Frozen enrichment prompt bytes. v2 (`enrichment-prompt.md`) is the default
@@ -99,7 +100,7 @@ export function buildFileTree(paths: readonly string[]): FileTreeNode[] {
     }
   }
   const sortTree = (nodes: FileTreeNode[]): FileTreeNode[] => {
-    nodes.sort((left, right) => left.name.localeCompare(right.name));
+    nodes.sort((left, right) => compareText(left.name, right.name));
     for (const node of nodes) {
       if (node.children) sortTree(node.children);
     }
@@ -118,7 +119,7 @@ export function ownershipTreeFromPacket(packet: EnrichmentPacket | SystemPacket)
       ...packet.externalSystems.map(external => ({
         id: external.id, name: external.name, kind: "externalSystem", children: [] as OwnershipNode[],
       })),
-    ].sort((left, right) => left.id.localeCompare(right.id));
+    ].sort((left, right) => compareText(left.id, right.id));
     return { id: packet.systemId, name: packet.systemName, kind: "softwareSystem", children };
   }
 
@@ -129,7 +130,7 @@ export function ownershipTreeFromPacket(packet: EnrichmentPacket | SystemPacket)
     codeByComponent.set(code.componentId, bucket);
   }
   for (const bucket of codeByComponent.values()) {
-    bucket.sort((left, right) => left.id.localeCompare(right.id));
+    bucket.sort((left, right) => compareText(left.id, right.id));
   }
   const children = packet.components
     .map(component => ({
@@ -138,12 +139,12 @@ export function ownershipTreeFromPacket(packet: EnrichmentPacket | SystemPacket)
       kind: "component",
       children: codeByComponent.get(component.id) ?? [],
     }))
-    .sort((left, right) => left.id.localeCompare(right.id));
+    .sort((left, right) => compareText(left.id, right.id));
   return { id: packet.containerId, name: packet.containerName, kind: "container", children };
 }
 
 function uniqueSortedOwners(values: readonly string[]): string[] {
-  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+  return [...new Set(values)].sort(compareText);
 }
 
 /** Overlay observed path owners onto the C4 tree. Data only — not new prompt instructions. */

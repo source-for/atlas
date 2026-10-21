@@ -6,6 +6,7 @@ import {
   selectC4BandProjection,
   type ArchitectureSnapshot,
   type C4Band,
+  compareText,
 } from "@okie/architecture";
 import { compileC4Scene } from "./compile-c4.js";
 import { denseNeighborhoodSnapshot, denseSnapshot } from "./band-cost-curve.js";
@@ -122,7 +123,7 @@ test("CLA-74: panning the camera window compiles a sibling tile, not the full gr
   const layout = full.bandLayoutById[full.projectionById[full.family.projectionIds.component]!.layoutId]!;
   const children = Object.entries(layout.nodes)
     .filter(([id]) => id.includes("component:c-m"))
-    .sort(([left], [right]) => left.localeCompare(right));
+    .sort(([left], [right]) => compareText(left, right));
   const first = children[0]![1];
   const last = children.at(-1)![1];
   const left = buildC4ProjectionBundle(snapshot, {

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { SOURCE_EXCERPT_LIMITS } from '@okie/architecture';
+import { compareText, SOURCE_EXCERPT_LIMITS } from '@okie/architecture';
 import { GOLDEN_SOURCE_EXCERPTS } from '../dist/golden-source-excerpts.js';
 
 const repositoryRoot = new URL('../../../', import.meta.url);
@@ -41,7 +41,7 @@ function safeAnchorLine(lines, symbol) {
 }
 
 const generated = [];
-for (const [id, previous] of Object.entries(GOLDEN_SOURCE_EXCERPTS).sort(([left], [right]) => left.localeCompare(right))) {
+for (const [id, previous] of Object.entries(GOLDEN_SOURCE_EXCERPTS).sort(([left], [right]) => compareText(left, right))) {
   if (previous.path.startsWith('/') || previous.path.includes('\\') || previous.path.split('/').some(segment => segment === '..' || segment === '.')) {
     throw new Error(`Unsafe repository-relative source path for ${id}: ${previous.path}`);
   }

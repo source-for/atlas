@@ -12,6 +12,7 @@ import {
   type Evidence,
   type RelationKind,
   type SourceRef,
+  compareText,
 } from '@okie/architecture';
 
 export const DYNAMIC_FLOW_ARTIFACT_VERSION = 1 as const;
@@ -76,10 +77,6 @@ export type DynamicFlowArtifact = {
 export type DynamicFlowMermaidOptions = {
   direction?: 'LR' | 'TB';
 };
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
 
 function uniqueSorted(values: readonly string[]): string[] {
   return [...new Set(values)].sort(compareText);

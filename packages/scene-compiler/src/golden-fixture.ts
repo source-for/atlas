@@ -10,6 +10,7 @@ import type {
   SourceRef,
 } from '@okie/architecture';
 import { GOLDEN_SOURCE_EXCERPTS } from './golden-source-excerpts.js';
+import { compareText } from '@okie/architecture';
 
 export const GOLDEN_WORKTREE_REVISION = 'golden-worktree-okie-2026-07-14-v1';
 
@@ -321,7 +322,7 @@ export const goldenSnapshot: ArchitectureSnapshot = {
 };
 
 function legacyLayout(entities: readonly ArchitectureEntity[]) {
-  const nodes = Object.fromEntries([...entities].sort((left, right) => left.id.localeCompare(right.id)).map((item, index) => [
+  const nodes = Object.fromEntries([...entities].sort((left, right) => compareText(left.id, right.id)).map((item, index) => [
     item.id,
     { x: 120 + index % 8 * 330, y: 120 + Math.floor(index / 8) * 210, width: 280, height: 140 },
   ]));

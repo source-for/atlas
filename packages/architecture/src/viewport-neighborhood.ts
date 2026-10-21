@@ -1,4 +1,5 @@
 import type { EntityKind, NodeLayout, Rect, StoryDetail } from "./model.js";
+import { compareText } from "./text-order.js";
 
 /**
  * Spatial-index cell size used by the CPU renderer (`crates/atlas-engine`
@@ -261,7 +262,7 @@ export function selectResidentVisualNodeIds(
       const rightBounds = pagingBounds(right, input.packed, byId, input.pagedKinds);
       const leftDistance = leftBounds ? distanceSquared(rectCenter(leftBounds), origin) : Number.POSITIVE_INFINITY;
       const rightDistance = rightBounds ? distanceSquared(rectCenter(rightBounds), origin) : Number.POSITIVE_INFINITY;
-      return leftDistance - rightDistance || left.localeCompare(right);
+      return leftDistance - rightDistance || compareText(left, right);
     });
   const kept = new Set(always);
   const alwaysPaged = [...always].filter(id => paged(byId[id]?.kind)).length;

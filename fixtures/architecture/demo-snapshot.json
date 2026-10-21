@@ -1244,8 +1244,8 @@
           "path": "packages/architecture/src/normalized.ts",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "normalizeArchitecture",
-          "startLine": 219,
-          "endLine": 224
+          "startLine": 220,
+          "endLine": 225
         }
       ],
       "sourceExcerpts": [
@@ -1253,9 +1253,9 @@
           "path": "packages/architecture/src/normalized.ts",
           "symbol": "normalizeArchitecture",
           "language": "typescript",
-          "startLine": 219,
-          "endLine": 224,
-          "highlightLine": 219,
+          "startLine": 220,
+          "endLine": 225,
+          "highlightLine": 220,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "export function normalizeArchitecture({ snapshot, views = [], stories = [] }: NormalizeArchitectureInput): NormalizedArchitecture {",
@@ -1285,8 +1285,8 @@
           "path": "packages/architecture/src/normalized.ts",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "NormalizedArchitecture",
-          "startLine": 148,
-          "endLine": 153
+          "startLine": 149,
+          "endLine": 154
         }
       ],
       "sourceExcerpts": [
@@ -1294,9 +1294,9 @@
           "path": "packages/architecture/src/normalized.ts",
           "symbol": "NormalizedArchitecture",
           "language": "typescript",
-          "startLine": 148,
-          "endLine": 153,
-          "highlightLine": 148,
+          "startLine": 149,
+          "endLine": 154,
+          "highlightLine": 149,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "export type NormalizedArchitecture = {",
@@ -1326,8 +1326,8 @@
           "path": "packages/architecture/src/normalized.ts",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "selectScopedView",
-          "startLine": 600,
-          "endLine": 605
+          "startLine": 601,
+          "endLine": 606
         }
       ],
       "sourceExcerpts": [
@@ -1335,9 +1335,9 @@
           "path": "packages/architecture/src/normalized.ts",
           "symbol": "selectScopedView",
           "language": "typescript",
-          "startLine": 600,
-          "endLine": 605,
-          "highlightLine": 600,
+          "startLine": 601,
+          "endLine": 606,
+          "highlightLine": 601,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "export function selectScopedView(state: NormalizedArchitecture, viewId: string, rootEntityId: string): ArchitectureView {",
@@ -1367,8 +1367,8 @@
           "path": "packages/architecture/src/normalized.ts",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "selectArchitectureSnapshot",
-          "startLine": 471,
-          "endLine": 476
+          "startLine": 472,
+          "endLine": 477
         }
       ],
       "sourceExcerpts": [
@@ -1376,9 +1376,9 @@
           "path": "packages/architecture/src/normalized.ts",
           "symbol": "selectArchitectureSnapshot",
           "language": "typescript",
-          "startLine": 471,
-          "endLine": 476,
-          "highlightLine": 471,
+          "startLine": 472,
+          "endLine": 477,
+          "highlightLine": 472,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "export function selectArchitectureSnapshot(state: NormalizedArchitecture, snapshotId: string): ArchitectureSnapshot {",
@@ -1531,8 +1531,8 @@
           "path": "packages/scene-compiler/src/compile-scene.ts",
           "commitSha": "golden-worktree-okie-2026-07-14-v1",
           "symbol": "compileScene",
-          "startLine": 169,
-          "endLine": 174
+          "startLine": 170,
+          "endLine": 175
         }
       ],
       "sourceExcerpts": [
@@ -1540,9 +1540,9 @@
           "path": "packages/scene-compiler/src/compile-scene.ts",
           "symbol": "compileScene",
           "language": "typescript",
-          "startLine": 169,
-          "endLine": 174,
-          "highlightLine": 169,
+          "startLine": 170,
+          "endLine": 175,
+          "highlightLine": 170,
           "frozenRevision": "golden-worktree-okie-2026-07-14-v1",
           "lines": [
             "export function compileScene(",

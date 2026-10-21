@@ -1,4 +1,5 @@
 import type { NodeLayout, Point } from './model.js';
+import { compareText } from './text-order.js';
 
 export type OrthogonalSide = 'top' | 'right' | 'bottom' | 'left';
 
@@ -45,10 +46,6 @@ export type GuidedOrthogonalRouteResult = OrthogonalRouteResult & {
 };
 
 const EPSILON = 1e-9;
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
 
 export function expandRoutingRect(bounds: NodeLayout, padding: number): NodeLayout {
   return {

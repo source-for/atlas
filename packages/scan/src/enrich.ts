@@ -9,6 +9,7 @@ import {
   type CoverageLineRange,
   type RelationKind,
   type UntestedBehaviour,
+  compareText,
 } from "@okie/architecture";
 import { ENRICHMENT_PROMPT_VERSION, ENRICHMENT_PROMPT_VERSION_V3 } from "./packet.js";
 import { containerScopes, type ContainerScope } from "./scope.js";
@@ -473,7 +474,7 @@ function mergeEvidence(evidence: readonly ArchitectureExtractionEvidence[]): Arc
     if (!byKey.has(key)) byKey.set(key, item);
   }
   return [...byKey.values()]
-    .sort((left, right) => sourceRefKey(left.source).localeCompare(sourceRefKey(right.source)))
+    .sort((left, right) => compareText(sourceRefKey(left.source), sourceRefKey(right.source)))
     .slice(0, MAX_EVIDENCE_PER_RELATION);
 }
 
@@ -611,7 +612,7 @@ export function mergeEnrichment(
         promptVersion,
         enrichedContainers: [],
         collapsedSelfEdges: 0,
-        results: results.sort((left, right) => left.containerId.localeCompare(right.containerId)),
+        results: results.sort((left, right) => compareText(left.containerId, right.containerId)),
         ...(systemScopeResult ? { systemScope: systemScopeResult } : {}),
       },
     };
@@ -653,7 +654,7 @@ export function mergeEnrichment(
         promptVersion,
         enrichedContainers: [...accepted.keys()].sort(),
         collapsedSelfEdges: 0,
-        results: results.sort((left, right) => left.containerId.localeCompare(right.containerId)),
+        results: results.sort((left, right) => compareText(left.containerId, right.containerId)),
         ...(systemScopeResult ? { systemScope: systemScopeResult } : {}),
       },
     };
@@ -747,7 +748,7 @@ export function mergeEnrichment(
       sourceRefs: person.sourceRefs.map(ref => ({ ...ref })),
     });
   }
-  mergedEntities.sort((left, right) => left.id.localeCompare(right.id));
+  mergedEntities.sort((left, right) => compareText(left.id, right.id));
 
   const remap = (id: string): string => removedToLogical.get(id) ?? id;
   const logicalToContainer = new Map(logicalComponentsFinal.map(component => [component.id, component.parentId!]));
@@ -776,7 +777,7 @@ export function mergeEnrichment(
     collapsed.set(key, entry);
   }
   const collapsedList = [...collapsed.values()].sort((left, right) =>
-    left.from.localeCompare(right.from) || left.to.localeCompare(right.to) || left.kind.localeCompare(right.kind));
+    compareText(left.from, right.from) || compareText(left.to, right.to) || compareText(left.kind, right.kind));
   const relationIds = resolveCollisions(collapsedList.map(relation => typedId("relation", localOf(relation.from), localOf(relation.to))));
   const mergedRelations: ArchitectureExtractionRelation[] = collapsedList.map((relation, index) => ({
     id: relationIds[index]!,
@@ -797,7 +798,7 @@ export function mergeEnrichment(
         .map(result => (accepted.has(result.containerId)
           ? { ...result, collapsedSelfEdges: selfEdgesByContainer.get(result.containerId) ?? 0 }
           : result))
-        .sort((left, right) => left.containerId.localeCompare(right.containerId)),
+        .sort((left, right) => compareText(left.containerId, right.containerId)),
       ...(systemScopeResult ? { systemScope: systemScopeResult } : {}),
     },
   };

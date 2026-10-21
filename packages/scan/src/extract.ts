@@ -10,6 +10,7 @@ import {
   type ArchitectureExtractionRelation,
   type ArchitectureExtractionSourceRef,
   type ArchitectureSnapshot,
+  compareText,
 } from "@okie/architecture";
 import type { Discovery } from "./discover.js";
 import type { AnalysisLocation, LanguageAnalysis } from "./language-analysis.js";
@@ -534,14 +535,14 @@ function clonePairsFromBuckets(buckets: ReadonlyMap<string, readonly string[]>):
   const pairs: ClonePair[] = [];
   for (const ids of buckets.values()) {
     if (ids.length < 2) continue;
-    const sorted = [...ids].sort((left, right) => left.localeCompare(right));
+    const sorted = [...ids].sort(compareText);
     for (let i = 0; i < sorted.length; i += 1) {
       for (let j = i + 1; j < sorted.length; j += 1) {
         pairs.push({ from: sorted[i]!, to: sorted[j]! });
       }
     }
   }
-  return pairs.sort((left, right) => left.from.localeCompare(right.from) || left.to.localeCompare(right.to));
+  return pairs.sort((left, right) => compareText(left.from, right.from) || compareText(left.to, right.to));
 }
 
 /** Static `import ... from` and `export ... from` module specifiers with line spans. */
@@ -1116,6 +1117,12 @@ interface EntityDescriptor {
    * real declaration's, so a syntax error never moves a real symbol's id.
    */
   recovered?: true;
+  /**
+   * The synthetic non-member bucket (`TOOLING_UNIT_KEY`): allocated after every real unit,
+   * so a workspace member literally named `tooling` keeps `container:tooling`. Its NUL-led
+   * key sorts first in code-unit order and would otherwise claim the bare id.
+   */
+  synthetic?: true;
 }
 
 interface RelationDescriptor {
@@ -1165,7 +1172,7 @@ function finalizeEvidence(evidence: readonly ArchitectureExtractionEvidence[]): 
   }
   return [...byKey.values()]
     .sort((left, right) =>
-      left.source.path.localeCompare(right.source.path) || (left.source.startLine ?? 0) - (right.source.startLine ?? 0))
+      compareText(left.source.path, right.source.path) || (left.source.startLine ?? 0) - (right.source.startLine ?? 0))
     .slice(0, MAX_EVIDENCE_PER_RELATION);
 }
 
@@ -1235,7 +1242,7 @@ function emitExternalSystems(input: ExternalEmitInput): void {
   const selected = importedRuntime
     .filter(([pkg]) => isL1ExternalSystemPackage(pkg))
     .sort(([leftPkg, leftUses], [rightPkg, rightUses]) =>
-      rightUses.length - leftUses.length || leftPkg.localeCompare(rightPkg))
+      rightUses.length - leftUses.length || compareText(leftPkg, rightPkg))
     .slice(0, MAX_EXTERNAL_SYSTEMS);
 
   const libraryByContainer = new Map<string, Set<string>>();
@@ -1256,9 +1263,9 @@ function emitExternalSystems(input: ExternalEmitInput): void {
 
   for (const [pkg, usages] of selected) {
     const importRefs = usages.map(usage => usage.source)
-      .sort((left, right) => left.path.localeCompare(right.path) || (left.startLine ?? 0) - (right.startLine ?? 0));
+      .sort((left, right) => compareText(left.path, right.path) || (left.startLine ?? 0) - (right.startLine ?? 0));
     const declRefs = (declaringRefsByPackage.get(pkg) ?? []).slice()
-      .sort((left, right) => left.path.localeCompare(right.path));
+      .sort((left, right) => compareText(left.path, right.path));
     // Manifest declaration(s) first (grounds "why it is a dependency"), then import sites; capped.
     const seen = new Set<string>();
     const sourceRefs: ArchitectureExtractionSourceRef[] = [];
@@ -1422,8 +1429,9 @@ export interface UnresolvedRelativeImport {
   specifier: string;
 }
 
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+/** 0 for observed entities; 1 for those that must never take an id an observed one desires. */
+function allocationRank(descriptor: EntityDescriptor): number {
+  return descriptor.recovered === true || descriptor.synthetic === true ? 1 : 0;
 }
 
 /** Sorted (path, line, specifier) and deduplicated — independent of discovery order. */
@@ -1479,6 +1487,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
       name: unit.name,
       parentKey: "system",
       sourceRefs: [{ path: unit.evidencePath }],
+      ...(unit.kind === "tooling" ? { synthetic: true as const } : {}),
     });
   }
 
@@ -1881,13 +1890,14 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
 
   // Assign collision-free IDs in a fully canonical order (independent of discovery order).
   const sortedEntities = [...entityDescriptors].sort((left, right) =>
-    left.desiredId.localeCompare(right.desiredId) || left.naturalKey.localeCompare(right.naturalKey));
+    compareText(left.desiredId, right.desiredId) || compareText(left.naturalKey, right.naturalKey));
   // Real declarations claim ids first, globally: a recovered (parse-error) declaration is
   // allocated only after every real one, so neither its bare id nor a `-N` suffix can take
   // an id a real declaration desires (`anonymousEnum_2` keeps `…-anonymous-enum-2` beside
-  // `enum {}`). Without recovered declarations this is the plain canonical order.
+  // `enum {}`). The synthetic tooling bucket likewise allocates after every real unit.
+  // Without either this is the plain canonical order.
   const allocationOrder = sortedEntities.map((_, index) => index)
-    .sort((left, right) => Number(sortedEntities[left]!.recovered === true) - Number(sortedEntities[right]!.recovered === true) || left - right);
+    .sort((left, right) => allocationRank(sortedEntities[left]!) - allocationRank(sortedEntities[right]!) || left - right);
   const allocated = resolveCollisions(allocationOrder.map(index => sortedEntities[index]!.desiredId));
   const entityIds: string[] = new Array(sortedEntities.length);
   allocationOrder.forEach((index, position) => { entityIds[index] = allocated[position]!; });
@@ -1920,7 +1930,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
   });
 
   const sortedRelations = [...relationDescriptors.values()].sort((left, right) =>
-    left.desiredId.localeCompare(right.desiredId) || left.naturalKey.localeCompare(right.naturalKey));
+    compareText(left.desiredId, right.desiredId) || compareText(left.naturalKey, right.naturalKey));
   const relationIds = resolveCollisions(sortedRelations.map(descriptor => descriptor.desiredId));
   const relations: ArchitectureExtractionRelation[] = sortedRelations.map((descriptor, index) => ({
     id: relationIds[index]!,
@@ -1933,8 +1943,8 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
   return {
     extraction: {
       schemaVersion: 1,
-      entities: entities.sort((left, right) => left.id.localeCompare(right.id)),
-      relations: relations.sort((left, right) => left.id.localeCompare(right.id)),
+      entities: entities.sort((left, right) => compareText(left.id, right.id)),
+      relations: relations.sort((left, right) => compareText(left.id, right.id)),
     },
     cyclomaticById,
     clonePairs: clonePairsFromBuckets(cloneBuckets),
@@ -2062,7 +2072,7 @@ export function attachDuplicateRelations(
   if (added.length === 0 && kept.length === snapshot.relations.length) return snapshot;
   return {
     ...snapshot,
-    relations: [...kept, ...added].sort((left, right) => left.id.localeCompare(right.id)),
+    relations: [...kept, ...added].sort((left, right) => compareText(left.id, right.id)),
   };
 }
 
