@@ -295,14 +295,14 @@ export function rustAnalyzerConfig(variant: "host" | "wasm32", noop: readonly st
  * name AND by asking the filesystem for the canonical names, so `Rust-Project.JSON` or `ruſt-project.json` (what
  * rust-analyzer opens on APFS) cannot slip past.
  */
-export function unsafeRustProjectJson(root: string): string | undefined {
+export function unsafeRustProjectJson(root: string, displayRoot: string = root): string | undefined {
   const refused: string[] = [];
   const walk = (directory: string) => {
     let entries; try { entries = readdirSync(directory, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) if (entry.isDirectory() && entry.name !== ".git") walk(join(directory, entry.name));
     // Folded names plus a direct lstat of the canonical names (the filesystem's own folding: `ruſt-project.json`).
     for (const absolute of rustProjectJsonIn(directory, entries.map(entry => entry.name), nodeAncestorFs)) {
-      const path = relative(root, absolute).split(sep).join("/");
+      const path = relative(displayRoot, absolute).split(sep).join("/");
       let regular = false; try { regular = lstatSync(absolute).isFile(); } catch { regular = false; }
       if (!regular) { refused.push(`${path} (not a regular file)`); continue; }
       let parsed: unknown;
@@ -340,6 +340,21 @@ function dependencyResolution(root: string, scratch: ScanScratch, cargoBinary: s
 }
 
 /**
+ * A SCIP document path (relative to the indexed context `contextDir`) as a repository path: `..` segments resolved,
+ * undefined when it is absolute or leaves the repository.
+ */
+export function repositoryDocumentPath(contextDir: string, relativePath: string): string | undefined {
+  const raw = relativePath.split(sep).join("/");
+  if (raw.startsWith("/") || /^[A-Za-z]:/.test(raw)) return undefined;
+  const stack = contextDir ? contextDir.split("/") : [];
+  for (const part of raw.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") { if (!stack.length) return undefined; stack.pop(); } else stack.push(part);
+  }
+  return stack.length ? stack.join("/") : undefined;
+}
+
+/**
  * Invoke rust-analyzer's SCIP exporter and retain only resolved, in-repository facts.
  * Import/file links are emitted separately; calls are established from the parsed call AST.
  */
@@ -352,6 +367,19 @@ export interface RustAnalysisOptions {
   ancestorFs?: AncestorFs;
   /** The scan's temporary directory holding the tree (AcquiredCommittedTree.checkoutRoot), named `<checkout>` in errors. */
   checkoutRoot?: string;
+  /**
+   * CLA-605: the Cargo context to index and the files whose facts may be ingested (discovery's `rustAnalysisScope`).
+   * Absent: the tree root, every discovered `.rs` file.
+   */
+  scope?: { base: string; indexDir?: string; admitted: readonly string[]; deferred: readonly string[]; deferredFiles: readonly string[]; foreignCrates: readonly string[] };
+}
+
+/** CLA-605: the independent Cargo contexts one scan did not index (CLA-644 tracks indexing each). */
+export function deferredRustContextsLimitation(indexDir: string | undefined, deferred: readonly string[]): string {
+  const list = deferred.map(dir => dir || ".").join(", ");
+  return indexDir === undefined
+    ? `Rust semantic analysis skipped: ${deferred.length} independent Cargo contexts (${list}) and none at the scan root; rust-analyzer never indexes several contexts together, so none received Rust semantic edges (manifest and path dependency edges are kept). Indexing each context is tracked in CLA-644.`
+    : `Rust semantic analysis covers one Cargo context (${indexDir || "."}); ${deferred.length} independent Cargo context(s) received no Rust semantic edges (manifest and path dependency edges are kept): ${list}. Indexing each context is tracked in CLA-644.`;
 }
 
 export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly string[], options: RustAnalysisOptions = {}): LanguageAnalysis {
@@ -366,11 +394,19 @@ export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly strin
     result.coverage.push({ language: "rust", tool: "rust-analyzer", version: "unavailable", coverage: "unavailable", indexedFiles: [], limitations: [limitation] });
     return result;
   };
+  // CLA-605: one Cargo context per run. `indexRoot` is what rust-analyzer and cargo see; every path stays
+  // repository-relative and every file is read from the tree.
+  const scope = options.scope;
+  if (scope && scope.indexDir === undefined) return unavailable(deferredRustContextsLimitation(undefined, scope.deferred));
+  const contextDir = scope?.indexDir ?? "";
+  const indexRoot = contextDir ? join(root, contextDir) : root;
+  const admitted = scope ? new Set(scope.admitted.filter(path => allowed.has(path))) : allowed;
+  const deferredFiles = new Set(scope?.deferredFiles ?? []);
   const noParser = rustParserUnavailable();
   if (noParser) return unavailable(noParser);
-  const refusal = unsafeRustProjectJson(root);
+  const refusal = unsafeRustProjectJson(indexRoot, root);
   if (refusal) return unavailable(refusal);
-  const ancestors = inspectRustAncestors(root, options.ancestorFs ? { fs: options.ancestorFs } : {});
+  const ancestors = inspectRustAncestors(indexRoot, { ...(options.ancestorFs ? { fs: options.ancestorFs } : {}), ...(contextDir ? { repositoryRoot: root } : {}) });
   if (ancestors.refusal) return unavailable(ancestors.refusal);
   // Operator-owned ancestor cargo files shape `cargo metadata`: their content (and position relative to the tree, not
   // the machine path) is part of the cache key.
@@ -395,9 +431,9 @@ export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly strin
     const keyConfig = JSON.stringify(rustAnalyzerConfig(variant, ["<noop>"]));
     // The opt-in CARGO_HOME changes what resolves: its path and what it holds are part of the key.
     const cargoHome = cargo.path ? { path: cargo.path, registry: existsSync(join(cargo.path, "registry")), git: existsSync(join(cargo.path, "git")) } : "scratch";
-    const result = cachedScipIndex({ ...(options.indexCacheDir ? { cacheDir: options.indexCacheDir } : {}), root, ...(digest ? { digest } : {}), ...(toolchain ? { toolchain } : {}), variant: JSON.stringify({ variant, args: keyArgs, config: keyConfig, cargoHome, ancestors: ancestorKey }), run: () => {
+    const result = cachedScipIndex({ ...(options.indexCacheDir ? { cacheDir: options.indexCacheDir } : {}), root, ...(digest ? { digest } : {}), ...(toolchain ? { toolchain } : {}), variant: JSON.stringify({ variant, args: keyArgs, config: keyConfig, cargoHome, ancestors: ancestorKey, ...(contextDir ? { context: contextDir } : {}) }), run: () => {
       // cwd is the scratch dir, never the tree: nothing about the toolchain is resolved from the repository.
-      const spawned = scanSpawnSync("rust", "rust-analyzer", ["scip", root, "--output", output, ...args], { cwd: temporary, scratch, encoding: "utf8", timeout: 120_000 });
+      const spawned = scanSpawnSync("rust", "rust-analyzer", ["scip", indexRoot, "--output", output, ...args], { cwd: temporary, scratch, encoding: "utf8", timeout: 120_000 });
       if (spawned.error || spawned.status !== 0 || !existsSync(output)) return { stderr: spawned.stderr ?? "", error: scrubScipError(spawned.error ? `error: ${spawned.error.message}` : spawned.stderr ?? "", machinePaths) };
       return { bytes: readFileSync(output), stderr: spawned.stderr ?? "" };
     } });
@@ -406,6 +442,7 @@ export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly strin
   };
   let inputDigest: string | undefined; let toolchainIdentity: string | undefined;
   const limitations = new Set<string>(ancestors.limitations);
+  if (scope?.deferred.length) limitations.add(deferredRustContextsLimitation(contextDir, scope.deferred));
   try {
     const run = scip("host");
     if (!run.bytes) {
@@ -419,12 +456,12 @@ export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly strin
     limitations.add(RUST_LOCKDOWN_LIMITATION);
     if (cargo.error) limitations.add(cargo.error);
     // Recomputed on every run (cache hit or not): did cargo actually resolve the dependency graph offline?
-    const resolution = dependencyResolution(root, scratch, pin.cargo, machinePaths);
+    const resolution = dependencyResolution(indexRoot, scratch, pin.cargo, machinePaths);
     if (resolution.failed || (!cargo.path && !resolution.checked)) limitations.add(rustDependencyLimitation(cargo.path ? "operator" : "isolated", resolution.reason));
     const indexes = [decodeScipIndex(run.bytes)];
     // The browser facade is deliberately compiled only for the target used by the
     // repository's wasm-pack build. rust-analyzer otherwise omits it on a host scan.
-    const needsWasmTarget = [...allowed].some(path => {
+    const needsWasmTarget = [...admitted].some(path => {
       const absolute = join(root, path);
       return existsSync(absolute) && hasWasmTargetGate(readFileSync(absolute, "utf8"));
     });
@@ -438,30 +475,41 @@ export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly strin
       }
       limitations.add("Rust feature coverage follows Cargo's default feature selection; optional features are not inferred.");
     }
-    const documents = indexes.flatMap(index => index.documents);
     const files = new Map<string, { text: string; starts: number[]; tree: Parser.Tree }>();
-    for (const path of allowed) {
+    for (const path of admitted) {
       const absolute = join(root, path);
       if (!existsSync(absolute)) continue;
       const text = readFileSync(absolute, "utf8");
       files.set(path, { text, starts: lineStarts(text), tree: rustParser().parse(text) });
-      for (const module of moduleTarget(path, text, allowed)) result.modules.push(module);
+      for (const module of moduleTarget(path, text, admitted)) result.modules.push(module);
     }
+    // SCIP paths are relative to the indexed context: canonicalized ONCE to repository paths (`..` resolved, never
+    // leaving the tree), and only documents of admitted files are ingested — a path dependency into another context
+    // or outside the scan root never contributes facts (nor first-party crates).
+    const canonicalDocuments = indexes.flatMap(index => index.documents).flatMap(document => {
+      const path = repositoryDocumentPath(contextDir, document.relativePath);
+      return path === undefined ? [] : [{ ...document, relativePath: path }];
+    });
+    const under = (path: string, dir: string): boolean => dir === "" || path === dir || path.startsWith(`${dir}/`);
+    // The selected context's own documents (incl. discovery-excluded tests/benches) define its first-party crates.
+    const contextDocuments = canonicalDocuments.filter(document => under(document.relativePath, scope?.base ?? "")
+      && !(scope?.foreignCrates ?? []).some(crate => under(document.relativePath, crate)));
+    const documents = canonicalDocuments.filter(document => files.has(document.relativePath));
     const names = new Map<string, string>();
-    for (const document of documents) for (const symbol of document.symbols) if (symbol.displayName) names.set(symbol.symbol, symbol.displayName);
+    for (const document of contextDocuments) for (const symbol of document.symbols) if (symbol.displayName) names.set(symbol.symbol, symbol.displayName);
     const definitions = new Map<string, AnalysisDefinition>();
     const ambiguousSymbols = new Set<string>();
     const pending: Array<{ path: string; occurrence: Occurrence; range: OccurrenceRange; location: AnalysisLocation; tree: Parser.Tree }> = [];
-    // Crates with a definition anywhere in the indexed repository are first-party.
+    // Crates with a definition anywhere in the indexed context are first-party.
     const firstPartyCrates = new Set<string>();
-    for (const document of documents) for (const occurrence of document.occurrences) {
+    for (const document of contextDocuments) for (const occurrence of document.occurrences) {
       if (occurrence.symbolRoles & SymbolRole.Definition) {
         const crate = parseScipCargoSymbol(occurrence.symbol)?.crate;
         if (crate) firstPartyCrates.add(crate);
       }
     }
     for (const document of documents) {
-      const path = document.relativePath.split(sep).join("/");
+      const path = document.relativePath;
       const file = files.get(path);
       if (!file) continue;
       for (const occurrence of document.occurrences) {
@@ -522,8 +570,9 @@ export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly strin
     result.references = canonical(references.values());
     result.modules = canonical(modules.values());
     result.externalReferences = canonical(externalReferences.values());
-    const indexedFiles = [...new Set(documents.map(document => document.relativePath.split(sep).join("/")))].filter(path => files.has(path)).sort();
-    const omitted = [...files.keys()].filter(path => !indexedFiles.includes(path)).sort();
+    const indexedFiles = [...new Set(documents.map(document => document.relativePath))].sort();
+    // Deferred contexts are named by their own limitation; any other discovered file without an index is listed.
+    const omitted = [...allowed].filter(path => !indexedFiles.includes(path) && !deferredFiles.has(path) && (files.has(path) || !admitted.has(path)) && existsSync(join(root, path))).sort();
     const tool = indexes[0]?.metadata?.toolInfo;
     if (run.stderr.includes("duplicate scip symbols")) limitations.add("rust-analyzer reported duplicate SCIP symbols; ambiguous symbols are omitted rather than linked to an arbitrary definition.");
     if (ambiguousSymbols.size) limitations.add(`Ambiguous SCIP definition symbols omitted: ${ambiguousSymbols.size}.`);

@@ -22,7 +22,7 @@ import { attachCoverage, coverageByCodeIdFromEntities, parseLcov, readLcov, type
 import { attachPortableSourceExcerpts } from "./excerpt.js";
 import { buildOverviewStory } from "./overview-story.js";
 import { buildUserFlowStories, publishedStoryCatalog, type PublishedStoryCatalog } from "./flow-story.js";
-import { discoverExtractedTree, TOOLING_UNIT_KEY, type Discovery, type DiscoverySummary } from "./discover.js";
+import { discoverExtractedTree, normalizeScanRoot, rustAnalysisScope, TOOLING_UNIT_KEY, type Discovery, type DiscoverySummary } from "./discover.js";
 import { membershipDiagnostics, membershipReport, type MembershipReport } from "./container-membership.js";
 import {
   attachCyclomaticComplexity,
@@ -33,8 +33,12 @@ import {
   type ClonePair,
   type ExtractInput,
   type UnresolvedRelativeImport,
-  type OversizedSymbol,
+  type AmbiguousPackageImport,
+  type VetoedPackageImport,
   resolveCargoPatches,
+  declaredPackageNames,
+  resolveWorkspacePackageImport,
+  type OversizedSymbol,
   entityDisplayName,
 } from "./extract.js";
 import { mergeEnrichment, type EnrichmentReport } from "./enrich.js";
@@ -78,6 +82,12 @@ export interface ScanOptions {
   lcovText?: string;
   /** Local Git revision to scan (HEAD by default). */
   revision?: string;
+  /**
+   * CLA-605 `--root <subdir>`: scan only this repository-relative directory of the
+   * pinned commit as the workspace root. Commit identity and every evidence path stay
+   * those of the whole repository; a root missing at the revision is an error.
+   */
+  root?: string;
   /**
    * CLA-271: content-addressed rust-analyzer SCIP index cache directory. Off by default (every full scan runs
    * rust-analyzer). The same Rust inputs, analyzer version and invocation reuse an index across checkouts.
@@ -218,6 +228,10 @@ export interface BuildScanArtifactsParams {
   clonePairs?: readonly ClonePair[];
   /** Unresolved relative imports from the same extract as `baseExtraction`. Recomputed from source when omitted. */
   unresolvedRelativeImports?: readonly UnresolvedRelativeImport[];
+  /** Ambiguous workspace-package imports from the same extract as `baseExtraction` (CLA-605). Recomputed when omitted. */
+  ambiguousPackageImports?: readonly AmbiguousPackageImport[];
+  /** Manifest-vetoed cross-root package imports from the same extract (CLA-605 A5). Recomputed when omitted. */
+  vetoedPackageImports?: readonly VetoedPackageImport[];
   /** Oversized declaration identifiers from the same extract as `baseExtraction`. Recomputed from source when omitted. */
   oversizedSymbols?: readonly OversizedSymbol[];
   /** Optional lcov.info bytes. Conventional `coverage/lcov.info` is read when omitted. */
@@ -253,6 +267,8 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
       clonePairs: params.clonePairs
         ?? clonePairsFromEntities(params.baseExtraction.entities, readFile),
       unresolvedRelativeImports: params.unresolvedRelativeImports ?? recollect().unresolvedRelativeImports,
+      ambiguousPackageImports: params.ambiguousPackageImports ?? recollect().ambiguousPackageImports,
+      vetoedPackageImports: params.vetoedPackageImports ?? recollect().vetoedPackageImports,
       oversizedSymbols: params.oversizedSymbols ?? recollect().oversizedSymbols,
     }
     : collectExtractedArchitecture(extractInput);
@@ -283,6 +299,8 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
   const scanLimitations = [
     ...discoveryLimitations(discovery.summary),
     ...unresolvedImportLimitations(collected.unresolvedRelativeImports),
+    ...ambiguousPackageImportLimitations(collected.ambiguousPackageImports),
+    ...vetoedPackageImportLimitations(collected.vetoedPackageImports),
     ...oversizedSymbolLimitations(collected.oversizedSymbols),
     ...cargoPatchLimitations(discovery, readFile),
   ];
@@ -486,6 +504,42 @@ export function unresolvedImportLimitations(imports: readonly UnresolvedRelative
 }
 
 /**
+ * CLA-605: bare imports of a package name that several JS workspace roots own, where
+ * the importer's own root has none (e.g. a standalone package): no relation was
+ * recorded rather than a guessed one. One line each naming the package and candidate
+ * roots, capped like {@link unresolvedImportLimitations}. Empty when none.
+ */
+export function ambiguousPackageImportLimitations(imports: readonly AmbiguousPackageImport[]): string[] {
+  if (imports.length === 0) return [];
+  const shown = imports.slice(0, UNRESOLVED_IMPORTS_SHOWN).map(item =>
+    `Ambiguous workspace package import ${displayText(item.path)}:${item.line}: '${displayText(item.specifier)}' — ${displayText(item.packageName)} is defined in ${item.candidateRoots.map(root => displayText(root)).join(", ")}`);
+  const hidden = imports.length - shown.length;
+  return [
+    `${imports.length} package import(s) name a workspace package defined in more than one workspace root, none of them the importer's; no relation was recorded for them.`,
+    ...shown,
+    ...(hidden > 0 ? [`+${hidden} more ambiguous package import(s) not itemized.`] : []),
+  ];
+}
+
+/**
+ * CLA-605 A5: bare imports of a package defined only in another root whose import the
+ * importer's own package.json rules out (another version, a workspace:/file: source
+ * elsewhere, an alias, git/URL/tarball, or an unverifiable range); no relation was
+ * recorded. Capped like {@link unresolvedImportLimitations}. Empty when none.
+ */
+export function vetoedPackageImportLimitations(imports: readonly VetoedPackageImport[]): string[] {
+  if (imports.length === 0) return [];
+  const shown = imports.slice(0, UNRESOLVED_IMPORTS_SHOWN).map(item =>
+    `Cross-root package import not linked ${displayText(item.path)}:${item.line}: '${displayText(item.specifier)}' — ${displayText(item.packageName)} is defined only in ${displayText(item.candidateRoot)}, but ${displayText(item.manifest)} declares '${displayText(item.spec)}' (${displayText(item.reason)})`);
+  const hidden = imports.length - shown.length;
+  return [
+    `${imports.length} package import(s) name a package defined only in another workspace root that the importer's package.json rules out; no relation was recorded for them.`,
+    ...shown,
+    ...(hidden > 0 ? [`+${hidden} more cross-root package import(s) not itemized.`] : []),
+  ];
+}
+
+/**
  * Root `Cargo.toml` `[patch.*]` path overrides that recorded no crate edge, one line
  * each: out-of-repository paths (never followed), paths naming no scanned crate, and
  * patches whose version no scanned crate's normal dependency requirement admits (an
@@ -495,7 +549,7 @@ export function unresolvedImportLimitations(imports: readonly UnresolvedRelative
  */
 export function cargoPatchLimitations(discovery: Discovery, readFile: (path: string) => string): string[] {
   return resolveCargoPatches(discovery, readFile).unfollowed.map(patch => {
-    const where = `Cargo.toml:${patch.line}: [patch.${displayText(patch.source)}] ${displayText(patch.name)} = { path = '${displayText(patch.path)}' }`;
+    const where = `${displayText(patch.manifestPath)}:${patch.line}: [patch.${displayText(patch.source)}] ${displayText(patch.name)} = { path = '${displayText(patch.path)}' }`;
     if (patch.reason === "version-mismatch") {
       const [first, ...more] = patch.rejected ?? [];
       const requirement = first ? `${displayText(first.path)}:${first.line} requires '${displayText(first.requirement)}'${more.length ? ` (+${more.length} more)` : ""}` : "";
@@ -527,7 +581,24 @@ function skippedJsLimitations(summary: DiscoverySummary): string[] {
 /** Runs the local scan pipeline against an already-acquired committed tree. */
 function analyzeLanguages(root: string, discovery: Discovery, mode: ScanOptions['analysisMode'], installationRoot?: string, rustIndexCacheDir?: string, checkoutRoot?: string): LanguageAnalysis | undefined {
   if (mode !== 'full') return undefined;
-  const analyses = [analyzeTypeScript(root, discovery.sourceFiles, installationRoot, checkoutRoot), analyzeRust(root, discovery.sourceFiles, { ...(rustIndexCacheDir ? { indexCacheDir: rustIndexCacheDir } : {}), ...(checkoutRoot ? { checkoutRoot } : {}) })];
+  // CLA-605: semantic resolution follows the same per-importer decisions as container
+  // edges, and Rust indexes one selected Cargo context (rustAnalysisScope).
+  const decide = (specifier: string, fromFile: string): string | null | undefined => {
+    const decision = resolveWorkspacePackageImport(specifier, fromFile, discovery);
+    return decision.kind === "external" ? undefined : decision.kind === "resolved" ? decision.packageDir : null;
+  };
+  const counts = new Map<string, number>();
+  for (const declaration of discovery.resolution.packages) {
+    if (declaration.name !== undefined && declaration.context !== undefined) counts.set(declaration.name, (counts.get(declaration.name) ?? 0) + 1);
+  }
+  const unique = new Map(discovery.resolution.packages.flatMap(declaration =>
+    declaration.name !== undefined && declaration.context !== undefined && counts.get(declaration.name) === 1 ? [[declaration.name, declaration.dir] as const] : []));
+  const workspace = { base: discovery.summary.scanRoot ?? "", resolve: decide, packages: unique, declared: declaredPackageNames(discovery.resolution), packageDirs: new Set(discovery.resolution.packages.map(declaration => declaration.dir)) };
+  const rustScope = rustAnalysisScope(discovery);
+  const analyses = [
+    analyzeTypeScript(root, discovery.sourceFiles, installationRoot, checkoutRoot, workspace),
+    analyzeRust(root, discovery.sourceFiles, { ...(rustIndexCacheDir ? { indexCacheDir: rustIndexCacheDir } : {}), ...(checkoutRoot ? { checkoutRoot } : {}), scope: rustScope }),
+  ];
   return { schemaVersion: 1, definitions: analyses.flatMap(item => item.definitions), references: analyses.flatMap(item => item.references), modules: analyses.flatMap(item => item.modules), externalReferences: analyses.flatMap(item => item.externalReferences ?? []), coverage: analyses.flatMap(item => item.coverage) };
 }
 
@@ -537,9 +608,11 @@ export function scanAcquiredRepository(acquired: Pick<AcquiredCommittedTree, "ro
   const fallbackName = acquired.sourceName;
   const repositorySlug = options.repositorySlug ?? slug(packageName ?? fallbackName);
   const systemName = options.systemName ?? packageName ?? (fallbackName.charAt(0).toUpperCase() + fallbackName.slice(1));
+  const scanRoot = options.root === undefined ? undefined : normalizeScanRoot(options.root);
   const discovery = discoverExtractedTree(sourceRoot, {
     ...(options.includeAllMembers ? { includeAllMembers: true } : {}),
     ...(acquired.skipped ? { skippedEntries: acquired.skipped } : {}),
+    ...(scanRoot ? { root: scanRoot } : {}),
   });
   const readFile = (repoRelativePath: string): string => readFileSync(`${sourceRoot}/${repoRelativePath}`, "utf8");
   // Read manifests/lockfiles BEFORE analyzers run: cargo/rust-analyzer may write a
@@ -598,9 +671,11 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
     const repositorySlug = options.repositorySlug ?? slug(`${source.owner}-${source.repo}`);
     const systemName = options.systemName ?? packageName ?? source.repo;
     const pin: RepositoryPin = { commitSha: commit.sha, treeHash: commit.treeSha, generatedAt: commit.generatedAt };
+    const scanRoot = options.root === undefined ? undefined : normalizeScanRoot(options.root);
     const discovery = discoverExtractedTree(acquired.root, {
       ...(options.includeAllMembers ? { includeAllMembers: true } : {}),
       skippedEntries: acquired.skipped,
+      ...(scanRoot ? { root: scanRoot } : {}),
     });
     const dependencyInputs = collectDependencyInputs(discovery.sourceFiles, readFile);
     const languageAnalysis = analyzeLanguages(acquired.root, discovery, options.analysisMode, undefined, options.rustIndexCacheDir, acquired.checkoutRoot);
@@ -617,6 +692,8 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
     let cyclomaticById: ReadonlyMap<string, number> | undefined;
     let clonePairs: readonly ClonePair[] | undefined;
     let unresolvedRelativeImports: readonly UnresolvedRelativeImport[] | undefined;
+    let ambiguousPackageImports: readonly AmbiguousPackageImport[] | undefined;
+    let vetoedPackageImports: readonly VetoedPackageImport[] | undefined;
     let oversizedSymbols: readonly OversizedSymbol[] | undefined;
     let enrichmentDocs = options.enrichmentDocs;
     if ((!enrichmentDocs || enrichmentDocs.size === 0) && options.enrichWithPackets) {
@@ -632,6 +709,8 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
       cyclomaticById = collected.cyclomaticById;
       clonePairs = collected.clonePairs;
       unresolvedRelativeImports = collected.unresolvedRelativeImports;
+      ambiguousPackageImports = collected.ambiguousPackageImports;
+      vetoedPackageImports = collected.vetoedPackageImports;
       oversizedSymbols = collected.oversizedSymbols;
       const sidecar = loadLcovSidecar(readFile, options.lcovText);
       const coverageByCodeId = coverageByCodeIdFromEntities(baseExtraction.entities, sidecar);
@@ -662,6 +741,8 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
       ...(cyclomaticById ? { cyclomaticById } : {}),
       ...(clonePairs && clonePairs.length ? { clonePairs } : {}),
       ...(unresolvedRelativeImports ? { unresolvedRelativeImports } : {}),
+      ...(ambiguousPackageImports ? { ambiguousPackageImports } : {}),
+      ...(vetoedPackageImports ? { vetoedPackageImports } : {}),
       ...(oversizedSymbols ? { oversizedSymbols } : {}),
       ...(options.lcovText ? { lcovText: options.lcovText } : {}),
     });

@@ -18,6 +18,7 @@ import { applyComponentMembership, type ComponentMapInput } from './component-ma
 import { runConsumersQuery } from './consumers-cli.js';
 import { product, productVersion } from './product.js';
 import { rustParserUnavailable } from './analyzers.js';
+import { normalizeScanRoot } from "./discover.js";
 
 interface CliArgs {
   source: string;
@@ -43,7 +44,7 @@ function printUsage(): void {
     `Usage: ${product.bin} [--source <path | gh:owner/repo[@ref]>] [--out <dir>]`,
     `       ${pad} [--system-name <name>] [--repo <slug>] [--max-tarball-mb <n>]`,
     `       ${pad} [--emit-packets <dir>] [--emit-prompt <dir>] [--enrich-from <dir>]`,
-    `       ${pad} [--revision <rev>] [--component-map <path>] [--include-members] [--public-api] [--lcov <path>]`,
+    `       ${pad} [--revision <rev>] [--root <subdir>] [--component-map <path>] [--include-members] [--public-api] [--lcov <path>]`,
     `       ${product.bin} export --bundle <atlas.okie.json> --out <empty-dir> [--viewer <built-dir>]`,
     `       ${product.bin} enrich --bundle <atlas.okie.json> --docs <enrichment-dir> --out <atlas.okie.json>`,
     `       ${product.bin} consumers <dependency> --bundle <atlas.okie.json> [--ecosystem npm|cargo] [--json] [--runtime-only]`,
@@ -54,6 +55,8 @@ function printUsage(): void {
     "  --system-name       display name for the software system (default: derived)",
     "  --repo <slug>       repository slug for snapshot/repo IDs (default: derived)",
     "  --revision <rev>    local Git revision to scan (default: HEAD)",
+    "  --root <subdir>     scan one subdirectory of the commit as the workspace root; paths,",
+    "                      links and commit identity stay those of the whole repository",
     "  --component-map <p> explicit JSON component membership map; local external input is hash-pinned in component-map-report.json",
     "  --full / --quick    semantic analyzers (default) or syntax-only scan; limits are recorded",
     "  --include-source   include full referenced files in atlas.okie.json (snippets are always retained)",
@@ -100,6 +103,7 @@ function parseArgs(argv: readonly string[]): CliArgs {
       case "--system-name": options.systemName = next(); break;
       case "--repo": options.repositorySlug = next(); break;
       case "--revision": options.revision = next(); break;
+      case "--root": options.root = next(); normalizeScanRoot(options.root); break;
       case "--component-map": componentMapPath = next(); break;
       case "--quick": options.analysisMode = 'quick'; break;
       case "--full": options.analysisMode = 'full'; break;
@@ -242,6 +246,9 @@ function summaryLines(artifacts: ScanArtifacts): string {
     : `  component map: REJECTED; retained original file graph (see component-map-report.json)\n${mapping.reasons.map(reason => `    ${reason}\n`).join('')}`;
   return `${product.bin}: ${snapshot.entities.length} entities, ${snapshot.relations.length} relations\n` +
     `  commit ${pin.commitSha}\n  tree   ${pin.treeHash}\n` +
+    (discoverySummary.scanRoot ? `  root   ${discoverySummary.scanRoot}/ (paths stay repository-relative)\n` : "") +
+    (discoverySummary.nestedWorkspaceRoots ? `  nested workspace roots: ${discoverySummary.nestedWorkspaceRoots.join(", ")}\n` : "") +
+    (discoverySummary.standalonePackages ? `  standalone packages (own lockfile): ${discoverySummary.standalonePackages.join(", ")}\n` : "") +
     modeNote + membersNote + limitationsNote + aliasNote + coverageNote + flowNote + enrichedNote + systemScopeNote + mappingNote;
 }
 

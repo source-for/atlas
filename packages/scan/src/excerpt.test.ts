@@ -5,6 +5,7 @@ import type { Discovery } from "./discover.js";
 import { PORTABLE_CALL_CAPTURE_LIMITS, attachPortableSourceExcerpts, languageForScanPath, portableSourceExcerpt } from "./excerpt.js";
 import { extractArchitecture } from "./extract.js";
 import { buildScanArtifacts } from "./scan.js";
+import { testResolution } from "./test-resolution.js";
 
 const pin = {
   commitSha: "abc123def456abc123def456abc123def456abc1",
@@ -43,7 +44,7 @@ function discovery(): Discovery {
       ["pkg/a/src/long.ts", "pkg/a"],
       ["pkg/a/src/wide.ts", "pkg/a"],
     ]),
-    unitByPackageName: new Map([["@acme/a", "pkg/a"]]),
+    resolution: testResolution(new Map([["@acme/a", "pkg/a"]])),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
 }

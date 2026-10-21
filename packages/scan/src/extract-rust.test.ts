@@ -4,6 +4,7 @@ import { validateArchitectureExtraction } from "@okie/architecture";
 import type { Discovery } from "./discover.js";
 import { extractArchitecture } from "./extract.js";
 import { rustTopLevelItems } from "./extract-rust.js";
+import { testResolution } from "./test-resolution.js";
 
 test("rustTopLevelItems captures mods, structs, enums, fns, and impl methods", () => {
   const items = rustTopLevelItems([
@@ -66,7 +67,7 @@ test("rust crate extraction emits L3 files and L4 outline; Open inside is enable
       ["crates/engine/src/lib.rs", "crates/engine"],
       ["crates/engine/src/hit_test.rs", "crates/engine"],
     ]),
-    unitByPackageName: new Map(),
+    resolution: testResolution(new Map()),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
   const files: Record<string, string> = {
@@ -111,7 +112,7 @@ test("rust --public-api keeps pub items and pub methods only", () => {
     sourceFiles: ["crates/engine/src/lib.rs"],
     units: [{ kind: "rust", dir: "crates/engine", name: "engine", evidencePath: "crates/engine", packageManifest: undefined }],
     unitByFile: new Map([["crates/engine/src/lib.rs", "crates/engine"]]),
-    unitByPackageName: new Map(),
+    resolution: testResolution(new Map()),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
   const extraction = extractArchitecture({

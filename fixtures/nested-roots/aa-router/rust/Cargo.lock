@@ -1,0 +1,10 @@
+version = 3
+
+[[package]]
+name = "aa-core"
+version = "0.1.0"
+
+[[package]]
+name = "aa-server"
+version = "0.1.0"
+dependencies = ["aa-core"]

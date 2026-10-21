@@ -1,0 +1,15 @@
+lockfileVersion: '9.0'
+
+importers:
+  .: {}
+  apps/web:
+    dependencies:
+      '@aa/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+  packages/core: {}
+  packages/sdk:
+    dependencies:
+      '@aa/core':
+        specifier: workspace:*
+        version: link:../core

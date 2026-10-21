@@ -13,6 +13,7 @@ import type { Discovery } from "./discover.js";
 import { extractArchitecture } from "./extract.js";
 import { mergeEnrichment } from "./enrich.js";
 import { buildScanArtifacts, scanRepository, stableJson } from "./scan.js";
+import { testResolution } from "./test-resolution.js";
 
 const files: Record<string, string> = {
   "README.md": "# Acme",
@@ -38,7 +39,7 @@ function discovery(): Discovery {
       ["pkg/a/src/index.ts", "pkg/a"], ["pkg/a/src/util.ts", "pkg/a"],
       ["pkg/b/src/main.ts", "pkg/b"], ["pkg/c/src/config.ts", "pkg/c"],
     ]),
-    unitByPackageName: new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"], ["@acme/c", "pkg/c"]]),
+    resolution: testResolution(new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"], ["@acme/c", "pkg/c"]])),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
 }
@@ -251,7 +252,7 @@ test("collapsing edges unions their evidence; dropped self-loops are counted in 
     sourceFiles: ["m/src/a.ts", "m/src/b.ts", "m/src/c.ts"],
     units: [{ kind: "member", dir: "m", name: "@m/m", packageName: "@m/m", evidencePath: "m", packageManifest: "m/package.json" }],
     unitByFile: new Map([["m/src/a.ts", "m"], ["m/src/b.ts", "m"], ["m/src/c.ts", "m"]]),
-    unitByPackageName: new Map([["@m/m", "m"]]),
+    resolution: testResolution(new Map([["@m/m", "m"]])),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
   const ext = extractArchitecture({ discovery: localDiscovery, readFile: localRead, systemName: "M", systemSlug: "m" });

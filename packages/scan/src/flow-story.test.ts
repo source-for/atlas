@@ -10,6 +10,7 @@ import {
   USER_FLOW_TEMPLATES,
 } from "./flow-story.js";
 import { buildScanArtifacts, scanRepository, stableJson } from "./scan.js";
+import { testResolution } from "./test-resolution.js";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -53,7 +54,7 @@ function discovery(includeFlows: boolean): Discovery {
       { kind: "member", dir: "pkg/b", name: "@acme/b", packageName: "@acme/b", evidencePath: "pkg/b", packageManifest: "pkg/b/package.json" },
     ],
     unitByFile,
-    unitByPackageName: new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"]]),
+    resolution: testResolution(new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"]])),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
 }

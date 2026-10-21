@@ -10,6 +10,7 @@ import {
 import type { Discovery } from "./discover.js";
 import { buildOverviewStory } from "./overview-story.js";
 import { buildScanArtifacts, scanRepository, stableJson } from "./scan.js";
+import { testResolution } from "./test-resolution.js";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -36,7 +37,7 @@ function discovery(): Discovery {
       ["pkg/a/src/index.ts", "pkg/a"], ["pkg/a/src/util.ts", "pkg/a"],
       ["pkg/b/src/main.ts", "pkg/b"],
     ]),
-    unitByPackageName: new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"]]),
+    resolution: testResolution(new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"]])),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
 }

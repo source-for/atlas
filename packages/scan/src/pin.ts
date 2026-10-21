@@ -152,7 +152,10 @@ export function acquireCommittedTree(sourceRoot: string, revision = "HEAD", opti
   const temporary = mkdtempSync(join(options.tempRoot ?? scanWorkDir(), "okie-committed-"));
   const root = join(temporary, sourceName);
   try {
-    mkdirSync(root);
+    // Fixed 0755 (umask can only remove bits): an in-repository directory is never
+    // group/other-writable, which the Rust ancestor check refuses (CLA-605: a nested
+    // Cargo context has repository directories as ancestors). Same as the tarball path.
+    mkdirSync(root, { mode: 0o755 });
     // Regular files first (no link exists yet, so no write can pass through one), in
     // ls-tree byte order. On a case-insensitive filesystem two case-aliased files land in
     // one file (first spelling, last content) — deterministic for a given filesystem; a
@@ -162,7 +165,7 @@ export function acquireCommittedTree(sourceRoot: string, revision = "HEAD", opti
       const entry = files[index]!;
       const target = join(root, entry.path);
       try {
-        mkdirSync(dirname(target), { recursive: true });
+        mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
         writeFileSync(target, bytes, { mode: entry.mode === '100755' ? 0o755 : 0o644 });
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;

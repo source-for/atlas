@@ -13,7 +13,8 @@ import {
   SOURCE_EXCERPT_LIMITS,
   compareText,
 } from "@okie/architecture";
-import type { Discovery } from "./discover.js";
+import type { Discovery, PackageDeclaration, WorkspaceResolution } from "./discover.js";
+import semver from "semver";
 import type { AnalysisLocation, LanguageAnalysis } from "./language-analysis.js";
 import { pathSlug, resolveCollisions, slug, typedId, unboundedTypedId } from "./ids.js";
 import { rustTopLevelItems } from "./extract-rust.js";
@@ -791,8 +792,8 @@ export function cargoPatchPaths(manifestText: string): CargoPatchPath[] {
  * repository (`../tokio`) or names no crate unit is never followed (see
  * {@link unfollowedCargoPatches}). Exact crate-root match, unlike import resolution.
  */
-export function cargoPatchTargetDir(patch: CargoPatchPath, crateDirs: ReadonlySet<string>): string | undefined {
-  const target = repositoryPathOf(patch.path);
+export function cargoPatchTargetDir(patch: CargoPatchPath, crateDirs: ReadonlySet<string>, contextDir = ""): string | undefined {
+  const target = contextPathOf(contextDir, patch.path);
   return target !== undefined && crateDirs.has(target) ? target : undefined;
 }
 
@@ -814,8 +815,16 @@ function repositoryPathOf(path: string): string | undefined {
   return stack.join("/");
 }
 
-/** A root `[patch.*]` path override that became no crate edge, and why. */
+/** `path`, relative to the Cargo context `contextDir`, as a repository path (see {@link repositoryPathOf}). */
+function contextPathOf(contextDir: string, path: string): string | undefined {
+  if (/^[\\/]/.test(path) || /^[A-Za-z]:/.test(path)) return undefined;
+  return repositoryPathOf(contextDir ? `${contextDir}/${path}` : path);
+}
+
+/** A context's `[patch.*]` path override that became no crate edge, and why. */
 export interface UnfollowedCargoPatch extends CargoPatchPath {
+  /** The workspace manifest declaring the patch (`Cargo.toml`, or a nested context's). */
+  manifestPath: string;
   /**
    * `outside-repository`: resolves above the source root (never read); `no-crate`: names
    * no scanned crate; `version-mismatch`: every scanned crate's normal dependency on it
@@ -836,10 +845,11 @@ export interface UnfollowedCargoPatch extends CargoPatchPath {
  * (outside the repository, or naming no scanned crate). Version mismatches need the
  * member manifests — see {@link resolveCargoPatches}.
  */
-export function unfollowedCargoPatches(rootManifest: string, crateDirs: ReadonlySet<string>): UnfollowedCargoPatch[] {
-  return cargoPatchPaths(rootManifest).flatMap(patch => cargoPatchTargetDir(patch, crateDirs) !== undefined ? [] : [{
+export function unfollowedCargoPatches(rootManifest: string, crateDirs: ReadonlySet<string>, contextDir = ""): UnfollowedCargoPatch[] {
+  return cargoPatchPaths(rootManifest).flatMap(patch => cargoPatchTargetDir(patch, crateDirs, contextDir) !== undefined ? [] : [{
     ...patch,
-    reason: repositoryPathOf(patch.path) === undefined ? "outside-repository" as const : "no-crate" as const,
+    manifestPath: contextDir ? `${contextDir}/Cargo.toml` : "Cargo.toml",
+    reason: contextPathOf(contextDir, patch.path) === undefined ? "outside-repository" as const : "no-crate" as const,
   }]);
 }
 
@@ -850,7 +860,8 @@ export interface CargoPatchEdge {
   /** The dependent's manifest and its declaration line. */
   manifestPath: string;
   line: number;
-  /** The root `Cargo.toml` line of the `path` override. */
+  /** The context's workspace manifest and the line of the `path` override. */
+  patchManifest: string;
   patchLine: number;
 }
 
@@ -866,64 +877,78 @@ export interface CargoPatchEdge {
  * whose dependents all reject it is reported `version-mismatch`. Deterministic: discovery's unit order, then
  * manifest order.
  */
-export function resolveCargoPatches(discovery: Discovery, readFile: (path: string) => string): { edges: CargoPatchEdge[]; unfollowed: UnfollowedCargoPatch[] } {
+export function resolveCargoPatches(discovery: Pick<Discovery, "units" | "resolution">, readFile: (path: string) => string): { edges: CargoPatchEdge[]; unfollowed: UnfollowedCargoPatch[] } {
   const crateUnits = discovery.units.filter(unit => unit.kind === "rust");
   if (crateUnits.length === 0) return { edges: [], unfollowed: [] };
   const read = (path: string): string | undefined => { try { return readFile(path) ?? undefined; } catch { return undefined; } };
-  const rootManifest = read("Cargo.toml") ?? "";
   const crateDirs = new Set(crateUnits.map(unit => unit.dir));
-  const unfollowed = unfollowedCargoPatches(rootManifest, crateDirs);
-  const root = parseCargoManifest(rootManifest);
+  // CLA-605: each crate's governing Cargo context supplies its patches, inherited
+  // dependencies and inherited version; a context's [patch] never applies to another's crates.
+  const contextOf = new Map(discovery.resolution.cargoContexts.flatMap(context => context.crates.map(crate => [crate, context.dir] as const)));
+  const manifestOf = (contextDir: string): string => contextDir ? `${contextDir}/Cargo.toml` : "Cargo.toml";
+  const parsedContexts = new Map<string, ReturnType<typeof parseCargoManifest>>();
+  const contextManifest = (contextDir: string): ReturnType<typeof parseCargoManifest> => {
+    let parsed = parsedContexts.get(contextDir);
+    if (!parsed) { parsed = parseCargoManifest(read(manifestOf(contextDir)) ?? ""); parsedContexts.set(contextDir, parsed); }
+    return parsed;
+  };
   const versionOf = (dir: string): string | undefined => {
     const text = read(`${dir}/Cargo.toml`);
     if (text === undefined) return undefined;
     const manifest = parseCargoManifest(text);
     // Cargo (>= 1.75) treats a package without `version` as 0.0.0.
-    return manifest.packageVersionInherited ? root.workspacePackageVersion : manifest.packageVersion ?? "0.0.0";
+    return manifest.packageVersionInherited ? contextManifest(contextOf.get(dir) ?? "").workspacePackageVersion : manifest.packageVersion ?? "0.0.0";
   };
-  // Inheritance is by declaration KEY (`renamed = { workspace = true }`); the patch then
-  // matches the entry's resolved package name (`package = "core"`).
-  const workspaceSources = new Map(cargoSourcedDependencies(rootManifest).flatMap(dependency => dependency.workspace ? [[dependency.key, dependency] as const] : []));
-  const dependents = crateUnits.map(unit => {
-    const manifestPath = `${unit.dir}/Cargo.toml`;
-    const text = read(manifestPath) ?? "";
-    const own = cargoSourcedDependencies(text).filter(dependency => !dependency.workspace);
-    const inherited = cargoPathDependencies(text).flatMap(dependency => {
-      if (dependency.workspace || !dependency.inherited) return [];
-      const entry = workspaceSources.get(dependency.name);
-      return entry ? [{ ...entry, line: dependency.line }] : [];
-    });
-    return { dir: unit.dir, manifestPath, dependencies: [...own, ...inherited].sort((left, right) => left.line - right.line) };
-  });
   const edges: CargoPatchEdge[] = [];
-  for (const patch of cargoPatchPaths(rootManifest)) {
-    const toDir = cargoPatchTargetDir(patch, crateDirs);
-    if (toDir === undefined) continue;
-    const version = versionOf(toDir);
-    const rejected: Array<{ path: string; line: number; requirement: string }> = [];
-    const unparsable: Array<{ path: string; line: number; requirement: string }> = [];
-    let used = false;
-    for (const crate of dependents) {
-      if (crate.dir === toDir) continue;
-      for (const dependency of crate.dependencies) {
-        if (dependency.name !== patch.name || !cargoPatchApplies(patch.source, dependency.source)) continue;
-        // 0.0.0 always parses, so `undefined` here means the requirement itself does not.
-        if (dependency.version !== undefined && cargoRequirementMatches(dependency.version, "0.0.0") === undefined) {
-          unparsable.push({ path: crate.manifestPath, line: dependency.line, requirement: dependency.version });
-          continue;
+  const unfollowed: UnfollowedCargoPatch[] = [];
+  for (const context of discovery.resolution.cargoContexts) {
+    const patchManifest = manifestOf(context.dir);
+    const rootManifest = read(patchManifest);
+    if (rootManifest === undefined) continue;
+    const contextUnfollowed = unfollowedCargoPatches(rootManifest, crateDirs, context.dir);
+    // Inheritance is by declaration KEY (`renamed = { workspace = true }`); the patch then
+    // matches the entry's resolved package name (`package = "core"`).
+    const workspaceSources = new Map(cargoSourcedDependencies(rootManifest).flatMap(dependency => dependency.workspace ? [[dependency.key, dependency] as const] : []));
+    const dependents = crateUnits.filter(unit => contextOf.get(unit.dir) === context.dir).map(unit => {
+      const manifestPath = `${unit.dir}/Cargo.toml`;
+      const text = read(manifestPath) ?? "";
+      const own = cargoSourcedDependencies(text).filter(dependency => !dependency.workspace);
+      const inherited = cargoPathDependencies(text).flatMap(dependency => {
+        if (dependency.workspace || !dependency.inherited) return [];
+        const entry = workspaceSources.get(dependency.name);
+        return entry ? [{ ...entry, line: dependency.line }] : [];
+      });
+      return { dir: unit.dir, manifestPath, dependencies: [...own, ...inherited].sort((left, right) => left.line - right.line) };
+    });
+    for (const patch of cargoPatchPaths(rootManifest)) {
+      const toDir = cargoPatchTargetDir(patch, crateDirs, context.dir);
+      if (toDir === undefined) continue;
+      const version = versionOf(toDir);
+      const rejected: Array<{ path: string; line: number; requirement: string }> = [];
+      const unparsable: Array<{ path: string; line: number; requirement: string }> = [];
+      let used = false;
+      for (const crate of dependents) {
+        if (crate.dir === toDir) continue;
+        for (const dependency of crate.dependencies) {
+          if (dependency.name !== patch.name || !cargoPatchApplies(patch.source, dependency.source)) continue;
+          // CLA-594: 0.0.0 always parses, so `undefined` here means the requirement itself does not.
+          if (dependency.version !== undefined && cargoRequirementMatches(dependency.version, "0.0.0") === undefined) {
+            unparsable.push({ path: crate.manifestPath, line: dependency.line, requirement: dependency.version });
+            continue;
+          }
+          if (version !== undefined && dependency.version !== undefined && cargoRequirementMatches(dependency.version, version) === false) {
+            rejected.push({ path: crate.manifestPath, line: dependency.line, requirement: dependency.version });
+            continue;
+          }
+          used = true;
+          edges.push({ fromDir: crate.dir, toDir, manifestPath: crate.manifestPath, line: dependency.line, patchManifest, patchLine: patch.line });
         }
-        if (version !== undefined && dependency.version !== undefined && cargoRequirementMatches(dependency.version, version) === false) {
-          rejected.push({ path: crate.manifestPath, line: dependency.line, requirement: dependency.version });
-          continue;
-        }
-        used = true;
-        edges.push({ fromDir: crate.dir, toDir, manifestPath: crate.manifestPath, line: dependency.line, patchLine: patch.line });
       }
+      if (!used && rejected.length > 0) contextUnfollowed.push({ ...patch, manifestPath: patchManifest, reason: "version-mismatch", version: version!, rejected });
+      if (unparsable.length > 0) contextUnfollowed.push({ ...patch, manifestPath: patchManifest, reason: "unparsable-requirement", rejected: unparsable });
     }
-    if (!used && rejected.length > 0) unfollowed.push({ ...patch, reason: "version-mismatch", version: version!, rejected });
-    if (unparsable.length > 0) unfollowed.push({ ...patch, reason: "unparsable-requirement", rejected: unparsable });
+    unfollowed.push(...contextUnfollowed.sort((left, right) => left.line - right.line));
   }
-  unfollowed.sort((left, right) => left.line - right.line);
   return { edges, unfollowed };
 }
 
@@ -947,12 +972,152 @@ export function cargoPatchApplies(patchSource: string, dependencySource: string)
   return cargoSourceKey(patchSource) === cargoSourceKey(dependencySource);
 }
 
-/** Maps a bare `@okie/*` specifier to the owning workspace-member unit dir, or undefined. */
-export function resolvePackageImport(specifier: string, unitByPackageName: ReadonlyMap<string, string>): string | undefined {
-  for (const [name, dir] of unitByPackageName) {
-    if (specifier === name || specifier.startsWith(`${name}/`)) return dir;
+/** A bare import whose package name several JS workspace roots own; no edge was recorded (CLA-605). */
+export interface AmbiguousPackageImport {
+  path: string;
+  /** 1-based line of the import. */
+  line: number;
+  specifier: string;
+  /** The workspace package name the specifier names. */
+  packageName: string;
+  /** Repository-relative roots (`.` = scan root) owning a package of that name; sorted. */
+  candidateRoots: string[];
+}
+
+/**
+ * A bare import of a package defined in exactly one OTHER root whose import the
+ * importer's own `package.json` rules out (CLA-605 A5); no edge was recorded.
+ */
+export interface VetoedPackageImport {
+  path: string;
+  line: number;
+  specifier: string;
+  packageName: string;
+  /** The root (`.` = scan root) or package dir defining the name. */
+  candidateRoot: string;
+  /** The importer's nearest `package.json` and the declaration it holds. */
+  manifest: string;
+  spec: string;
+  reason: string;
+}
+
+/**
+ * CLA-605: the decision for one bare import (shared by container edges, external
+ * filtering and semantic TypeScript resolution):
+ * - `resolved`: the package's unit (`unit`) and directory (`packageDir`);
+ * - `unavailable`: the name is defined in scope, but by a package with no scanned
+ *   source (sourceless or skipped member) — no edge, not third-party, no fallback;
+ * - `ambiguous`: several roots define it and none is the importer's own;
+ * - `vetoed`: defined only in another root, and the importer's manifest declares a
+ *   version or source that package cannot satisfy;
+ * - `external`: no in-scope package has the name (ordinary third-party handling).
+ */
+export type PackageImportDecision =
+  | { kind: "resolved"; unit: string; packageDir: string }
+  | { kind: "unavailable"; packageName: string; packageDir: string }
+  | { kind: "ambiguous"; packageName: string; candidateRoots: string[] }
+  | { kind: "vetoed"; packageName: string; candidateRoot: string; manifest: string; spec: string; reason: string }
+  | { kind: "external" };
+
+interface ResolutionIndex {
+  byName: Map<string, PackageDeclaration[]>;
+  byDir: Map<string, PackageDeclaration>;
+  roots: Set<string>;
+}
+const resolutionIndexes = new WeakMap<WorkspaceResolution, ResolutionIndex>();
+function resolutionIndex(resolution: WorkspaceResolution): ResolutionIndex {
+  let index = resolutionIndexes.get(resolution);
+  if (!index) {
+    const byName = new Map<string, PackageDeclaration[]>();
+    for (const declaration of resolution.packages) {
+      if (declaration.name === undefined || declaration.context === undefined) continue;
+      byName.set(declaration.name, [...(byName.get(declaration.name) ?? []), declaration]);
+    }
+    index = { byName, byDir: new Map(resolution.packages.map(declaration => [declaration.dir, declaration])), roots: new Set(resolution.jsRoots) };
+    resolutionIndexes.set(resolution, index);
+  }
+  return index;
+}
+
+/** Package names some in-scope package (with a context) declares; such a name is never a third-party package. */
+export function declaredPackageNames(resolution: WorkspaceResolution): ReadonlySet<string> {
+  return new Set(resolutionIndex(resolution).byName.keys());
+}
+
+/**
+ * The importer's nearest package: the first directory at or above `fromFile`'s that
+ * holds an in-scope package.json or is a JS workspace root. Its context decides "own".
+ */
+function importerPackage(fromFile: string, index: ResolutionIndex): { context?: string; declaration?: PackageDeclaration } {
+  let dir = fromFile.includes("/") ? fromFile.slice(0, fromFile.lastIndexOf("/")) : "";
+  for (;;) {
+    const declaration = index.byDir.get(dir);
+    if (declaration) return { ...(declaration.context !== undefined ? { context: declaration.context } : {}), declaration };
+    if (index.roots.has(dir)) return { context: dir };
+    if (dir === "") return {};
+    dir = dir.includes("/") ? dir.slice(0, dir.lastIndexOf("/")) : "";
+  }
+}
+
+/**
+ * CLA-605 A5: why `importer`'s manifest rules out importing `candidate` (defined in
+ * another root), or undefined when it does not. Every declaration of the name in any
+ * dependency section is checked; one veto suffices. Not declared at all: no veto.
+ */
+export function manifestVeto(importer: PackageDeclaration | undefined, candidate: PackageDeclaration): { spec: string; reason: string } | undefined {
+  for (const entry of importer?.dependencies ?? []) {
+    if (entry.name !== candidate.name) continue;
+    const reason = specVeto(entry.spec.trim(), candidate, importer!.dir);
+    if (reason) return { spec: entry.spec, reason };
   }
   return undefined;
+}
+
+function specVeto(spec: string, candidate: PackageDeclaration, importerDir: string): string | undefined {
+  if (spec.startsWith("workspace:")) return "the workspace: protocol resolves only inside the importer's own workspace";
+  const local = /^(file|link|portal):(.*)$/.exec(spec);
+  if (local) return normalizeRepoPath(importerDir, local[2]!) === candidate.dir ? undefined : `${local[1]}: names another directory`;
+  let range = spec;
+  const alias = /^npm:(.+)$/.exec(spec);
+  if (alias) {
+    const at = alias[1]!.lastIndexOf("@");
+    const aliasName = at > 0 ? alias[1]!.slice(0, at) : alias[1]!;
+    if (aliasName !== candidate.name) return `an npm: alias to ${aliasName}`;
+    range = at > 0 ? alias[1]!.slice(at + 1) : "*";
+  }
+  if (/^(git\+|git:|github:|gitlab:|bitbucket:|https?:|ssh:)/.test(range) || /\.(tgz|tar\.gz)$/.test(range) || /^[^@\s/:]+\/[^\s]+$/.test(range)) return "a git, URL or tarball source";
+  if (candidate.version === undefined || !semver.valid(candidate.version)) return "unverified: the candidate package declares no valid version";
+  if (semver.validRange(range) === null) return `unverified: '${range}' is not a semver range`;
+  return semver.satisfies(candidate.version, range) ? undefined : `version ${candidate.version} does not satisfy '${range}'`;
+}
+
+/**
+ * CLA-605: the {@link PackageImportDecision} for a bare import from `fromFile`. Own
+ * context first: when the importer's nearest package belongs to a context defining the
+ * name, that declaration decides (a sourceless one is terminal). Otherwise exactly one
+ * in-scope declaration resolves, unless the importer's manifest vetoes it; several are
+ * ambiguous; none is third-party.
+ */
+export function resolveWorkspacePackageImport(specifier: string, fromFile: string, discovery: Pick<Discovery, "resolution">): PackageImportDecision {
+  const packageName = packageNameOfSpecifier(specifier);
+  const index = resolutionIndex(discovery.resolution);
+  const candidates = packageName === undefined ? [] : index.byName.get(packageName) ?? [];
+  if (candidates.length === 0) return { kind: "external" };
+  const decide = (declaration: PackageDeclaration): PackageImportDecision => declaration.unit !== undefined
+    ? { kind: "resolved", unit: declaration.unit, packageDir: declaration.dir }
+    : { kind: "unavailable", packageName: packageName!, packageDir: declaration.dir };
+  const rootLabel = (declaration: PackageDeclaration): string => declaration.context || ".";
+  const importer = importerPackage(fromFile, index);
+  const own = importer.context === undefined ? [] : candidates.filter(declaration => declaration.context === importer.context);
+  if (own.length === 1) return decide(own[0]!);
+  if (own.length === 0 && candidates.length === 1) {
+    const candidate = candidates[0]!;
+    const veto = manifestVeto(importer.declaration, candidate);
+    return veto
+      ? { kind: "vetoed", packageName: packageName!, candidateRoot: rootLabel(candidate), manifest: importer.declaration!.manifest, ...veto }
+      : decide(candidate);
+  }
+  return { kind: "ambiguous", packageName: packageName!, candidateRoots: [...new Set(own.length > 1 ? own.map(declaration => declaration.dir || ".") : candidates.map(rootLabel))].sort(compareText) };
 }
 
 /**
@@ -1220,6 +1385,7 @@ function dependencyManifestPaths(discovery: Discovery): string[] {
  */
 function emitExternalSystems(input: ExternalEmitInput): void {
   const { discovery, readFile, externalUsagesByPackage, entityDescriptors, addRelation } = input;
+  const declaredNames = declaredPackageNames(discovery.resolution);
 
   // Declared runtime dependencies (name -> its declaration site(s), best-effort line anchored).
   const declaringRefsByPackage = new Map<string, ArchitectureExtractionSourceRef[]>();
@@ -1248,7 +1414,7 @@ function emitExternalSystems(input: ExternalEmitInput): void {
   }
 
   const importedRuntime = [...externalUsagesByPackage.entries()]
-    .filter(([pkg]) => declaringRefsByPackage.has(pkg) && !discovery.unitByPackageName.has(pkg));
+    .filter(([pkg]) => declaringRefsByPackage.has(pkg) && !declaredNames.has(pkg));
 
   // Rank service-boundary packages only; utility/framework deps never occupy an L1 slot.
   const selected = importedRuntime
@@ -1376,6 +1542,10 @@ export interface ExtractedArchitecture {
    * evidence of a gap (rendered into `analysis.limitations`), never extraction input.
    */
   unresolvedRelativeImports: readonly UnresolvedRelativeImport[];
+  /** CLA-605: bare imports of a package name several workspace roots own (no edge recorded); sorted. */
+  ambiguousPackageImports: readonly AmbiguousPackageImport[];
+  /** CLA-605 A5: bare imports of another root's package that the importer's manifest rules out (no edge recorded); sorted. */
+  vetoedPackageImports: readonly VetoedPackageImport[];
   /**
    * Declarations whose identifier exceeds the evidence gate's symbol limit (see
    * {@link OversizedSymbol}). Sorted by path, line; scan-time evidence of a gap
@@ -1599,6 +1769,8 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
 
   const unitDirs = discovery.units.map(unit => unit.dir);
   const unresolvedRelativeImports: UnresolvedRelativeImport[] = [];
+  const ambiguousPackageImports: AmbiguousPackageImport[] = [];
+  const vetoedPackageImports: VetoedPackageImport[] = [];
   const oversizedSymbols: OversizedSymbol[] = [];
   /** The anchor symbol, or undefined (recorded as a gap) when it exceeds the evidence limit. */
   const anchorSymbol = (path: string, line: number, name: string): string | undefined => {
@@ -1701,12 +1873,18 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
           }
         }
       } else {
-        const targetUnit = resolvePackageImport(dependency.specifier, discovery.unitByPackageName);
-        if (targetUnit) {
-          if (targetUnit !== unitDir) {
-            addRelation(unitDir, targetUnit, typedId("relation", unitDir, targetUnit), `unit:${unitDir}->${targetUnit}`, evidence);
+        const decision = resolveWorkspacePackageImport(dependency.specifier, file, discovery);
+        if (decision.kind === "ambiguous") {
+          // Several workspace roots own this name, none of them the importer's: no guessed edge.
+          ambiguousPackageImports.push({ path: file, line: dependency.startLine, specifier: dependency.specifier, packageName: decision.packageName, candidateRoots: decision.candidateRoots });
+        } else if (decision.kind === "vetoed") {
+          const { kind: _kind, ...veto } = decision;
+          vetoedPackageImports.push({ path: file, line: dependency.startLine, specifier: dependency.specifier, ...veto });
+        } else if (decision.kind === "resolved") {
+          if (decision.unit !== unitDir) {
+            addRelation(unitDir, decision.unit, typedId("relation", unitDir, decision.unit), `unit:${unitDir}->${decision.unit}`, evidence);
           }
-        } else {
+        } else if (decision.kind === "external") {
           // Bare specifier that is not a workspace package: a candidate third-party import.
           const pkg = packageNameOfSpecifier(dependency.specifier);
           if (pkg) {
@@ -1891,21 +2069,33 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
   // Rust crate wiring is an observed fact in Cargo.toml — `path = "…"`
   // dependencies become container edges, so a crate is never a mystery island. An
   // inherited `foo = { workspace = true }` takes the root `[workspace.dependencies]`
-  // path (relative to the root).
-  let rootManifest = "";
-  try { if (discovery.units.some(unit => unit.kind === "rust")) rootManifest = readFile("Cargo.toml") ?? ""; } catch { /* no root manifest */ }
-  const workspacePaths = new Map(cargoPathDependencies(rootManifest).flatMap(dependency => dependency.workspace && !dependency.inherited ? [[dependency.name, dependency.path] as const] : []));
+  // path (relative to the crate's workspace root: the repository root, or the nested
+  // Cargo workspace that governs it, CLA-605).
+  const workspacePathsByManifest = new Map<string, Map<string, string>>();
+  const workspacePathsOf = (workspaceManifest: string): Map<string, string> => {
+    let paths = workspacePathsByManifest.get(workspaceManifest);
+    if (!paths) {
+      let text = "";
+      try { text = readFile(workspaceManifest) ?? ""; } catch { /* no workspace manifest */ }
+      paths = new Map(cargoPathDependencies(text).flatMap(dependency => dependency.workspace && !dependency.inherited ? [[dependency.name, dependency.path] as const] : []));
+      workspacePathsByManifest.set(workspaceManifest, paths);
+    }
+    return paths;
+  };
+  const cargoContextOf = new Map(discovery.resolution.cargoContexts.flatMap(context => context.crates.map(crate => [crate, context.dir] as const)));
   for (const unit of discovery.units) {
     if (unit.kind !== "rust") continue;
     const manifestPath = `${unit.dir}/Cargo.toml`;
+    const context = cargoContextOf.get(unit.dir) ?? "";
+    const workspaceManifest = context ? `${context}/Cargo.toml` : "Cargo.toml";
     let manifestText: string;
     try { manifestText = readFile(manifestPath); } catch { continue; }
     for (const dependency of cargoPathDependencies(manifestText)) {
       if (dependency.workspace) continue;
-      const inheritedPath = dependency.inherited ? workspacePaths.get(dependency.name) : undefined;
+      const inheritedPath = dependency.inherited ? workspacePathsOf(workspaceManifest).get(dependency.name) : undefined;
       if (dependency.inherited && inheritedPath === undefined) continue;
       const targetDir = inheritedPath !== undefined
-        ? resolveRelativeUnitImport("Cargo.toml", inheritedPath, unitDirs)
+        ? resolveRelativeUnitImport(workspaceManifest, inheritedPath, unitDirs)
         : resolveRelativeUnitImport(`${unit.dir}/Cargo.toml`, dependency.path, unitDirs);
       if (!targetDir || targetDir === unit.dir) continue;
       addRelation(
@@ -1926,7 +2116,7 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
     const id = typedId("relation", edge.fromDir, edge.toDir);
     const key = `unit:${edge.fromDir}->${edge.toDir}`;
     addRelation(edge.fromDir, edge.toDir, id, key, { source: { path: edge.manifestPath, startLine: edge.line, endLine: edge.line } });
-    addRelation(edge.fromDir, edge.toDir, id, key, { source: { path: "Cargo.toml", startLine: edge.patchLine, endLine: edge.patchLine } });
+    addRelation(edge.fromDir, edge.toDir, id, key, { source: { path: edge.patchManifest, startLine: edge.patchLine, endLine: edge.patchLine } });
   }
 
   emitExternalSystems({ discovery, readFile, externalUsagesByPackage, entityDescriptors, addRelation });
@@ -1993,6 +2183,10 @@ export function collectExtractedArchitecture(input: ExtractInput): ExtractedArch
     cyclomaticById,
     clonePairs: clonePairsFromBuckets(cloneBuckets),
     unresolvedRelativeImports: canonicalUnresolvedImports(unresolvedRelativeImports),
+    ambiguousPackageImports: [...ambiguousPackageImports].sort((left, right) =>
+      compareText(left.path, right.path) || left.line - right.line || compareText(left.specifier, right.specifier)),
+    vetoedPackageImports: [...vetoedPackageImports].sort((left, right) =>
+      compareText(left.path, right.path) || left.line - right.line || compareText(left.specifier, right.specifier)),
     oversizedSymbols: oversizedSymbols.sort((left, right) => compareText(left.path, right.path) || left.line - right.line),
   };
 }

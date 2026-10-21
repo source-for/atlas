@@ -1,0 +1,6 @@
+[workspace]
+members = ["inner"]
+
+[package]
+name = "legacy"
+version = "0.1.0"

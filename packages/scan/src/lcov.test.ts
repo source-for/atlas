@@ -21,6 +21,7 @@ import {
   untestedRangesFromHits,
 } from "./lcov.js";
 import { buildScanArtifacts } from "./scan.js";
+import { testResolution } from "./test-resolution.js";
 
 const cloneSource = (name: string, param: string): string => [
   `export function ${name}(${param}: number): number {`,
@@ -104,7 +105,7 @@ function discovery(): Discovery {
       ["pkg/a/src/util.ts", "pkg/a"],
       ["pkg/b/src/main.ts", "pkg/b"],
     ]),
-    unitByPackageName: new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"]]),
+    resolution: testResolution(new Map([["@acme/a", "pkg/a"], ["@acme/b", "pkg/b"]])),
     summary: { singlePackage: false, includedJs: false, skippedJsFiles: 0, skippedMembers: [] },
   };
 }

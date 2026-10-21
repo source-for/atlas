@@ -71,30 +71,50 @@ function fromTree(real: string, path: string): string { return relative(real, pa
 
 const WORK_DIR_HINT = "Set OKIE_SCAN_WORK_DIR to a private directory (0700, owned by the scanner's user) outside any Cargo workspace.";
 
-export function inspectRustAncestors(root: string, options: { fs?: AncestorFs; uid?: number | undefined } = {}): RustAncestorReport {
+/**
+ * `repositoryRoot` (CLA-605): when the analysis root is a Cargo context BELOW the scanned tree, the tree directories
+ * between them are ancestors too. They get exactly the same ownership/mode/rust-project.json refusals; their cargo
+ * manifests and configs are keyed the same way and labelled as repository files (repository-relative paths).
+ */
+export function inspectRustAncestors(root: string, options: { fs?: AncestorFs; uid?: number | undefined; repositoryRoot?: string } = {}): RustAncestorReport {
   const fs = options.fs ?? nodeAncestorFs;
   const uid = "uid" in options ? options.uid : process.getuid?.();
   const report: RustAncestorReport = { limitations: [], keyInputs: [] };
   let real: string;
   try { real = fs.realpath(root); } catch (error) { return { ...report, refusal: `Rust analysis skipped: cannot resolve the scanned tree (${error instanceof Error ? error.message : String(error)}).` }; }
+  let repository: string | undefined;
+  if (options.repositoryRoot !== undefined) {
+    try { repository = fs.realpath(options.repositoryRoot); } catch (error) { return { ...report, refusal: `Rust analysis skipped: cannot resolve the scanned tree (${error instanceof Error ? error.message : String(error)}).` }; }
+    if (repository === real) repository = undefined;
+  }
+  const inRepository = (path: string): boolean => repository !== undefined && (path === repository || path.startsWith(`${repository}/`));
+  /** Repository paths render repository-relative (`.` = its root); others relative to the analysis root. */
+  const label = (path: string): string => inRepository(path) ? relative(repository!, path) || "." : fromTree(real, path);
   const ancestors: string[] = [];
   for (let directory = dirname(real); ; directory = dirname(directory)) { ancestors.push(directory); if (dirname(directory) === directory) break; }
   for (const directory of ancestors) {
     let stat: AncestorStat;
-    const at = fromTree(real, directory);
-    try { stat = fs.lstat(directory); } catch { return { ...report, refusal: `Rust analysis skipped: cannot inspect ${at}, an ancestor of the scanned tree. ${WORK_DIR_HINT}` }; }
+    const own = inRepository(directory);
+    const at = label(directory);
+    const what = own ? "a repository directory above the analysed Cargo context" : "an ancestor of the scanned tree";
+    const hint = own ? "" : ` ${WORK_DIR_HINT}`;
+    try { stat = fs.lstat(directory); } catch { return { ...report, refusal: `Rust analysis skipped: cannot inspect ${at}, ${what}.${hint}` }; }
     if (uid !== undefined) {
-      if (stat.uid !== 0 && stat.uid !== uid) return { ...report, refusal: `Rust analysis skipped: ${at}, an ancestor of the scanned tree, is owned by another user (uid ${stat.uid}), who could plant rust-project.json or .cargo/config.toml there. ${WORK_DIR_HINT}` };
-      if ((stat.mode & 0o022) !== 0) return { ...report, refusal: `Rust analysis skipped: ${at}, an ancestor of the scanned tree, is group- or world-writable, so another user could plant rust-project.json or .cargo/config.toml there. ${WORK_DIR_HINT}` };
+      if (stat.uid !== 0 && stat.uid !== uid) return { ...report, refusal: `Rust analysis skipped: ${at}, ${what}, is owned by another user (uid ${stat.uid}), who could plant rust-project.json or .cargo/config.toml there.${hint}` };
+      if ((stat.mode & 0o022) !== 0) return { ...report, refusal: `Rust analysis skipped: ${at}, ${what}, is group- or world-writable, so another user could plant rust-project.json or .cargo/config.toml there.${hint}` };
     }
     let names: string[]; try { names = fs.readdir(directory); } catch { names = []; }
     const projects = rustProjectJsonIn(directory, names, fs);
-    if (projects.length) return { ...report, refusal: `Rust analysis skipped: ${fromTree(real, projects[0]!)} in an ancestor of the scanned tree would be loaded by rust-analyzer instead of the tree. ${WORK_DIR_HINT}` };
+    if (projects.length) return { ...report, refusal: own
+      ? `Rust analysis skipped: ${label(projects[0]!)}, above the analysed Cargo context, would be loaded by rust-analyzer instead of it.`
+      : `Rust analysis skipped: ${fromTree(real, projects[0]!)} in an ancestor of the scanned tree would be loaded by rust-analyzer instead of the tree. ${WORK_DIR_HINT}` };
     for (const name of [...names].sort()) {
       const folded = fsName(name); const path = join(directory, name);
       if (folded === "cargo.toml") {
         report.keyInputs.push({ path, relative: fromTree(real, path), content: safeRead(fs, path) });
-        report.limitations.push(`A Cargo manifest in an ancestor of the scanned tree (${fromTree(real, path)}) can capture its crates into that workspace. ${WORK_DIR_HINT}`);
+        report.limitations.push(own
+          ? `A repository Cargo manifest above the analysed Cargo context (${label(path)}) applies to Rust analysis: a [workspace] there that includes the context captures its crates.`
+          : `A Cargo manifest in an ancestor of the scanned tree (${fromTree(real, path)}) can capture its crates into that workspace. ${WORK_DIR_HINT}`);
       }
       if (folded === ".cargo") {
         let inner: string[]; try { inner = fs.readdir(path); } catch { inner = []; }
@@ -102,7 +122,9 @@ export function inspectRustAncestors(root: string, options: { fs?: AncestorFs; u
           if (!["config", "config.toml"].includes(fsName(configName))) continue;
           const configPath = join(path, configName);
           report.keyInputs.push({ path: configPath, relative: fromTree(real, configPath), content: safeRead(fs, configPath) });
-          report.limitations.push(`Operator cargo config in an ancestor of the scanned tree applies to Rust analysis: ${fromTree(real, configPath)}.`);
+          report.limitations.push(own
+            ? `Repository cargo config above the analysed Cargo context applies to Rust analysis: ${label(configPath)}.`
+            : `Operator cargo config in an ancestor of the scanned tree applies to Rust analysis: ${fromTree(real, configPath)}.`);
         }
       }
     }

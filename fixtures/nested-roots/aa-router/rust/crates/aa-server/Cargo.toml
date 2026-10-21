@@ -1,0 +1,7 @@
+[package]
+name = "aa-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aa-core = { workspace = true }
