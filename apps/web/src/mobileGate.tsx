@@ -1,3 +1,4 @@
+import { browserStorage } from './browserStorage';
 import { isFramedBrowsingContext } from './embedCanvas';
 import { isEmbedQueryFlag } from './embedChrome';
 import type { AppRoute } from './renderer/route';
@@ -39,29 +40,18 @@ export function shouldShowMobileNotice(input: MobileGateInput): boolean {
 
 type SessionStore = Pick<Storage, 'getItem' | 'setItem'>;
 
-function sessionStore(win: { sessionStorage?: SessionStore }): SessionStore | undefined {
-  try {
-    return win.sessionStorage;
-  } catch {
-    // Reading the property itself throws when storage is blocked.
-    return undefined;
-  }
+function sessionStore(win: { sessionStorage?: SessionStore }): SessionStore {
+  // Reading the property itself throws when storage is blocked; the helper then remembers for this page only.
+  return browserStorage('sessionStorage', win);
 }
 
 export function mobileNoticeDismissed(win: { sessionStorage?: SessionStore } = window): boolean {
-  try {
-    return sessionStore(win)?.getItem(MOBILE_NOTICE_SESSION_KEY) === '1';
-  } catch {
-    return false;
-  }
+  return sessionStore(win).getItem(MOBILE_NOTICE_SESSION_KEY) === '1';
 }
 
 export function rememberMobileNoticeDismissed(win: { sessionStorage?: SessionStore } = window): void {
-  try {
-    sessionStore(win)?.setItem(MOBILE_NOTICE_SESSION_KEY, '1');
-  } catch {
-    // Storage denied: "Continue anyway" still works for this page load.
-  }
+  // Storage denied: "Continue anyway" still works for this page load.
+  sessionStore(win).setItem(MOBILE_NOTICE_SESSION_KEY, '1');
 }
 
 type GateWindow = {

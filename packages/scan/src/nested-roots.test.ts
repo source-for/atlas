@@ -384,11 +384,13 @@ test("own-root duplicate type references resolve in the importer's root (full)",
 test("the scan's package decision is authoritative over tsconfig paths: a mapping into another root's same-named package is not linked; an own-root mapping still is", () => {
   const files = (target: string): Record<string, string> => ({
     "a/package.json": pkg("a", { private: true, workspaces: ["packages/*"] }),
-    "a/tsconfig.json": JSON.stringify({ compilerOptions: { strict: true, paths: { "@scope/core": [target] } }, include: ["packages/**/*.ts"] }),
+    "a/tsconfig.json": JSON.stringify({ compilerOptions: { strict: true, baseUrl: ".", paths: { "@scope/core": [target], "@scope/core/*": [target.replace("index.ts", "*")] } }, include: ["packages/**/*.ts"] }),
+    "a/packages/core/sub.ts": "export function sub(): string {\n  return \"a\";\n}\n",
+    "b/packages/core/sub.ts": "export function sub(): string {\n  return \"b\";\n}\n",
     "a/packages/core/package.json": pkg("@scope/core", { main: "./index.ts" }),
     "a/packages/core/index.ts": scopeCore("a"),
     "a/packages/app/package.json": pkg("@scope/app-a"),
-    "a/packages/app/main.ts": SCOPE_APP,
+    "a/packages/app/main.ts": "import { calculate } from \"@scope/core\";\nimport { sub } from \"@scope/core/sub\";\nexport function app(): string {\n  return calculate() + sub();\n}\n",
     "b/package.json": pkg("b", { private: true, workspaces: ["packages/*"] }),
     "b/packages/core/package.json": pkg("@scope/core", { main: "./index.ts" }),
     "b/packages/core/index.ts": scopeCore("b"),
@@ -399,6 +401,8 @@ test("the scan's package decision is authoritative over tsconfig paths: a mappin
       assert.deepEqual(relations.filter(line => line.includes(" a/") && line.includes("-> b/")), [], `${target}: ${relations.join("\n")}`);
       assert.ok(relations.includes("calls a/packages/app/main.ts -> a/packages/core/index.ts"), `${target}: ${relations.join("\n")}`);
       assert.ok(relations.includes("dependsOn a/packages/app/main.ts -> a/packages/core/index.ts"), target);
+      assert.ok(relations.includes("calls a/packages/app/main.ts -> a/packages/core/sub.ts"), `${target}: subpath`);
+      assert.ok(relations.includes("dependsOn a/packages/app -> a/packages/core"), target);
     });
   }
 });

@@ -460,3 +460,156 @@ test("round 4: a patched crate without [package] version is 0.0.0 in the version
     assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], `${mode}: ^0 admits 0.0.0`);
   });
 });
+
+// CLA-594 item 1: an explicit operator keeps its meaning when the version has a wildcard
+// (`^1.2.*` is `^1.2`, `>=1.*` is `>=1`); only an implicit operator makes `1.2.*` a wildcard.
+test("CLA-594: cargoRequirementMatches keeps an explicit operator alongside a wildcard", () => {
+  for (const [requirement, version, expected] of [
+    ["^1.2.*", "1.3.0", true], ["^1.2.*", "1.2.0", true], ["^1.2.*", "1.1.9", false], ["^1.2.*", "2.0.0", false],
+    [">=1.*", "2.0.0", true], [">=1.*", "1.0.0", true], [">=1.*", "0.9.9", false],
+    ["<1.*", "0.9.0", true], ["<1.*", "1.0.0", false], [">1.*", "1.9.0", false], [">1.*", "2.0.0", true],
+    [">1.2.*", "1.3.0", true], [">1.2.*", "1.2.9", false], ["<=1.2.*", "1.2.9", true], ["<=1.2.*", "1.3.0", false],
+    ["~1.*", "1.9.0", true], ["~1.*", "2.0.0", false], ["=1.2.*", "1.2.7", true], ["=1.2.*", "1.3.0", false],
+    // the implicit operator is still a wildcard
+    ["1.2.*", "1.3.0", false], ["1.2.*", "1.2.9", true], ["1.*", "2.0.0", false], ["1.x", "1.4.0", true],
+  ] as const) {
+    assert.equal(cargoRequirementMatches(requirement, version), expected, `${requirement} vs ${version}`);
+  }
+  // Cargo rejects these requirements outright, so the helper reports them unparsable.
+  for (const requirement of ["1.*.3", "^1.X.3", "1.*-alpha", ">=1.2.*-beta"]) {
+    assert.equal(cargoRequirementMatches(requirement, "1.0.3"), undefined, requirement);
+  }
+});
+
+test("CLA-594: explicit-operator wildcard requirements meet a patch like Cargo (quick + full)", () => {
+  const patched = `${MEMBERS}\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  for (const [requirement, coreVersion] of [["^1.2.*", "1.3.0"], [">=1.*", "2.0.0"]] as const) {
+    scanBothModes(CORE_APP(patched, `core = "${requirement}"\n`, `version = "${coreVersion}"`), (mode, artifacts) => {
+      assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], `${mode}: ${requirement} admits ${coreVersion}`);
+      assert.deepEqual(patchLimitations(artifacts), [], `${mode}: ${requirement}`);
+    });
+  }
+  scanBothModes(CORE_APP(patched, 'core = "1.2.*"\n', 'version = "1.3.0"'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: the implicit wildcard 1.2.* still rejects 1.3.0`);
+    assert.equal(patchLimitations(artifacts).length, 1, mode);
+  });
+});
+
+// CLA-594 item 2: a quoted `"version"` key in [package] is the same field as `version`; it
+// must not fall back to the 0.0.0 of a package that has no version.
+test("CLA-594: a quoted [package] \"version\" key is read, not treated as missing (quick + full)", () => {
+  const patched = `${MEMBERS}\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  scanBothModes(CORE_APP(patched, 'core = "1"\n', '"version" = "1.0.0"'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], `${mode}: quoted 1.0.0 satisfies ^1`);
+    assert.deepEqual(patchLimitations(artifacts), [], mode);
+  });
+  scanBothModes(CORE_APP(patched, 'core = "1"\n', "'version' = '2.0.0'"), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: quoted 2.0.0 does not satisfy ^1`);
+    assert.deepEqual(patchLimitations(artifacts), [
+      "Cargo [patch] accepted by no scanned crate's normal dependency: version 2.0.0 does not satisfy app/Cargo.toml:6 requires '1'; no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }",
+    ], `${mode}: the mismatch cites the version as written`);
+  });
+  const inheriting = `${MEMBERS}\n[workspace.package]\n"version" = "2.0.0"\n\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  scanBothModes(CORE_APP(inheriting, 'core = "1"\n', '"version".workspace = true'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: quoted inheritance of a quoted workspace 2.0.0 rejects ^1`);
+    assert.equal(patchLimitations(artifacts).length, 1, mode);
+  });
+  scanBothModes(CORE_APP(inheriting, 'core = "2"\n', "'version'.workspace = true"), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:8 app/Cargo.toml:6"], `${mode}: quoted inheritance of 2.0.0 satisfies ^2`);
+  });
+});
+
+// CLA-594 (coordinator decision): Cargo refuses a manifest whose requirement it cannot
+// parse, so the scanner records no patch edge for a requirement it cannot parse either, and
+// says so. An absent requirement (`core = { git = … }`) is not unparsable and is unchanged.
+test("CLA-594: an unparsable version requirement records no [patch] edge and a limitation naming it (quick + full)", () => {
+  const patched = `${MEMBERS}\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  for (const [requirement, coreVersion] of [["1.*.3", "1.0.3"], ["1.*-alpha", "1.0.0-alpha"]] as const) {
+    scanBothModes(CORE_APP(patched, `core = "${requirement}"\n`, `version = "${coreVersion}"`), (mode, artifacts) => {
+      assert.deepEqual(crateEdges(artifacts), [], `${mode}: ${requirement}`);
+      assert.deepEqual(patchLimitations(artifacts), [
+        `Cargo [patch] not applied to a version requirement the scanner cannot parse: app/Cargo.toml:6 requires core '${requirement}'; no crate edge recorded for it: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }`,
+      ], `${mode}: ${requirement}`);
+    });
+  }
+});
+
+// CLA-594 review (Sol): a requirement is a TOML string. A basic string's escapes are decoded
+// (TOML 1.0, as Cargo 1.87 reads it); a literal string stays raw; an escape or control
+// character TOML rejects keeps the raw text, which no requirement parses, so it is reported
+// unparsable and never treated like an absent requirement. Each case checked with offline
+// `cargo metadata` (1.87): the accepted forms resolve the patched core 1.3.0, the others
+// fail to select a version (`\u0032`) or fail to load the manifest.
+test("CLA-594: requirements are decoded TOML strings; invalid escapes are unparsable, not absent (quick + full)", () => {
+  const patched = `${MEMBERS}\n[patch.crates-io]\ncore = { path = "core" }\n`;
+  const edge = ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"];
+  for (const dependency of [
+    'core = "\\u0031"', 'core = ">=1,\\u0020<2"', 'core = "\\U00000031"', 'core = { version = "\\u0031" }', 'core.version = "\\u0031"',
+  ]) {
+    scanBothModes(CORE_APP(patched, `${dependency}\n`, 'version = "1.3.0"'), (mode, artifacts) => {
+      assert.deepEqual(crateEdges(artifacts), edge, `${mode}: ${dependency}`);
+      assert.deepEqual(patchLimitations(artifacts), [], `${mode}: ${dependency}`);
+    });
+  }
+  scanBothModes(CORE_APP(patched, 'core = "\\u0032"\n', 'version = "1.3.0"'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: \\u0032 decodes to 2`);
+    assert.deepEqual(patchLimitations(artifacts), [
+      "Cargo [patch] accepted by no scanned crate's normal dependency: version 1.3.0 does not satisfy app/Cargo.toml:6 requires '2'; no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }",
+    ], mode);
+  });
+  for (const [dependency, raw] of [
+    ["core = '\\u0031'", "\\u0031"], ['core = "\\q1"', "\\q1"], ['core = "\\uD800"', "\\uD800"],
+    ['core = "\\e1"', "\\e1"], ['core = { version = "\\x31" }', "\\x31"],
+  ] as const) {
+    scanBothModes(CORE_APP(patched, `${dependency}\n`, 'version = "1.3.0"'), (mode, artifacts) => {
+      assert.deepEqual(crateEdges(artifacts), [], `${mode}: ${dependency}`);
+      assert.deepEqual(patchLimitations(artifacts), [
+        `Cargo [patch] not applied to a version requirement the scanner cannot parse: app/Cargo.toml:6 requires core '${raw}'; no crate edge recorded for it: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }`,
+      ], `${mode}: ${dependency} keeps its raw text`);
+    });
+  }
+  scanBothModes(CORE_APP(patched, 'core = "1\u0001"\n', 'version = "1.3.0"'), (mode, artifacts) => {
+    assert.deepEqual(crateEdges(artifacts), [], `${mode}: a raw control character is invalid TOML`);
+    assert.equal(patchLimitations(artifacts).length, 1, mode);
+    assert.match(patchLimitations(artifacts)[0]!, /cannot parse: app\/Cargo\.toml:6 requires core /, mode);
+  });
+});
+
+// CLA-594 review (Sol, round 2): Cargo's requirement grammar allows only ASCII spaces as
+// whitespace. A control character, raw (invalid TOML) or decoded from a valid escape
+// (`\n`, `\u000b`, `\r`, `\t`), at either edge or between comparators is not trimmed
+// away: the requirement is unparsable, so no edge and a limitation naming it. Checked with
+// offline `cargo metadata` (1.87): every control form fails to load, the spaced ones resolve.
+test("CLA-594: cargoRequirementMatches rejects every control character and Unicode whitespace, anywhere; ASCII spaces stay valid", () => {
+  const forbidden = [...Array.from({ length: 32 }, (_, code) => code), 0x7f, 0x85, 0xa0, 0x1680, 0x2003, 0x2028, 0x2029, 0x202f, 0x3000, 0xfeff];
+  for (const code of forbidden) {
+    const c = String.fromCodePoint(code);
+    for (const requirement of [`${c}^1`, `^1${c}`, `>=${c}1`, `>=1,${c}<2`, `1.0.0-a${c}`, `1.0.0+b${c}`]) {
+      assert.equal(cargoRequirementMatches(requirement, "1.3.0"), undefined, `U+${code.toString(16)} in ${JSON.stringify(requirement)}`);
+    }
+  }
+  for (const [requirement, expected] of [[" ^1 ", true], [">= 1", true], [">=1,  <2", true], ["  1  ", true], ["1 , 2", false]] as const) {
+    assert.equal(cargoRequirementMatches(requirement, "1.3.0"), expected, JSON.stringify(requirement));
+  }
+});
+
+test("CLA-594: control characters in a requirement are never trimmed into a valid one (quick + full)", () => {
+  const patched = `${MEMBERS}\n[patch.crates-io]\ncore = { path = \"core\" }\n`;
+  for (const dependency of ['core = " ^1 "', 'core = ">=1,  <2"', 'core = { version = " 1 " }']) {
+    scanBothModes(CORE_APP(patched, `${dependency}\n`, 'version = "1.3.0"'), (mode, artifacts) => {
+      assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], `${mode}: ${dependency}`);
+      assert.deepEqual(patchLimitations(artifacts), [], `${mode}: ${dependency}`);
+    });
+  }
+  for (const dependency of [
+    'core = "1\u000b"', 'core = "1\u000c"', 'core = "\u000b1"', 'core = ">=1,\t<2"',
+    'core = "1\\n"', 'core = "1\\u000b"', 'core = "1\\r"', 'core = "\\t1"', 'core = ">=1,\\u0009<2"', 'core.version = "1\\n"',
+  ]) {
+    scanBothModes(CORE_APP(patched, `${dependency}\n`, 'version = "1.3.0"'), (mode, artifacts) => {
+      assert.deepEqual(crateEdges(artifacts), [], `${mode}: ${JSON.stringify(dependency)}`);
+      const lines = patchLimitations(artifacts);
+      assert.equal(lines.length, 1, `${mode}: ${JSON.stringify(dependency)}`);
+      assert.match(lines[0]!, /^Cargo \[patch\] not applied to a version requirement the scanner cannot parse: app\/Cargo\.toml:6 requires core '/, mode);
+    });
+  }
+});

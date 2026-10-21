@@ -126,6 +126,12 @@ jobs:
       - name: Build the portable viewer
         run: pnpm build:portable
 
+      # CLA-610: the built viewer inside <iframe sandbox="allow-scripts"> (opaque origin, storage throws).
+      - name: Test the viewer in an opaque-origin sandbox
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:sandbox-embed
+
       - name: Package the CLI
         run: pnpm package:cli
 

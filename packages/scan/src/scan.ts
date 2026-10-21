@@ -4,6 +4,7 @@ import {
   ASPECT_PRESET_TARGET,
   buildC4ProjectionBundle,
   sanitizeControlCharacters,
+  SOURCE_EXCERPT_LIMITS,
   validateSnapshot,
   validateStory,
   validateView,
@@ -37,6 +38,8 @@ import {
   resolveCargoPatches,
   declaredPackageNames,
   resolveWorkspacePackageImport,
+  type OversizedSymbol,
+  entityDisplayName,
 } from "./extract.js";
 import { mergeEnrichment, type EnrichmentReport } from "./enrich.js";
 import { applyComponentMembership, type ComponentMapInput, type ComponentMapReport } from './component-map.js';
@@ -229,6 +232,8 @@ export interface BuildScanArtifactsParams {
   ambiguousPackageImports?: readonly AmbiguousPackageImport[];
   /** Manifest-vetoed cross-root package imports from the same extract (CLA-605 A5). Recomputed when omitted. */
   vetoedPackageImports?: readonly VetoedPackageImport[];
+  /** Oversized declaration identifiers from the same extract as `baseExtraction`. Recomputed from source when omitted. */
+  oversizedSymbols?: readonly OversizedSymbol[];
   /** Optional lcov.info bytes. Conventional `coverage/lcov.info` is read when omitted. */
   lcovText?: string;
   /**
@@ -251,8 +256,9 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
     ...(params.languageAnalysis ? { languageAnalysis: params.languageAnalysis } : {}),
     ...(params.codeSurface ? { codeSurface: params.codeSurface } : {}),
   };
+  // Scan-time gaps not carried by a supplied base extraction are recomputed once.
   let recollected: ReturnType<typeof collectExtractedArchitecture> | undefined;
-  const recollect = (): ReturnType<typeof collectExtractedArchitecture> => (recollected ??= collectExtractedArchitecture(extractInput));
+  const recollect = () => (recollected ??= collectExtractedArchitecture(extractInput));
   const collected = params.baseExtraction
     ? {
       extraction: params.baseExtraction,
@@ -263,6 +269,7 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
       unresolvedRelativeImports: params.unresolvedRelativeImports ?? recollect().unresolvedRelativeImports,
       ambiguousPackageImports: params.ambiguousPackageImports ?? recollect().ambiguousPackageImports,
       vetoedPackageImports: params.vetoedPackageImports ?? recollect().vetoedPackageImports,
+      oversizedSymbols: params.oversizedSymbols ?? recollect().oversizedSymbols,
     }
     : collectExtractedArchitecture(extractInput);
   const baseExtraction = collected.extraction;
@@ -294,6 +301,7 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
     ...unresolvedImportLimitations(collected.unresolvedRelativeImports),
     ...ambiguousPackageImportLimitations(collected.ambiguousPackageImports),
     ...vetoedPackageImportLimitations(collected.vetoedPackageImports),
+    ...oversizedSymbolLimitations(collected.oversizedSymbols),
     ...cargoPatchLimitations(discovery, readFile),
   ];
 
@@ -327,18 +335,22 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
   const system = snapshot.entities.find(entity => entity.kind === "softwareSystem");
   if (!system) throw new Error("Scanned snapshot has no softwareSystem root");
 
-  const view = buildView(snapshot, system.id, repositorySlug, systemName);
+  // Presentation-only bound (CLA-594): a package name may be 214 characters, so the
+  // view name and story prose use the same bounded name as the softwareSystem entity.
+  // Ids and the system slug above still derive from the full systemName.
+  const displayName = entityDisplayName("softwareSystem", systemName);
+  const view = buildView(snapshot, system.id, repositorySlug, displayName);
   const viewIssues = validateView(snapshot, view);
   if (viewIssues.length) {
     throw new Error(`Scanned view failed validation:\n${viewIssues.map(i => `${i.path}: ${i.message}`).join("\n")}`);
   }
 
-  const story = buildOverviewStory(snapshot, view, system.id, repositorySlug, systemName);
+  const story = buildOverviewStory(snapshot, view, system.id, repositorySlug, displayName);
   const storyIssues = validateStory(snapshot, view, story);
   if (storyIssues.length) {
     throw new Error(`Scanned story failed validation:\n${storyIssues.map(i => `${i.path}: ${i.message}`).join("\n")}`);
   }
-  const flowStories = buildUserFlowStories(snapshot, view, repositorySlug, systemName);
+  const flowStories = buildUserFlowStories(snapshot, view, repositorySlug, displayName);
   for (const flow of flowStories) {
     const flowIssues = validateStory(snapshot, view, flow);
     if (flowIssues.length) {
@@ -430,6 +442,29 @@ export function discoveryLimitations(summary: DiscoverySummary): string[] {
   ];
 }
 
+/** At most this many oversized declaration identifiers are itemized; the rest are counted. */
+export const OVERSIZED_SYMBOLS_SHOWN = 20;
+
+/**
+ * Declarations whose identifier is over the evidence symbol limit (CLA-594): their
+ * sourceRefs and moduleExport evidence keep the exact path and lines but carry no
+ * symbol, so symbol-anchored lookups cannot find them. One header line, then one
+ * `path:line (N characters)` line each, capped like unresolved imports. Empty when
+ * every identifier fits, so ordinary repositories keep a byte-identical bundle.
+ */
+export function oversizedSymbolLimitations(symbols: readonly OversizedSymbol[]): string[] {
+  if (symbols.length === 0) return [];
+  const limit = SOURCE_EXCERPT_LIMITS.maxSymbolCharacters;
+  const shown = symbols.slice(0, OVERSIZED_SYMBOLS_SHOWN).map(item =>
+    `Oversized identifier ${displayText(item.path)}:${item.line} (${item.characters} characters)`);
+  const hidden = symbols.length - shown.length;
+  return [
+    `${symbols.length} declaration identifier(s) exceed the ${limit}-character evidence symbol limit; their evidence carries path and lines but no symbol.`,
+    ...shown,
+    ...(hidden > 0 ? [`+${hidden} more oversized identifier(s) not itemized.`] : []),
+  ];
+}
+
 /** Longest repository-controlled text (a specifier, a path) shown in a limitation line. */
 export const LIMITATION_TEXT_MAX_CHARS = 200;
 
@@ -508,7 +543,8 @@ export function vetoedPackageImportLimitations(imports: readonly VetoedPackageIm
  * Root `Cargo.toml` `[patch.*]` path overrides that recorded no crate edge, one line
  * each: out-of-repository paths (never followed), paths naming no scanned crate, and
  * patches whose version no scanned crate's normal dependency requirement admits (an
- * observation about the scanned crates only: Cargo may still use the patch elsewhere). Same resolution as extraction (`resolveCargoPatches`); empty without
+ * observation about the scanned crates only: Cargo may still use the patch elsewhere), and
+ * dependencies whose version requirement the scanner cannot parse. Same resolution as extraction (`resolveCargoPatches`); empty without
  * Rust crates or such overrides.
  */
 export function cargoPatchLimitations(discovery: Discovery, readFile: (path: string) => string): string[] {
@@ -518,6 +554,11 @@ export function cargoPatchLimitations(discovery: Discovery, readFile: (path: str
       const [first, ...more] = patch.rejected ?? [];
       const requirement = first ? `${displayText(first.path)}:${first.line} requires '${displayText(first.requirement)}'${more.length ? ` (+${more.length} more)` : ""}` : "";
       return `Cargo [patch] accepted by no scanned crate's normal dependency: version ${displayText(patch.version ?? "")} does not satisfy ${requirement}; no crate edge recorded: ${where}`;
+    }
+    if (patch.reason === "unparsable-requirement") {
+      const [first, ...more] = patch.rejected ?? [];
+      const requirement = first ? `${displayText(first.path)}:${first.line} requires ${displayText(patch.name)} '${displayText(first.requirement)}'${more.length ? ` (+${more.length} more)` : ""}` : "";
+      return `Cargo [patch] not applied to a version requirement the scanner cannot parse: ${requirement}; no crate edge recorded for it: ${where}`;
     }
     return patch.reason === "outside-repository"
       ? `Cargo [patch] path resolves outside the repository; not followed, no crate edge recorded: ${where}`
@@ -653,6 +694,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
     let unresolvedRelativeImports: readonly UnresolvedRelativeImport[] | undefined;
     let ambiguousPackageImports: readonly AmbiguousPackageImport[] | undefined;
     let vetoedPackageImports: readonly VetoedPackageImport[] | undefined;
+    let oversizedSymbols: readonly OversizedSymbol[] | undefined;
     let enrichmentDocs = options.enrichmentDocs;
     if ((!enrichmentDocs || enrichmentDocs.size === 0) && options.enrichWithPackets) {
       const collected = collectExtractedArchitecture({
@@ -669,6 +711,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
       unresolvedRelativeImports = collected.unresolvedRelativeImports;
       ambiguousPackageImports = collected.ambiguousPackageImports;
       vetoedPackageImports = collected.vetoedPackageImports;
+      oversizedSymbols = collected.oversizedSymbols;
       const sidecar = loadLcovSidecar(readFile, options.lcovText);
       const coverageByCodeId = coverageByCodeIdFromEntities(baseExtraction.entities, sidecar);
       // The live provider must see the same accepted component interpretation
@@ -700,6 +743,7 @@ export async function scanGithubRepository(source: GithubSourceRef, options: Git
       ...(unresolvedRelativeImports ? { unresolvedRelativeImports } : {}),
       ...(ambiguousPackageImports ? { ambiguousPackageImports } : {}),
       ...(vetoedPackageImports ? { vetoedPackageImports } : {}),
+      ...(oversizedSymbols ? { oversizedSymbols } : {}),
       ...(options.lcovText ? { lcovText: options.lcovText } : {}),
     });
     return { source, commitSha: commit.sha, artifacts };

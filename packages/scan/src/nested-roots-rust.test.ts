@@ -234,3 +234,30 @@ test("P7 repository ancestors of a nested context: rust-project.json refused bef
     } finally { acquired.cleanup(); }
   });
 });
+
+test("P7 Cargo per context + CLA-594: a nested [patch] uses its own context's quoted inherited version, inherited requirement, and reports unparsable requirements against its own manifest", () => {
+  withCommittedRepo({
+    // Discriminator: the root context would give the patched crate 1.0.0.
+    "Cargo.toml": `[workspace]\nmembers = []\n\n[workspace.package]\n"version" = "1.0.0"\n`,
+    "rust/Cargo.toml": `[workspace]\nmembers = ["crates/*"]\n\n[workspace.package]\n"version" = "2.0.0"\n\n[workspace.dependencies]\nbar = "1"\n\n[patch.crates-io]\nbar = { path = "crates/bar" }\n`,
+    "rust/crates/bar/Cargo.toml": `[package]\nname = "bar"\n"version".workspace = true\n`,
+    "rust/crates/bar/src/lib.rs": "pub fn b() {}\n",
+    "rust/crates/x/Cargo.toml": crate("x", `\n[dependencies]\nbar = "2"\n`),
+    "rust/crates/x/src/lib.rs": "pub fn x() {}\n",
+    "rust/crates/y/Cargo.toml": crate("y", `\n[dependencies]\nbar = "1.*.3"\n`),
+    "rust/crates/y/src/lib.rs": "pub fn y() {}\n",
+    "rust/crates/z/Cargo.toml": crate("z", `\n[dependencies]\nbar = { workspace = true }\n`),
+    "rust/crates/z/src/lib.rs": "pub fn z() {}\n",
+  }, dir => {
+    for (const root of [undefined, "rust"]) {
+      const artifacts = scanRepository(dir, { analysisMode: "quick", ...(root ? { root } : {}) });
+      const pathOf = new Map(artifacts.snapshot.entities.filter(entity => entity.kind === "container").map(entity => [entity.id, entity.sourceRefs[0]!.path]));
+      const edges = artifacts.snapshot.relations.filter(relation => pathOf.has(relation.from) && pathOf.has(relation.to))
+        .map(relation => `${pathOf.get(relation.from)} -> ${pathOf.get(relation.to)} @ ${relation.evidence.map(evidence => `${evidence.source.path}:${evidence.source.startLine}`).sort().join(" ")}`);
+      assert.deepEqual(edges, ["rust/crates/x -> rust/crates/bar @ rust/Cargo.toml:11 rust/crates/x/Cargo.toml:7"], `root=${root}: 2.0.0 from rust/ satisfies ^2; inherited "1" and unparsable "1.*.3" give no edge`);
+      assert.deepEqual((artifacts.analysis.limitations ?? []).filter(line => line.startsWith("Cargo [patch]")), [
+        "Cargo [patch] not applied to a version requirement the scanner cannot parse: rust/crates/y/Cargo.toml:7 requires bar '1.*.3'; no crate edge recorded for it: rust/Cargo.toml:11: [patch.crates-io] bar = { path = 'crates/bar' }",
+      ], `root=${root}`);
+    }
+  });
+});
