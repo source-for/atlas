@@ -232,6 +232,10 @@ function matchesComparator(cmp: SemverComparator, v: SemverVersion): boolean {
 export function cargoRequirementMatches(requirement: string, version: string): boolean | undefined {
   const target = parseSemver(version);
   if (!target) return undefined;
+  // Only characters Cargo's requirement grammar uses, with ASCII space as its only
+  // whitespace: a control character or Unicode whitespace (raw, or decoded from a TOML
+  // escape) is unparsable, never trimmed away. A repertoire gate, not full validation.
+  if (/[^0-9A-Za-z*.,+^~<=> -]/.test(requirement)) return undefined;
   const parts = requirement.split(",").map(part => part.trim());
   if (parts.length === 1 && /^[*xX]?$/.test(parts[0]!)) return target.pre.length === 0; // `*` / empty: any release
   const comparators: SemverComparator[] = [];

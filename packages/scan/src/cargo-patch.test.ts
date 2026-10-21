@@ -574,3 +574,42 @@ test("CLA-594: requirements are decoded TOML strings; invalid escapes are unpars
     assert.match(patchLimitations(artifacts)[0]!, /cannot parse: app\/Cargo\.toml:6 requires core /, mode);
   });
 });
+
+// CLA-594 review (Sol, round 2): Cargo's requirement grammar allows only ASCII spaces as
+// whitespace. A control character, raw (invalid TOML) or decoded from a valid escape
+// (`\n`, `\u000b`, `\r`, `\t`), at either edge or between comparators is not trimmed
+// away: the requirement is unparsable, so no edge and a limitation naming it. Checked with
+// offline `cargo metadata` (1.87): every control form fails to load, the spaced ones resolve.
+test("CLA-594: cargoRequirementMatches rejects every control character and Unicode whitespace, anywhere; ASCII spaces stay valid", () => {
+  const forbidden = [...Array.from({ length: 32 }, (_, code) => code), 0x7f, 0x85, 0xa0, 0x1680, 0x2003, 0x2028, 0x2029, 0x202f, 0x3000, 0xfeff];
+  for (const code of forbidden) {
+    const c = String.fromCodePoint(code);
+    for (const requirement of [`${c}^1`, `^1${c}`, `>=${c}1`, `>=1,${c}<2`, `1.0.0-a${c}`, `1.0.0+b${c}`]) {
+      assert.equal(cargoRequirementMatches(requirement, "1.3.0"), undefined, `U+${code.toString(16)} in ${JSON.stringify(requirement)}`);
+    }
+  }
+  for (const [requirement, expected] of [[" ^1 ", true], [">= 1", true], [">=1,  <2", true], ["  1  ", true], ["1 , 2", false]] as const) {
+    assert.equal(cargoRequirementMatches(requirement, "1.3.0"), expected, JSON.stringify(requirement));
+  }
+});
+
+test("CLA-594: control characters in a requirement are never trimmed into a valid one (quick + full)", () => {
+  const patched = `${MEMBERS}\n[patch.crates-io]\ncore = { path = \"core\" }\n`;
+  for (const dependency of ['core = " ^1 "', 'core = ">=1,  <2"', 'core = { version = " 1 " }']) {
+    scanBothModes(CORE_APP(patched, `${dependency}\n`, 'version = "1.3.0"'), (mode, artifacts) => {
+      assert.deepEqual(crateEdges(artifacts), ["container:app -> container:core @ Cargo.toml:5 app/Cargo.toml:6"], `${mode}: ${dependency}`);
+      assert.deepEqual(patchLimitations(artifacts), [], `${mode}: ${dependency}`);
+    });
+  }
+  for (const dependency of [
+    'core = "1\u000b"', 'core = "1\u000c"', 'core = "\u000b1"', 'core = ">=1,\t<2"',
+    'core = "1\\n"', 'core = "1\\u000b"', 'core = "1\\r"', 'core = "\\t1"', 'core = ">=1,\\u0009<2"', 'core.version = "1\\n"',
+  ]) {
+    scanBothModes(CORE_APP(patched, `${dependency}\n`, 'version = "1.3.0"'), (mode, artifacts) => {
+      assert.deepEqual(crateEdges(artifacts), [], `${mode}: ${JSON.stringify(dependency)}`);
+      const lines = patchLimitations(artifacts);
+      assert.equal(lines.length, 1, `${mode}: ${JSON.stringify(dependency)}`);
+      assert.match(lines[0]!, /^Cargo \[patch\] not applied to a version requirement the scanner cannot parse: app\/Cargo\.toml:6 requires core '/, mode);
+    });
+  }
+});
