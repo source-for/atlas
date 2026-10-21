@@ -1,4 +1,5 @@
 import { useRef, useSyncExternalStore } from 'react';
+import { localStore } from '../browserStorage';
 import { BLOCK_PLANNER_STORAGE_KEY, blockPlannerQueryFlag, getBlockPlannerScan, type BlockPlanScan } from './blockPlannerScan';
 import { resolveBlockPlanner, type BlockPlan, type BlockPlanInput, type BlockPlanner } from './blockPlanner';
 
@@ -99,7 +100,7 @@ export function createJevBlockPlanner(options: { scan: () => BlockPlanScan | und
 export const jevBlockPlanner = createJevBlockPlanner({ scan: getBlockPlannerScan });
 
 /** `?planner=jev` (captured at boot, before the URL rewrite) or localStorage `okie.blockPlanner=jev`. Default off. */
-export function blockPlannerFlagEnabled(queryFlag = blockPlannerQueryFlag(), storage: Pick<Storage, 'getItem'> | undefined = typeof localStorage === 'undefined' ? undefined : localStorage): boolean {
+export function blockPlannerFlagEnabled(queryFlag = blockPlannerQueryFlag(), storage: Pick<Storage, 'getItem'> | undefined = localStore): boolean {
   if (queryFlag) return true;
   try { return storage?.getItem(BLOCK_PLANNER_STORAGE_KEY) === 'jev'; } catch { return false; }
 }

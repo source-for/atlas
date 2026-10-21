@@ -232,6 +232,7 @@ import {
   storyDurationLabel,
   storyStepDuration,
 } from './storyCatalog';
+import { localStore } from './browserStorage';
 import { atlasEnrichmentStatus, atlasIdentityFromLocation, atlasTourPlaying, bindAtlasChromeActions, registerWebMcpAtlasTools, type AtlasChromeActions } from './webmcp';
 
 // A scanned snapshot (fixture=scan) is fetched, validated and compiled before App
@@ -1770,7 +1771,7 @@ export function App() {
   const [expandedRelationshipGroups, setExpandedRelationshipGroups] = useState<ReadonlySet<string>>(() => new Set());
   const [expandedDetailLists, setExpandedDetailLists] = useState<ReadonlySet<string>>(() => new Set());
   // CLA-268: the boot skeleton reads the same initializer, so the two agree on the inspector's first width.
-  const [detailsWidth, setDetailsWidth] = useState(() => initialInspectorWidth(window.innerWidth, () => localStorage, initialNavigation.repositoryId));
+  const [detailsWidth, setDetailsWidth] = useState(() => initialInspectorWidth(window.innerWidth, () => localStore, initialNavigation.repositoryId));
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -1780,7 +1781,7 @@ export function App() {
   // reloads. When off, the shell hides the renderer pill/diagnostics, the Edit/View mode
   // toggle (authoring stays view-only), and the Create-diagram menu.
   const [devMode, setDevMode] = useState(() => {
-    try { return localStorage.getItem('okie.devMode') === '1'; } catch { return false; }
+    return localStore.getItem('okie.devMode') === '1';
   });
   const [diagnostics, setDiagnostics] = useState<RendererDiagnostics>({ requestedBackend: query.backend, activeBackend: 'initializing', gpuAccelerated: false, entityCount: 0, relationCount: 0, lastFrameMs: 0, message: 'Renderer is initializing.' });
   const [storyStep, setStoryStep] = useState(() => initialNavigation.story?.id === storyId
@@ -1860,7 +1861,7 @@ export function App() {
   const mainDiagramActive = activeDiagramSurface.kind === 'main';
   const [interactionMode, setInteractionMode] = useState<'view' | 'edit'>('view');
   useEffect(() => {
-    try { localStorage.setItem('okie.devMode', devMode ? '1' : '0'); } catch { /* storage unavailable */ }
+    localStore.setItem('okie.devMode', devMode ? '1' : '0');
     if (!devMode) { setInteractionMode('view'); setDiagnosticsOpen(false); }
   }, [devMode]);
   const [authoringTool, setAuthoringTool] = useState<'select' | 'connect'>('select');
@@ -2097,11 +2098,8 @@ export function App() {
     setDetailsWidth(current => clampInspectorWidth(current, window.innerWidth));
   }, [viewport.width]);
   useEffect(() => {
-    try {
-      localStorage.setItem(inspectorWidthStorageKey(navigationIdentity.repositoryId), String(detailsWidth));
-    } catch {
-      // Storage can be unavailable in privacy modes; resizing still works for the session.
-    }
+    // Storage can be unavailable (privacy modes, opaque sandboxes); the width then lasts for this page only.
+    localStore.setItem(inspectorWidthStorageKey(navigationIdentity.repositoryId), String(detailsWidth));
   }, [detailsWidth, navigationIdentity.repositoryId]);
   storyStepRef.current = storyStep;
   const currentStory = storyStep >= 0 ? story.steps[storyStep] : undefined;
