@@ -236,9 +236,16 @@ appears verbatim. Review a repository's committed content before publishing an a
   name. A refused dependency, `[workspace.dependencies]` or `[patch]` key or `package =` rename records no edge. Both
   report `Invalid package name` / `Invalid dependency name at <manifest>:<line>`. This covers only those structured fields. It does not
   guarantee that an atlas is free of secrets.
-- **Known limitation: numeric password before a raw `/`.** A malformed URL whose unencoded password is all digits
-  (at most 65535) and is followed by `/` (`https://user:12345/x@host/…`) cannot be told from `host:port/path@…`, the
-  shape of a valid scoped tarball URL (`https://registry:8443/@scope/pkg/-/pkg-1.0.0.tgz`), and is not redacted.
+- **Known limitation: numeric password before a raw `/`, `?` or `#`.** A malformed URL whose unencoded password is
+  all digits (at most 65535) cannot be told from `host:port`, so `user:digits` is kept:
+  - before `/` (`https://user:12345/x@host/…`, the shape of a valid scoped tarball URL
+    `https://registry:8443/@scope/pkg/-/pkg-1.0.0.tgz`) nothing is redacted;
+  - before `?` the query is redacted as usual (`https://user:12345?[redacted]`);
+  - before `#` with no path, a credential-looking fragment is redacted whole; otherwise the fragment up to its last
+    `@` is redacted and the `@` suffix is kept (`https://user:12345#[redacted]@host/r`). A valid
+    `https://host:8443#release@v1` becomes `https://host:8443#[redacted]@v1`. Fragments without `@`, and fragments
+    after a path (`https://host/x#a@b`), are unchanged.
+
   Redaction of malformed URLs is not comprehensive.
 - **Not redacted: repository paths.** Committed file and directory paths (`sourceRefs`, evidence, entity paths and
   the IDs derived from them) are kept exactly as committed, like source text. A path that itself contains a

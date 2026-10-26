@@ -408,6 +408,25 @@ test("CLA-654: no credential reaches dependency facts, limitations or serialized
 test("KNOWN LIMITATION (CLA-654): an unencoded all-digit password <= 65535 before a raw `/` is not redacted", () => {
   assert.equal(redactSpec("https://user:12345/with/slash@host.invalid/repo"), "https://user:12345/with/slash@host.invalid/repo");
   assert.equal(redactSpec("https://registry.example.com:8443/@scope/pkg/-/pkg-1.0.0.tgz"), "https://registry.example.com:8443/@scope/pkg/-/pkg-1.0.0.tgz");
+  assert.equal(redactSpec("https://user:65536/CLA654PASS@host.invalid/repo"), "https://[redacted]@host.invalid/repo", "not a port: userinfo");
+});
+// Brenton's ruling (CLA-654): the same ambiguity before `?` keeps `user:digits` and redacts the query as usual.
+test("KNOWN LIMITATION (CLA-654): an unencoded all-digit password <= 65535 before a raw `?` keeps `user:digits`", () => {
+  assert.equal(redactSpec("https://user:12345?CLA654TAIL@host.invalid/repo"), "https://user:12345?[redacted]");
+  assert.equal(redactSpec("https://registry.example.com:8443?CLA654QUERY=1"), "https://registry.example.com:8443?[redacted]");
+  assert.equal(redactSpec("https://user:pw?CLA654TAIL@host.invalid/repo"), "https://[redacted]@host.invalid/repo", "not a port: userinfo");
+});
+// Brenton's ruling (CLA-654): before `#` with no path, a sensitive fragment is scrubbed whole; else the fragment up
+// to its last `@` is redacted and `user:digits` plus the `@suffix` stay (a valid `host:port#release@v1` pays this cost).
+test("KNOWN LIMITATION (CLA-654): an unencoded all-digit password <= 65535 before a raw `#` keeps `user:digits` and the `@` suffix", () => {
+  assert.equal(redactSpec("https://user:12345#CLA654TAIL@host.invalid/r"), "https://user:12345#[redacted]@host.invalid/r");
+  assert.equal(redactSpec("https://h.invalid:8443#release@v1"), "https://h.invalid:8443#[redacted]@v1");
+  assert.equal(redactSpec("https://h.invalid:8443#release@token=CLA654SECRET"), "https://h.invalid:8443#[redacted]");
+  // Opposing controls: ordinary fragments, and fragments after a path, stay unchanged.
+  assert.equal(redactSpec("git+https://git.example.com:8443#v1.2.3"), "git+https://git.example.com:8443#v1.2.3");
+  assert.equal(redactSpec("https://h.invalid/x#a@b"), "https://h.invalid/x#a@b");
+  assert.equal(redactSpec("git+ssh://git@git.example.com:22/o/r.git#v1.2.3"), "git+ssh://git@git.example.com:22/o/r.git#v1.2.3");
+  assert.equal(redactSpec("git+https://deploy:CLA654PASS#x@github.com/o/r.git"), "git+https://[redacted]@github.com/o/r.git", "not a port: userinfo");
 });
 
 // --- item 6 -----------------------------------------------------------------

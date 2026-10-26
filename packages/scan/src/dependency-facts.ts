@@ -96,17 +96,24 @@ function redactLocator(value: string): string {
   let cut = -1;
   if (authority.includes("@")) cut = authority.lastIndexOf("@");
   // `user:secret/with/slash@host`: a "port" that is not 1-5 digits up to 65535 means the colon part is a password.
-  // Known, accepted limitation: an unencoded all-digit password <= 65535 before a raw `/` reads as
-  // `host:port/path@x` (a valid scoped tarball URL shape) and is kept unredacted.
-  else if (authority.includes(":")) {
+  // Known, accepted limitation: an unencoded all-digit password <= 65535 before a raw `/`, `?` or `#` reads as
+  // `host:port` (`host:port/path@x` is a valid scoped tarball URL shape), so `user:digits` is kept. After `?` the
+  // query is redacted as usual; after `#` with no path before it, the fragment up to its last `@` is redacted.
+  let ambiguousPort = false;
+  if (cut < 0 && authority.includes(":")) {
     const port = authority.slice(authority.lastIndexOf(":") + 1);
     if (!/^\d{1,5}$/.test(port) || Number(port) > 65535) cut = locator.lastIndexOf("@");
+    else ambiguousPort = firstSlash < 0;
   }
   let redactedLocator = locator;
   if (cut >= 0 && locator.slice(0, cut) !== "git") redactedLocator = `[redacted]${locator.slice(cut)}`;
   // Queries routinely carry tokens; fragments stay only when they look like a git ref / semver range.
   rest = rest.replace(/\?[^#]*/, "?[redacted]");
-  rest = rest.replace(/#(.*)$/s, (match, fragment: string) => (/[=&]|token|secret|pass|key|auth/i.test(fragment) ? "#[redacted]" : match));
+  rest = rest.replace(/#(.*)$/s, (match, fragment: string) => {
+    if (/[=&]|token|secret|pass|key|auth/i.test(fragment)) return "#[redacted]";
+    if (ambiguousPort && fragment.includes("@")) return `#[redacted]${fragment.slice(fragment.lastIndexOf("@"))}`;
+    return match;
+  });
   return `${value.slice(0, start)}${redactedLocator}${rest}`;
 }
 
