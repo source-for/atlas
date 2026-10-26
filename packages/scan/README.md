@@ -217,7 +217,8 @@ appears verbatim. Review a repository's committed content before publishing an a
   shapes; dependency-fact specs and Cargo `[patch]` paths also replace an absolute local path with `<absolute path>`.
   (Diagnostic lines rewrite only the known machine prefixes such as the checkout, scratch and home directories;
   other absolute paths in them are not replaced.)
-  - requested specs in dependency facts (`git:`, `npm:` aliases, `path:` and `file:` wrappers included);
+  - requested specs and Cargo `[target.'…']` keys in dependency facts (`git:`, `npm:` aliases, `path:` and `file:`
+    wrappers included);
   - Cargo `[patch]` keys and paths;
   - other limitation and diagnostic lines (unresolved imports, Cargo and rust-analyzer errors, TypeScript
     diagnostics).
@@ -226,8 +227,10 @@ appears verbatim. Review a repository's committed content before publishing an a
   empty prerelease or build identifier), is shown as `[unsupported requirement]` in dependency facts and `[patch]` lines; the package name and
   manifest `path:line` stay. A resolved lockfile version (npm or Cargo) that is not strict semver is shown as `[unsupported
   version]`. A
-  `package.json` `name` that npm would refuse is never used as a name or ID: the unit keeps its directory name and
-  the scan reports `Invalid package name at <manifest>:<line>`. This covers only those structured fields. It does not
+  `package.json` `name` npm never accepted (validate-npm-package-name `validForOldPackages`: for example a `:`, `/`
+  or `@` outside the scope prefix, `#`, `?`, whitespace, a leading `.` or `_`) is never used as a name or ID: the unit
+  keeps its directory name, imports by that name are not linked to it, and the scan reports `Invalid package name at
+  <manifest>:<line>`. Legacy names npm still accepts (`SharedLib`, `JSONStream`) are kept. This covers only those structured fields. It does not
   guarantee that an atlas is free of secrets.
 - **Known limitation: numeric password before a raw `/`.** A malformed URL whose unencoded password is all digits
   (at most 65535) and is followed by `/` (`https://user:12345/x@host/…`) cannot be told from `host:port/path@…`, the

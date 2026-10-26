@@ -81,6 +81,12 @@ function redactLocator(value: string): string {
       .replace(/#(.*)$/s, (match, fragment: string) => (/[=&]|token|secret|pass|key|auth/i.test(fragment) ? "#[redacted]" : match));
   }
   const start = scheme[0].length;
+  // `user:pa?ss#word@host`: an unencoded `?`/`#` inside the password would otherwise end the locator before its `@`.
+  // Only a `user:` with no `?`/`#` of its own qualifies, and `host:port?query@x` keeps its port reading.
+  const userinfo = /^[^/@?#:\s]*:([^/@\s]*)@/.exec(value.slice(start));
+  if (userinfo && /[?#]/.test(userinfo[1]!) && !(/^\d{1,5}[?#]/.test(userinfo[1]!) && Number(/^\d+/.exec(userinfo[1]!)![0]) <= 65535)) {
+    value = `${value.slice(0, start)}[redacted]@${value.slice(start + userinfo[0].length)}`;
+  }
   const endOfLocator = value.search(/[?#]/);
   const locatorEnd = endOfLocator < 0 ? value.length : endOfLocator;
   const locator = value.slice(start, locatorEnd);
@@ -354,25 +360,23 @@ function nameLine(text: string): number {
 export const invalidPackageNameLimitation = (manifestPath: string, text: string): string =>
   `Invalid package name at ${sanitizeControlCharacters(manifestPath)}:${nameLine(text)}.`;
 /**
- * npm's rules for a NEW package name (validate-npm-package-name `validForNewPackages`): 1-214 characters, no
- * surrounding spaces, lowercase, no leading `.`/`_`, none of `~'!()*`, not `node_modules`/`favicon.ico` or a Node
- * builtin, and URL-safe (for `@scope/name`, each part). Stricter than {@link validName}, which still admits legacy
- * registry names (`JSONStream`) a manifest may depend on; this one governs a package's own identity.
+ * Whether npm ever accepted a package's own name (validate-npm-package-name `validForOldPackages`, CLA-654 ruling):
+ * non-empty, no surrounding spaces, no leading `.`/`_`, not `node_modules`/`favicon.ico`, and URL-friendly (for
+ * `@scope/name`, each part, the name not starting with `.`). Legacy uppercase, builtin and `~'!()*` names stay valid;
+ * URL-friendliness rules out `:`, `/` and `@` outside the scope prefix, `#`, `?` and whitespace, so a valid name cannot
+ * carry credential or URL syntax. A lone surrogate (encodeURIComponent throws) is not URL-friendly.
  */
 function validOwnNpmName(name: string): boolean {
-  // A lone surrogate makes encodeURIComponent throw; such a name is not URL-friendly.
   const urlSafe = (part: string): boolean => { try { return encodeURIComponent(part) === part; } catch { return false; } };
   if (!name || name.startsWith(".") || name.startsWith("_") || name.trim() !== name) return false;
-  if (name.toLowerCase() === "node_modules" || name.toLowerCase() === "favicon.ico" || builtinModules.includes(name.toLowerCase())) return false;
-  if (name.length > 214 || name.toLowerCase() !== name || /[~'!()*]/.test(name.split("/").at(-1)!)) return false;
+  if (name.toLowerCase() === "node_modules" || name.toLowerCase() === "favicon.ico") return false;
   if (urlSafe(name)) return true;
   const scoped = /^(?:@([^/]+?)[/])?([^/]+?)$/.exec(name);
   return !!scoped && scoped[1] !== undefined && !scoped[2]!.startsWith(".") && urlSafe(scoped[1]) && urlSafe(scoped[2]!);
 }
 /**
- * A package.json's `name` when npm would accept it for a new package ({@link validOwnNpmName}). An invalid name is
- * withheld with a limitation naming only the manifest line; callers fall back to the directory, so no entity or ID
- * derives from it.
+ * A package.json's `name` when npm ever accepted it ({@link validOwnNpmName}). An invalid name is withheld with a
+ * limitation naming only the manifest line; callers fall back to the directory, so no entity or ID derives from it.
  */
 export function packageJsonName(text: string, manifestPath: string): { name?: string; limitation?: string } {
   let name: unknown;
@@ -1161,7 +1165,8 @@ export function buildDependencyFacts(input: DependencyFactsInput): DependencyFac
           npmManifests.set(packageJson, parsed);
           const valid = parsed.name !== undefined && validOwnNpmName(parsed.name);
           if (parsed.name !== undefined && !valid) limitations.npm.declarations.add(invalidPackageNameLimitation(packageJson, npmText));
-          const name = valid ? parsed.name! : (directory || "(root)");
+          // Main's existing 214-character bound on a package-fact name is kept (no limitation: the name is valid).
+          const name = valid && parsed.name!.length <= 214 ? parsed.name! : (directory || "(root)");
           packages.push({ ecosystem: "npm", name, manifestPath: packageJson, directory });
         }
       } catch { limitations.npm.declarations.add(`${sanitizeControlCharacters(packageJson)}: not a valid JSON object; its declarations were not read.`); }
@@ -1215,7 +1220,7 @@ export function buildDependencyFacts(input: DependencyFactsInput): DependencyFac
   const pushDeclaration = (row: DependencyDeclaration): void => {
     const names = [row.dependency, ...(row.alias ? [row.alias] : [])];
     if (!names.every(name => validName(row.ecosystem, name))) { skipped[row.ecosystem].declarations += 1; return; }
-    declarations.push({ ...row, ...(row.reason ? { reason: sanitizeControlCharacters(row.reason) } : {}), ...(row.target ? { target: sanitizeControlCharacters(row.target) } : {}) });
+    declarations.push({ ...row, ...(row.reason ? { reason: sanitizeControlCharacters(row.reason) } : {}), ...(row.target ? { target: redactText(sanitizeControlCharacters(row.target)) } : {}) });
   };
   for (const [manifestPath, manifest] of npmManifests) {
     const directory = dirOf(manifestPath);

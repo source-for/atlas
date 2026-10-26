@@ -272,19 +272,40 @@ test("CLA-654: no credential reaches dependency facts, limitations or serialized
   // A numeric password before a raw `/` is userinfo once it cannot be a port; a real port stays.
   assert.equal(redactSpec("https://user:123456/with/slash@host.invalid/repo"), "https://[redacted]@host.invalid/repo");
   assert.equal(redactSpec("https://user:65536/x@host.invalid/repo"), "https://[redacted]@host.invalid/repo");
+  // An unencoded `#`/`?` inside the password does not end the userinfo early; real fragments/queries and ports stay.
+  assert.equal(redactSpec("git+https://deploy:CLA654PASS#x@github.com/o/r.git"), "git+https://[redacted]@github.com/o/r.git");
+  assert.equal(redactSpec("https://user:pw?CLA654PASS@host/c.tgz"), "https://[redacted]@host/c.tgz");
+  assert.equal(redactText("fetch https://u:a?b#CLA654PASS@h/r?token=Q#main failed"), "fetch https://[redacted]@h/r?[redacted]#main failed");
+  for (const kept of ["git+https://github.com/x/y.git#v1.2.3", "https://host:8443/@scope/pkg/-/pkg-1.0.0.tgz"]) assert.equal(redactSpec(kept), kept);
   assert.equal(redactSpec("https://user:p%40ss%2Fw@host.invalid/repo"), "https://[redacted]@host.invalid/repo", "encoded userinfo");
   assert.equal(redactSpec("https://host:8443/a@b"), "https://host:8443/a@b");
   assert.equal(redactSpec("https://registry.example.com:8443/@scope/pkg/-/pkg-1.0.0.tgz"), "https://registry.example.com:8443/@scope/pkg/-/pkg-1.0.0.tgz", "scoped tarball host:port/path@");
   // A package's own name follows npm's new-package rules; the limitation names only the manifest line.
-  for (const name of ["Bad", "_x", ".x", "node_modules", "http", "@Scope/x", "@s/x y", "a/b", "x!", " x", "@s/.foo", "\ud800", "a\udc00"]) {
+  for (const name of ["_x", ".x", "node_modules", "Favicon.ico", "@s/x y", "a/b", " x", "@s/.foo", "u:x@host", "a#b", "a?b", "\ud800", "a\udc00"]) {
     assert.deepEqual(packageJsonName(`{\n  "name": ${JSON.stringify(name)}\n}`, "p/package.json"), { limitation: "Invalid package name at p/package.json:2." }, name);
   }
   // The line is the top-level `name`, not a nested one before it.
   assert.deepEqual(packageJsonName('{\n "metadata": {"name": "nested-valid"},\n "name": "u:CLA654ID@host",\n "dependencies": {"core": "^1"}\n}', "p/package.json"), { limitation: "Invalid package name at p/package.json:3." });
-  for (const name of ["@okie/web", "left-pad", "a.b_c-1", "@s/_x"]) assert.deepEqual(packageJsonName(JSON.stringify({ name }), "package.json"), { name }, name);
+  // Names npm ever accepted stay, legacy uppercase/builtin/special-character ones included (validForOldPackages).
+  for (const name of ["@okie/web", "left-pad", "a.b_c-1", "@s/_x", "SharedLib", "JSONStream", "http", "@Scope/x", "x!"]) assert.deepEqual(packageJsonName(JSON.stringify({ name }), "package.json"), { name }, name);
   // Requirements are shown only in a syntax Cargo accepts; valid prerelease/build metadata is kept as written.
   for (const bad of ["1.2.3+..x", "01.2.3-x", "1.2.3-01", "1.*.3x"]) assert.equal(displayRequirement(bad), "[unsupported requirement]", bad);
   for (const ok of ["=1.2.3-alpha+build.4", "1.2.3-alpha+meta", "^1.2", ">=1, <2", "1.*", "~1.2.3-rc.1", "*"]) assert.equal(displayRequirement(ok), ok, ok);
+  // A legacy name npm still accepts (`SharedLib`) keeps its entity name and its workspace import edge.
+  const legacy = tree({
+    "package.json": JSON.stringify({ name: "legacy-root", private: true, workspaces: ["packages/*"] }),
+    "packages/shared/package.json": JSON.stringify({ name: "SharedLib", version: "1.0.0", main: "index.ts" }),
+    "packages/shared/index.ts": "export const s = 1;\n",
+    "packages/app/package.json": JSON.stringify({ name: "app", version: "1.0.0", dependencies: { SharedLib: "workspace:*" } }),
+    "packages/app/index.ts": "import { s } from \"SharedLib\";\nexport const a = s;\n",
+  }, true);
+  try {
+    const scanned = scanRepository(legacy.root, { analysisMode: "quick" });
+    assert.ok(scanned.snapshot.entities.some(entity => entity.id === "container:packages-shared" && entity.name === "SharedLib"));
+    assert.ok(scanned.snapshot.relations.some(relation => relation.from === "container:packages-app" && relation.to === "container:packages-shared"),
+      scanned.snapshot.relations.map(relation => `${relation.from}->${relation.to}`).join("\n"));
+    assert.ok(!(scanned.analysis.limitations ?? []).some(line => line.startsWith("Invalid package name")));
+  } finally { legacy.cleanup(); }
   // Any wrapper depth is peeled without recursion and without leaking the tail.
   const deep = redactSpec(`${"git:".repeat(5000)}https://u:CLA654PASS@host.invalid/repo`);
   assert.ok(deep.endsWith("git:https://[redacted]@host.invalid/repo") && !deep.includes("CLA654PASS"));
@@ -302,7 +323,7 @@ test("CLA-654: no credential reaches dependency facts, limitations or serialized
     "bad/index.ts": "export const bad = 1;\n",
     "Cargo.toml": '[workspace]\nmembers = ["app", "core", "mis"]\n\n[patch."https://CLA654USER:CLA654PASS@example.invalid/p.git?token=CLA654QUERY"]\nremote = { path = "/CLA654HOME/u:CLA654PASS@private" }\n\n[patch.crates-io]\ncore = { path = "core" }\nmis = { path = "mis" }\n',
     "Cargo.lock": 'version = 3\n\n[[package]]\nname = "app"\nversion = "0.1.0"\ndependencies = ["core", "opaque", "semverdep", "pre", "leadzero"]\n\n[[package]]\nname = "opaque"\nversion = "9.9.9CLA654LOCK"\n\n[[package]]\nname = "semverdep"\nversion = "1.2.3"\n\n[[package]]\nname = "pre"\nversion = "1.0.0-alpha.1+build.5"\n\n[[package]]\nname = "leadzero"\nversion = "1.2.3-..CLA654LOCK"\n\n[[package]]\nname = "core"\nversion = "1.0.0"\n',
-    "app/Cargo.toml": '[package]\nname = "app"\nversion = "0.1.0"\n\n[dependencies]\ncore = "1.*.3CLA654REQ"\ngitdep = { git = "https://CLA654USER:CLA654PASS@example.invalid/g.git?token=CLA654QUERY", branch = "main" }\nescaped = { path = "../../CLA654USER:CLA654PASS@outside" }\nopaque = "9"\nsemverdep = "^1.2"\npre = "=1.0.0-alpha.1+build.5"\nleadzero = "1"\nmis = "1.2.3+..CLA654REQ"\n',
+    "app/Cargo.toml": '[package]\nname = "app"\nversion = "0.1.0"\n\n[dependencies]\ncore = "1.*.3CLA654REQ"\ngitdep = { git = "https://CLA654USER:CLA654PASS@example.invalid/g.git?token=CLA654QUERY", branch = "main" }\nescaped = { path = "../../CLA654USER:CLA654PASS@outside" }\nopaque = "9"\nsemverdep = "^1.2"\npre = "=1.0.0-alpha.1+build.5"\nleadzero = "1"\nmis = "1.2.3+..CLA654REQ"\npwdep = { git = "https://deploy:CLA654PASS#x@example.invalid/p.git" }\n\n[target.\'https://CLA654USER:CLA654PASS@h.invalid\'.dependencies]\ntdep = "1"\n',
     "app/src/lib.rs": "pub fn app() {}\n",
     "core/Cargo.toml": '[package]\nname = "core"\nversion = "1.0.0"\n',
     "core/src/lib.rs": "pub fn core() {}\n",
@@ -320,6 +341,8 @@ test("CLA-654: no credential reaches dependency facts, limitations or serialized
     assert.equal(rows.get("core")!.requested, "[unsupported requirement]");
     // Cargo rejects `1.2.3+..x` (empty build identifier) though the matcher reads it: never echoed, in facts or mismatch lines.
     assert.equal(rows.get("mis")!.requested, "[unsupported requirement]");
+    assert.equal(rows.get("pwdep")!.requested, "git:https://[redacted]@example.invalid/p.git");
+    assert.equal(rows.get("tdep")!.target, "https://[redacted]@h.invalid", "a Cargo target key is redacted like a spec");
     assert.deepEqual(rows.get("opaque")!.resolvedVersions, ["[unsupported version]"]);
     assert.deepEqual([rows.get("semverdep")!.requested, rows.get("semverdep")!.resolvedVersions], ["^1.2", ["1.2.3"]], "valid semver is unchanged");
     assert.deepEqual([rows.get("pre")!.requested, rows.get("pre")!.resolvedVersions], ["=1.0.0-alpha.1+build.5", ["1.0.0-alpha.1+build.5"]], "prerelease + build kept");
@@ -337,6 +360,16 @@ test("CLA-654: no credential reaches dependency facts, limitations or serialized
     assert.ok(limitations.some(line => line.startsWith("Cargo [patch] accepted by no scanned crate's normal dependency: version 2.0.0 does not satisfy app/Cargo.toml:13 requires [unsupported requirement];")), limitations.join("\n"));
     assert.ok(limitations.some(line => line.startsWith("Cargo [patch] not applied to a version requirement the scanner cannot parse: app/Cargo.toml:6 requires core [unsupported requirement];")), limitations.join("\n"));
   } finally { repo.cleanup(); }
+  // TypeScript diagnostics reach coverage limitations redacted (the import below is unresolvable).
+  const tsRepo = tree({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true, module: "NodeNext", moduleResolution: "NodeNext", types: [] }, include: ["*.ts"] }),
+    "a.ts": "import { x } from './u:CLA654TS@host/missing.js';\nexport const y = x;\n",
+  });
+  try {
+    const lines = analyzeTypeScript(tsRepo.root, ["a.ts"]).coverage.flatMap(row => row.limitations);
+    assert.ok(lines.some(line => line.includes("TS2307") && line.includes("./[redacted]@host/missing.js")), lines.join("\n"));
+    assert.ok(!lines.some(line => line.includes("CLA654TS")), lines.join("\n"));
+  } finally { tsRepo.cleanup(); }
   assert.equal(scrubCargoError("error: failed to fetch https://CLA654USER:CLA654PASS@host.invalid/p?auth=CLA654QUERY", []), "failed to fetch https://[redacted]@host.invalid/p?[redacted]");
 });
 
