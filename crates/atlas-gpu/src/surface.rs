@@ -1023,8 +1023,8 @@ fn select_surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::Textur
         .or_else(|| formats.first().copied())
 }
 
-/// A full scene load starts a new engine, whose geometry epoch restarts at 0, and a view's
-/// scenes share one id and revision (a bootstrap scene and its enrichment, CLA-590). The
+/// A full scene load starts a new engine, whose geometry epoch restarts at 0, and every full
+/// `setScene` in one view shares its scene id and revision 1 (`toProtocolScene`, CLA-590). The
 /// cache key cannot tell the new scene from the old one, so a load drops the old mesh.
 fn forget_scene_mesh(cached: &mut Option<CachedMesh>) {
     *cached = None;
@@ -1159,6 +1159,8 @@ mod tests {
 
     #[test]
     fn a_full_scene_load_with_the_same_id_and_revision_draws_its_own_mesh() {
+        // Pins the key collision and the rebuild after `forget_scene_mesh`; it does not cover the
+        // `set_scene` -> `reset_scene_diagnostics` wiring (browser pixel checks do).
         // Mirrors `GpuRenderer::render`: rebuild when the key changes, then select ranges.
         fn draw(
             cached: &mut Option<CachedMesh>,
@@ -1185,7 +1187,7 @@ mod tests {
         let bootstrap: SceneSnapshot =
             serde_json::from_str(include_str!("../../../fixtures/renderer/demo-scene.json"))
                 .unwrap();
-        // A different scene under the same id and revision, as the enrichment of a view is.
+        // A different scene under the same id and revision, as any full setScene in one view is.
         let mut enriched = bootstrap.clone();
         enriched.paths.clear();
         assert_eq!(
