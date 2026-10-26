@@ -11,6 +11,7 @@ import { cachedScipIndex, rustAnalyzerVersion, rustcIdentity, rustInputDigest } 
 import { createScanScratch, operatorCargoHome, rustToolchainPin, scanSpawnSync, scanWorkDir, type ScanScratch } from "./scan-env.js";
 import { inspectRustAncestors, nodeAncestorFs, rustProjectJsonIn, type AncestorFs } from "./rust-ancestors.js";
 import { labelledPrefix, pathPrefixRewriter } from "./path-prefixes.js";
+import { redactText } from "./dependency-facts.js";
 import { compareText } from "@okie/architecture";
 
 type Point = { row: number; column: number };
@@ -245,7 +246,7 @@ export function rustDependencyLimitation(mode: "isolated" | "operator", reason: 
 export function scrubCargoError(stderr: string, paths: ReadonlyArray<readonly [label: string, path: string | undefined]>): string {
   const lines = stderr.split("\n").map(line => line.trim()).filter(Boolean);
   const line = lines.find(item => /^error\b/i.test(item)) ?? lines[0] ?? "cargo metadata failed";
-  return pathPrefixRewriter(paths.map(([label, path]) => labelledPrefix(label, path)))(line).replace(/^error:\s*/i, "").slice(0, 300);
+  return redactText(pathPrefixRewriter(paths.map(([label, path]) => labelledPrefix(label, path)))(line).replace(/^error:\s*/i, "")).slice(0, 300);
 }
 
 /**
@@ -413,7 +414,7 @@ export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly strin
       limitations.add(missing
         ? `rust-analyzer is unavailable for the scanner's Rust toolchain${pin.toolchain ? ` ${pin.toolchain}` : ""} (resolved from the scanner's working directory; set OKIE_SCAN_RUST_TOOLCHAIN to a toolchain with the rust-analyzer component): ${run.error || "not installed"}`
         : run.error || "rust-analyzer SCIP indexing failed.");
-      result.coverage.push({ language: "rust", tool: "rust-analyzer", version: "unavailable", coverage: "unavailable", indexedFiles: [], limitations: canonical(limitations) });
+      result.coverage.push({ language: "rust", tool: "rust-analyzer", version: "unavailable", coverage: "unavailable", indexedFiles: [], limitations: canonical([...limitations].map(redactText)) });
       return result;
     }
     limitations.add(RUST_LOCKDOWN_LIMITATION);
@@ -528,11 +529,11 @@ export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly strin
     if (run.stderr.includes("duplicate scip symbols")) limitations.add("rust-analyzer reported duplicate SCIP symbols; ambiguous symbols are omitted rather than linked to an arbitrary definition.");
     if (ambiguousSymbols.size) limitations.add(`Ambiguous SCIP definition symbols omitted: ${ambiguousSymbols.size}.`);
     if (omitted.length) limitations.add(`Not indexed by rust-analyzer SCIP: ${omitted.join(", ")}`);
-    result.coverage.push({ language: "rust", tool: tool?.name || "rust-analyzer", version: tool?.version || "unknown", coverage: indexedFiles.length ? "semantic" : "unavailable", indexedFiles, limitations: canonical(limitations) });
+    result.coverage.push({ language: "rust", tool: tool?.name || "rust-analyzer", version: tool?.version || "unknown", coverage: indexedFiles.length ? "semantic" : "unavailable", indexedFiles, limitations: canonical([...limitations].map(redactText)) });
     return result;
   } catch (error) {
     limitations.add(scrubCargoError(`error: ${error instanceof Error ? error.message : String(error)}`, machinePaths));
-    result.coverage.push({ language: "rust", tool: "rust-analyzer", version: "unknown", coverage: "unavailable", indexedFiles: [], limitations: canonical(limitations) });
+    result.coverage.push({ language: "rust", tool: "rust-analyzer", version: "unknown", coverage: "unavailable", indexedFiles: [], limitations: canonical([...limitations].map(redactText)) });
     return result;
   } finally {
     scratch.dispose();

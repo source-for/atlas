@@ -199,6 +199,44 @@ nodes. Same facts flow to the inspector and WebMCP/Ask.
 - Coverage is a scan-time overlay, never `ArchitectureExtraction` input. There is no CRAP
   headline score.
 
+## Source text is not sanitized
+
+**Source excerpts are not sanitized.** Anything committed in the lines an atlas shows, including secrets,
+appears verbatim. Review a repository's committed content before publishing an atlas of it.
+
+- **Code snippets: always on.** Every scan writes bounded windows of the referenced JavaScript, TypeScript and Rust
+  declarations into `snapshot.json` and `atlas.okie.json` (`sourceExcerpts`). No flag turns them off. The hosted
+  operator scan writes them too, and export and publish carry the captured snapshot and its excerpt packets as they
+  are. The only scrub is GitHub-token shapes (`ghp_…`, `github_pat_…`); API keys, passwords and connection strings
+  stay as written.
+- **Full files: `--include-source`, off by default.** Only the CLI sets it; the hosted operator and legacy scan paths
+  never do. It adds `sources` to `atlas.okie.json`: the raw text of every referenced file, including referenced
+  manifests (`package.json`, `Cargo.toml`, `README.md`, `pnpm-workspace.yaml`), with no scrub at all. A secret
+  written in a manifest appears verbatim there, even though the dependency facts redact it.
+- **What is redacted.** These fields strip URL userinfo, query strings, credential-looking fragments and token
+  shapes; dependency-fact specs and Cargo `[patch]` paths also replace an absolute local path with `<absolute path>`.
+  (Diagnostic lines rewrite only the known machine prefixes such as the checkout, scratch and home directories;
+  other absolute paths in them are not replaced.)
+  - requested specs in dependency facts (`git:`, `npm:` aliases, `path:` and `file:` wrappers included);
+  - Cargo `[patch]` keys and paths;
+  - other limitation and diagnostic lines (unresolved imports, Cargo and rust-analyzer errors, TypeScript
+    diagnostics).
+
+  A Cargo version requirement the scanner cannot parse, or not written in a syntax Cargo accepts (a leading zero, an
+  empty prerelease or build identifier), is shown as `[unsupported requirement]` in dependency facts and `[patch]` lines; the package name and
+  manifest `path:line` stay. A resolved lockfile version (npm or Cargo) that is not strict semver is shown as `[unsupported
+  version]`. A
+  `package.json` `name` that npm would refuse is never used as a name or ID: the unit keeps its directory name and
+  the scan reports `Invalid package name at <manifest>:<line>`. This covers only those structured fields. It does not
+  guarantee that an atlas is free of secrets.
+- **Known limitation: numeric password before a raw `/`.** A malformed URL whose unencoded password is all digits
+  (at most 65535) and is followed by `/` (`https://user:12345/x@host/…`) cannot be told from `host:port/path@…`, the
+  shape of a valid scoped tarball URL (`https://registry:8443/@scope/pkg/-/pkg-1.0.0.tgz`), and is not redacted.
+  Redaction of malformed URLs is not comprehensive.
+- **Not redacted: repository paths.** Committed file and directory paths (`sourceRefs`, evidence, entity paths and
+  the IDs derived from them) are kept exactly as committed, like source text. A path that itself contains a
+  credential appears verbatim there.
+
 ## Determinism
 
 Output is byte-identical across shuffled discovery order: IDs derive from canonical source

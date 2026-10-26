@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import { ts } from "./analyzers.js";
 import { resolveRelativeImport } from "./extract.js";
 import { slug } from "./ids.js";
+import { packageJsonName } from "./dependency-facts.js";
 import {
   classifyFsSymlink,
   countSymlink,
@@ -270,12 +271,8 @@ function rustCrateName(sourceRoot: string, dir: string): string {
 function readPackageName(sourceRoot: string, dir: string): string | undefined {
   const text = readRepositoryFile(sourceRoot, dir ? `${dir}/package.json` : "package.json");
   if (text === undefined) return undefined;
-  try {
-    const pkg = JSON.parse(text) as { name?: string };
-    return typeof pkg.name === "string" && pkg.name.trim() ? pkg.name : undefined;
-  } catch {
-    return undefined;
-  }
+  // An npm-invalid name is withheld (CLA-654): the unit keeps its directory name.
+  return packageJsonName(text, dir ? `${dir}/package.json` : "package.json").name;
 }
 
 /** `packages:` entries of `pnpm-workspace.yaml` (a list of quoted or bare scalars). */
