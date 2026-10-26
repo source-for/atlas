@@ -642,13 +642,13 @@ function bracketDepth(text: string): number {
 }
 const TOML_ESCAPES: Readonly<Record<string, string>> = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", '"': '"', "\\": "\\" };
 /**
- * A dependency requirement as Cargo reads it: a TOML 1.0 basic string (`basic`, raw
+ * A TOML string value as Cargo reads it (requirements, names, keys): a TOML 1.0 basic string (`basic`, raw
  * between the quotes) with its escapes decoded, or a literal string (`literal`) as is.
  * An escape or control character TOML rejects (`\q`, `\uD800`, `\e`) keeps the raw
- * text; it contains a backslash or control character, so no requirement parses it and
- * the requirement is reported unparsable rather than read as absent.
+ * text; it contains a backslash or control character, so no requirement or Cargo name parses it and
+ * it is reported unparsable or invalid rather than read as absent.
  */
-function tomlRequirement(basic: string | undefined, literal: string | undefined): string | undefined {
+export function tomlStringValue(basic: string | undefined, literal: string | undefined): string | undefined {
   if (basic === undefined) return literal;
   if (/[\u0000-\u0008\u000A-\u001F\u007F]/.test(basic)) return basic;
   let valid = true;
@@ -672,14 +672,16 @@ function tomlString(text: string, key: string): string | undefined {
 function inlineSpec(text: string): CargoDependencySpec {
   const value = stripTomlComment(text).trim();
   const plain = /^"((?:[^"\\]|\\.)*)"|^'([^']*)'/.exec(value);
-  if (plain) return { version: tomlRequirement(plain[1], plain[2])! };
+  if (plain) return { version: tomlStringValue(plain[1], plain[2])! };
   const spec: CargoDependencySpec = {};
   const version = tomlStringMatch(value, "version");
-  if (version) spec.version = tomlRequirement(version[1], version[2])!;
-  for (const key of ["path", "git", "package", "registry"] as const) {
+  if (version) spec.version = tomlStringValue(version[1], version[2])!;
+  for (const key of ["path", "git", "registry"] as const) {
     const found = tomlString(value, key);
     if (found !== undefined) spec[key] = found;
   }
+  const renamed = tomlStringMatch(value, "package");
+  if (renamed) spec.package = tomlStringValue(renamed[1], renamed[2])!;
   const gitRef = tomlString(value, "rev") ?? tomlString(value, "tag") ?? tomlString(value, "branch");
   if (gitRef !== undefined) spec.gitRef = gitRef;
   if (/(?:^|[{,\s])workspace\s*=\s*true/.test(value)) spec.workspace = true;
@@ -690,9 +692,10 @@ function assignField(spec: CargoDependencySpec, field: string, rawValue: string)
   if (field === "workspace") { if (/^true\b/.test(value)) spec.workspace = true; return; }
   const text = /^"((?:[^"\\]|\\.)*)"|^'([^']*)'/.exec(value);
   if (!text) return;
-  if (field === "version") { spec.version = tomlRequirement(text[1], text[2])!; return; }
+  if (field === "version") { spec.version = tomlStringValue(text[1], text[2])!; return; }
   const content = text[1] ?? text[2]!;
-  if (field === "path" || field === "git" || field === "package" || field === "registry") spec[field] = content;
+  if (field === "package") spec.package = tomlStringValue(text[1], text[2])!;
+  else if (field === "path" || field === "git" || field === "registry") spec[field] = content;
   else if (field === "rev" || field === "tag" || field === "branch") spec.gitRef = content;
 }
 
@@ -737,7 +740,11 @@ export function parseCargoManifest(text: string): CargoManifest {
     }
     return patch;
   };
-  const unquoteKey = (key: string): string => key.trim().replace(/^["']|["']$/g, "");
+  // A quoted key is a TOML string: `"c\u006fre"` is the key `core` (CLA-654 validates the decoded name).
+  const unquoteKey = (key: string): string => {
+    const quoted = /^"(.*)"$|^'(.*)'$/s.exec(key.trim());
+    return quoted ? tomlStringValue(quoted[1], quoted[2])! : key.trim().replace(/^["']|["']$/g, "");
+  };
   for (let index = 0; index < lines.length; index += 1) {
     const lineNumber = index + 1;
     const line = stripTomlComment(lines[index]!).trim();
@@ -788,7 +795,7 @@ export function parseCargoManifest(text: string): CargoManifest {
       const text = /^"([^"]*)"|^'([^']*)'/.exec(value);
       // A quoted `"version"` key is the same field; without this it reads as no version (0.0.0).
       const field = /^(["'])version\1(?=\.|$)/.test(left) ? `version${left.slice(9)}` : left;
-      if (context.kind === "package" && field === "name" && text) { manifest.packageName = text[1] ?? text[2]!; manifest.packageNameLine = lineNumber; }
+      if (context.kind === "package" && field === "name" && text) { manifest.packageName = tomlStringValue(text[1], text[2])!; manifest.packageNameLine = lineNumber; }
       else if (field === "version" && text) {
         if (context.kind === "package") manifest.packageVersion = text[1] ?? text[2]!;
         else manifest.workspacePackageVersion = text[1] ?? text[2]!;

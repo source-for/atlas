@@ -316,21 +316,25 @@ test("CLA-654: no credential reaches dependency facts, limitations or serialized
     "crates/shared/src/lib.rs": "pub fn s() {}\n",
     "crates/bad/Cargo.toml": '[package]\nname = "u:CLA654CARGONAME@host"\nversion = "1.0.0"\n',
     "crates/bad/src/lib.rs": "pub fn b() {}\n",
-    "crates/app/Cargo.toml": '[package]\nname = "app"\nversion = "1.0.0"\n\n[dependencies]\n"café" = { path = "../core" }\nshared = { path = "../shared", package = "SharedCrate" }\n"u:CLA654CARGOKEY@h" = { path = "../bad" }\nren = { path = "../bad", package = "u:CLA654CARGOREN@h" }\n\n[target.\'cfg(unix)\'.dependencies]\ntren = { path = "../bad", package = "u:CLA654CARGOTARGET@h" }\n',
+    // TOML escapes are decoded before the name is checked, as Cargo does: `\u0065sc` is `esc`.
+    "crates/esc/Cargo.toml": '[package]\nname = "\\u0065sc"\nversion = "1.0.0"\n',
+    "crates/esc/src/lib.rs": "pub fn e() {}\n",
+    "crates/app/Cargo.toml": '[package]\nname = "app"\nversion = "1.0.0"\n\n[dependencies]\n"café" = { path = "../core" }\nshared = { path = "../shared", package = "Sh\\u0061redCrate" }\n"u:CLA654CARGOKEY@h" = { path = "../bad" }\nren = { path = "../bad", package = "u:CLA654CARGOREN@h" }\n\n[target.\'cfg(unix)\'.dependencies]\ntren = { path = "../bad", package = "u:CLA654CARGOTARGET@h" }\n\n[dependencies."\\u0065sc"]\npath = "../esc"\n\n[dependencies."u\\u003aCLA654CARGOESC\\u0040h"]\npath = "../bad"\n',
     "crates/app/src/lib.rs": "pub fn a() {}\n",
   }, true);
   try {
     const scanned = scanRepository(crates.root, { analysisMode: "quick" });
     const outputs = JSON.stringify(scanOutputFiles(scanned));
-    for (const marker of ["CLA654CARGONAME", "CLA654CARGOKEY", "CLA654CARGOREN", "CLA654CARGOWS", "CLA654CARGOPATCH", "CLA654CARGOTARGET"]) assert.ok(!outputs.includes(marker), `serialized outputs leak ${marker}`);
+    for (const marker of ["CLA654CARGONAME", "CLA654CARGOKEY", "CLA654CARGOREN", "CLA654CARGOWS", "CLA654CARGOPATCH", "CLA654CARGOTARGET", "CLA654CARGOESC"]) assert.ok(!outputs.includes(marker), `serialized outputs leak ${marker}`);
     const names = new Map(scanned.snapshot.entities.map(entity => [entity.id, entity.name]));
-    assert.deepEqual([names.get("container:crates-core"), names.get("container:crates-shared"), names.get("container:crates-bad")], ["café", "SharedCrate", "bad"]);
+    assert.deepEqual([names.get("container:crates-core"), names.get("container:crates-shared"), names.get("container:crates-bad"), names.get("container:crates-esc")], ["café", "SharedCrate", "bad", "esc"]);
     const edges = scanned.snapshot.relations.map(relation => `${relation.from}->${relation.to}`);
-    assert.ok(edges.includes("container:crates-app->container:crates-core") && edges.includes("container:crates-app->container:crates-shared"), edges.join("\n"));
+    assert.ok(edges.includes("container:crates-app->container:crates-core") && edges.includes("container:crates-app->container:crates-shared")
+      && edges.includes("container:crates-app->container:crates-esc"), edges.join("\n"));
     assert.ok(!edges.includes("container:crates-app->container:crates-bad"), edges.join("\n"));
     const invalid = (scanned.analysis.limitations ?? []).filter(line => line.startsWith("Invalid"));
     // Location only, one per refused key/rename: [workspace.dependencies], [patch], [dependencies], a target table.
-    assert.deepEqual(invalid, ["Invalid dependency name at Cargo.toml:5.", "Invalid dependency name at Cargo.toml:8.", "Invalid dependency name at crates/app/Cargo.toml:8.", "Invalid dependency name at crates/app/Cargo.toml:9.", "Invalid dependency name at crates/app/Cargo.toml:12.", "Invalid package name at crates/bad/Cargo.toml:2."]);
+    assert.deepEqual(invalid, ["Invalid dependency name at Cargo.toml:5.", "Invalid dependency name at Cargo.toml:8.", "Invalid dependency name at crates/app/Cargo.toml:8.", "Invalid dependency name at crates/app/Cargo.toml:9.", "Invalid dependency name at crates/app/Cargo.toml:12.", "Invalid dependency name at crates/app/Cargo.toml:17.", "Invalid package name at crates/bad/Cargo.toml:2."]);
   } finally { crates.cleanup(); }
   // Any wrapper depth is peeled without recursion and without leaking the tail.
   const deep = redactSpec(`${"git:".repeat(5000)}https://u:CLA654PASS@host.invalid/repo`);

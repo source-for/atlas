@@ -4,7 +4,7 @@ import { basename } from "node:path";
 import { ts } from "./analyzers.js";
 import { resolveRelativeImport } from "./extract.js";
 import { slug } from "./ids.js";
-import { packageJsonName, validCargoName } from "./dependency-facts.js";
+import { packageJsonName, tomlStringValue, validCargoName } from "./dependency-facts.js";
 import {
   classifyFsSymlink,
   countSymlink,
@@ -502,7 +502,7 @@ export function cargoPackageName(manifestText: string): string | undefined {
   for (const { table, arrayTable, line } of tomlLinesByTable(manifestText)) {
     if (arrayTable || table !== "package") continue;
     const match = /^\s*name\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\s*$/.exec(line);
-    if (match) return (match[1] ?? match[2]!).trim() || undefined;
+    if (match) return tomlStringValue(match[1], match[2])!.trim() || undefined;
   }
   return undefined;
 }
