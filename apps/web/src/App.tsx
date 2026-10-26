@@ -8,7 +8,6 @@ import { compileCurrentGeneration } from './renderer/compileCurrentGeneration';
 import { navigateResidentInspectorChild } from './inspector/residentInspectorChild';
 import { createPendingInspectorChildSlot, inspectorLevelLabel, pendingInspectorChild, PendingInspectorChildView, visiblePendingInspectorChild, type PendingInspectorChild } from './inspector/pendingInspectorChild';
 import { prepareReverseScene } from './renderer/reverseScenePreparation';
-import { initialSceneBandsMatch } from './renderer/initialSceneCompatibility';
 import { recordAtlasFirstFrame } from './performance/loadTimings';
 import { holdMermaidUntilFirstFrame } from './diagram/mermaidLoadGate';
 import { DiagramActionHelp } from './diagram/DiagramActionHelp';
@@ -1633,7 +1632,6 @@ export function App() {
   const detailsTabRef = useRef<HTMLButtonElement | null>(null);
   const inspectorSelectionRef = useRef(initialNavigation.selectedId);
   const inspectorReframeGenerationRef = useRef(0);
-  const initialEnrichmentAbortRef = useRef<AbortController | undefined>(undefined);
   const levelCompileAbortRef = useRef<AbortController | undefined>(undefined);
   useEffect(() => {
     const fixture = scanFixture;
@@ -1811,7 +1809,6 @@ export function App() {
   const [storySelectionOverride, setStorySelectionOverride] = useState(false);
   const [visibilityMode, setVisibilityMode] = useState<'all' | 'dim' | 'isolate'>('all');
   const [liveMessage, setLiveMessage] = useState('Architecture atlas loaded.');
-  const [initialDetailLoading, setInitialDetailLoading] = useState(false); // only while the bootstrap enrichment runs (CLA-590)
   const [askOpen, setAskOpen] = useState(false);
   const [askDocked, setAskDocked] = useState(false);
   const [inspectorAskActive, setInspectorAskActive] = useState(false);
@@ -1935,7 +1932,6 @@ export function App() {
   useEffect(() => () => {
     cancelForegroundSceneRequest();
     if (scanLateRevealRafRef.current !== undefined) window.cancelAnimationFrame(scanLateRevealRafRef.current);
-    initialEnrichmentAbortRef.current?.abort();
     cancelGestureSceneRequests();
   }, []);
   const pickedRelation = useMemo(() => pickedRelationId ? scene.relations.find(relation => relation.id === pickedRelationId) ?? canonicalRelationForInspection(activeSnapshot, pickedRelationId) : undefined, [activeSnapshot, pickedRelationId, scene.relations]);
@@ -2447,32 +2443,6 @@ export function App() {
     path: navigationPathFromDraft(pathDraft),
   }, navigationDefaults);
   const navigationRef = useRef<NavigationState>(navigationState);
-  // Every scan link's initialize restore begins foreground work, which aborts an enrichment already
-  // queued, and that cancel ends the worker holding the graph (CLA-584/590). Enrich only once the
-  // restore settles, and only while the bootstrap scene is still shown and no navigation owns the worker.
-  const [initialRestorePending, setInitialRestorePending] = useState(() => Boolean(scanFixture) && query.fixture !== 'stress');
-  useEffect(() => {
-    const fixture = scanFixture;
-    if (!fixture || initialRestorePending) return;
-    if (sceneRef.current !== goldenScene || foregroundSceneRequestRef.current.pending() || levelScenePreparationPending(levelCompileAbortRef.current)
-      || reverseScenePendingRef.current || zoomHandoffInflightRef.current) { setInitialDetailLoading(false); return; }
-    let alive = true;
-    const controller = new AbortController();
-    initialEnrichmentAbortRef.current = controller;
-    if (fixture.boot === 'neighborhood' && activeSnapshot.entities.length > 128) setInitialDetailLoading(true);
-    void fixture.enrichInitialScene(controller.signal).then(enriched => {
-      if (alive) setInitialDetailLoading(false);
-      if (!alive || !enriched || fixture !== scanFixture || sceneRef.current !== goldenScene) return;
-      const detail = semanticLensSessionDetail(semanticLensSessionRef.current);
-      if (detail !== 'context' && detail !== 'container') return;
-      if (!initialSceneBandsMatch(goldenScene, enriched)) return;
-      // Publish the ref with the state, as every scene publisher does: navigation begun before React
-      // commits must capture the enriched scene, not the bootstrap one it is about to replace.
-      sceneRef.current = enriched;
-      setScene(enriched);
-    }).catch(() => { if (alive) setInitialDetailLoading(false); });
-    return () => { alive = false; controller.abort(); };
-  }, [initialRestorePending, goldenScene]);
   navigationRef.current = navigationState;
   const rendererReplayState = JSON.stringify({
     timeline: {
@@ -2948,7 +2918,7 @@ export function App() {
       },
     });
     historyControllerRef.current = controller;
-    void controller.start().finally(() => { if (historyControllerRef.current === controller) setInitialRestorePending(false); });
+    void controller.start();
     return () => {
       controller.dispose();
       if (historyControllerRef.current === controller) historyControllerRef.current = undefined;
@@ -4304,8 +4274,6 @@ export function App() {
     cancelGestureSceneRequests();
     cancelForegroundSceneRequest(!historyRestore);
     foregroundPreparationKindRef.current = historyRestore ? 'history-restore' : storyPreparation ? 'story-step' : 'navigation';
-    initialEnrichmentAbortRef.current?.abort();
-    setInitialDetailLoading(false);
     inspectorNeighborhoodRequest.current.cancel();
     const liveCamera = abortInspectorCameraFlight();
     beginForegroundPlaybackPreparation(historyRestore ? 'restore' : storyPreparation ? 'story' : 'navigation', {
@@ -5225,8 +5193,6 @@ export function App() {
     cancelForegroundSceneRequest();
     cancelGestureSceneRequests();
     levelCompileAbortRef.current?.abort();
-    initialEnrichmentAbortRef.current?.abort();
-    setInitialDetailLoading(false);
     const fixture = importedAtlasRef.current ? undefined : scanFixture;
     if (fixture) {
       const request = beginForegroundScanNavigation('Preparing detail level');
@@ -7135,7 +7101,7 @@ export function App() {
 
           <div className="map-heading">
             <h1>{scene.title}</h1>
-            {foregroundViewLoading || reverseViewLoading ? <small role="status">Loading view…</small> : initialDetailLoading && <small role="status">Loading more detail…</small>}
+            {(foregroundViewLoading || reverseViewLoading) && <small role="status">Loading view…</small>}
             <nav aria-label="Architecture ancestry" className="semantic-breadcrumb">
               {breadcrumbState.chain.map((entity, index) => <span key={entity.id}>{index > 0 && <ChevronIcon size={9}/>} {entity.id === navigationIdentity.rootEntityId ? <b aria-current="page">{entity.name}</b> : <button onClick={() => navigateRoot(entity.id)}>{entity.name}</button>}</span>)}
               {breadcrumbState.descendant && <span className="selected-descendant"><ChevronIcon size={9}/><em>{breadcrumbState.descendant.name}</em></span>}

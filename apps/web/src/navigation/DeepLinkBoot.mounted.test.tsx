@@ -68,12 +68,10 @@ function bootWithoutModelChildren() {
   setActiveScanFixture(fixture);
   expect(fixture.snapshot.entities.some(entity => entity.id === 'component:model-scoping')).toBe(false);
 }
-// A neighborhood boot above the 128-entity slice threshold: the bootstrap scene is the L1/L2 slice and
-// enrichment compiles the full packet (synchronously here: happy-dom has no Worker).
+// A neighborhood boot above the 128-entity slice threshold, where main enriched the bootstrap scene:
+// the bootstrap scene is the L1/L2 slice of the full packet (compiled synchronously: happy-dom has no Worker).
 async function largeNeighborhoodBoot(ownerId = 'code:web-shell:app') {
   const full = structuredClone(snapshot) as unknown as ArchitectureSnapshot;
-  // Children under a code entity leave L1/L2 geometry unchanged, so initialSceneBandsMatch accepts the
-  // enriched scene, as it does for the published atlas.
   const owner = full.entities.find(entity => entity.id === ownerId)!;
   full.entities.push(...Array.from({ length: 150 }, (_, index) => ({ id: `code:boot-${index}`, name: `declaration${index}`, kind: 'code' as const, parentId: owner.id, sourceRefs: [] })));
   const sliced = sliceArchitectureNeighborhood(full, view as ArchitectureView, { focusEntityId: 'system:okie' });
@@ -112,111 +110,48 @@ describe('scan deep-link boot (CLA-584)', () => {
     expect(createScene.mock.calls.filter(([focus]) => focus === rootId)).toEqual([]);
   });
 
-  it('does not enrich the bootstrap root a deep link is about to replace', async () => {
+  // CLA-590: the bootstrap enrichment stays off on every scan link. On main the initialize restore
+  // aborted it, and that abort of speculative work ended the worker holding the graph; when it did
+  // install, its large scene cost a long main-thread receive and mesh rebuild. Deeper detail is
+  // compiled on demand on the same worker instead.
+  it.each([
+    ['a bare link', ''],
+    ['a selection the bootstrap scene already holds', '&sel=container%3Aweb-app'],
+    ['a root deep link', '&root=container%3Aweb-app&detail=context&lens=system%3Aokie&z=7.95'],
+  ])('starts no bootstrap enrichment for %s, even once its restore has settled', async (_name, search) => {
+    await largeNeighborhoodBoot();
     const enrich = vi.spyOn(fixture, 'enrichInitialScene');
-    await mount('&root=container%3Aweb-app&detail=context&lens=system%3Aokie&z=7.95');
-    expect(captured.controller!.current().rootEntityId).toBe('container:web-app');
+    await mount(search);
+    for (let attempt = 0; attempt < 20; attempt += 1) await settle();
     expect(enrich).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain('Loading more detail…');
   });
 
-  it('enriches the bootstrap root once a deep-link restore leaves the bootstrap scene in place', async () => {
+  it('starts no bootstrap enrichment after a deep-link restore fails and leaves the bootstrap scene', async () => {
     const enrich = vi.spyOn(fixture, 'enrichInitialScene');
     vi.spyOn(fixture, 'createSceneAsync').mockRejectedValue(new Error('compile failed'));
     await mount('&root=container%3Aweb-app&detail=context&lens=system%3Aokie&z=7.95');
-    for (let attempt = 0; attempt < 20 && !enrich.mock.calls.length; attempt += 1) await settle();
-    expect(enrich).toHaveBeenCalledTimes(1);
-  });
-
-  // CLA-590: every initialize restore begins foreground work that aborts a queued enrichment, and the
-  // abort of active speculative work terminates the worker holding the graph. Enrichment waits for it.
-  it.each([
-    ['a bare link', ''],
-    ['a selection link the bootstrap scene already holds', '&sel=container%3Aweb-app'],
-  ])('installs the bootstrap enrichment for %s, showing "Loading more detail…" only while it runs', async (_name, search) => {
-    await largeNeighborhoodBoot();
-    const original = fixture.enrichInitialScene;
-    let release!: () => void;
-    const held = new Promise<void>(resolve => { release = resolve; });
-    let delivered: unknown;
-    const enrich = vi.spyOn(fixture, 'enrichInitialScene').mockImplementation(async signal => { await held; delivered = await original(signal); return delivered as never; });
-    // Queue frames so the canvas loop runs only when the test draws one.
-    const frames: FrameRequestCallback[] = [];
-    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => frames.push(callback)));
-    const draw = async () => { await act(async () => { for (const callback of frames.splice(0)) callback(performance.now()); }); };
-    captured.scenes = [];
-    await mount(search);
-    await draw();
-    for (let attempt = 0; attempt < 20 && !enrich.mock.calls.length; attempt += 1) await settle();
-    expect(enrich).toHaveBeenCalledTimes(1);
-    const bootstrap = captured.scenes.at(-1)!;
-    expect(host.textContent).toContain('Loading more detail…');
-    await act(async () => { release(); }); await settle(); await settle();
-    await draw();
-    expect(enrich.mock.calls[0]![0]!.aborted).toBe(false);
-    expect(delivered).toBeDefined();
-    expect(captured.scenes.at(-1)).toBe(delivered);
-    expect(captured.scenes.at(-1)!.entities.length).toBeGreaterThan(bootstrap.entities.length);
-    expect(host.textContent).not.toContain('Loading more detail…');
-  });
-
-  // "Loading more detail…" must never stick, and only an accepted enrichment may reach the renderer.
-  it.each([
-    ['fails', 'fail'],
-    ['returns no scene', 'none'],
-    ['is refused because it would move the L1/L2 boxes', 'refused'],
-    ['is cancelled by a level navigation', 'navigate'],
-  ] as const)('clears "Loading more detail…" and keeps a valid scene when the enrichment %s', async (_name, outcome) => {
-    // Children under a component grow its container, so initialSceneBandsMatch refuses the enriched scene.
-    await largeNeighborhoodBoot(outcome === 'refused' ? 'component:web-shell' : undefined);
-    const original = fixture.enrichInitialScene;
-    let release!: () => void;
-    const held = new Promise<void>(resolve => { release = resolve; });
-    let delivered: unknown;
-    vi.spyOn(fixture, 'enrichInitialScene').mockImplementation(async signal => {
-      await held;
-      if (outcome === 'fail') throw new Error('enrichment failed');
-      if (outcome === 'none') return undefined;
-      delivered = await original(signal);
-      return delivered as never;
-    });
-    const frames: FrameRequestCallback[] = [];
-    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => frames.push(callback)));
-    const draw = async () => { await act(async () => { for (const callback of frames.splice(0)) callback(performance.now()); }); };
-    captured.scenes = [];
-    await mount('');
-    await draw();
-    const bootstrap = captured.scenes.at(-1)!;
-    expect(host.textContent).toContain('Loading more detail…');
-    if (outcome === 'navigate') {
-      await act(async () => { host.querySelectorAll<HTMLButtonElement>('.level-rail button')[1]!.click(); });
-      expect(host.textContent).not.toContain('Loading more detail…');
-    }
-    await act(async () => { release(); });
-    for (let attempt = 0; attempt < 10; attempt += 1) await settle();
-    await draw();
-    expect(host.textContent).not.toContain('Loading more detail…');
-    expect(host.textContent).not.toContain('This view changed while navigation was being prepared.');
-    if (outcome === 'refused') expect(delivered).toBeDefined();
-    if (delivered) expect(captured.scenes).not.toContain(delivered);
-    if (outcome === 'navigate') expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-detail')).toBe('container');
-    else expect(captured.scenes.at(-1)).toBe(bootstrap);
+    for (let attempt = 0; attempt < 20; attempt += 1) await settle();
+    expect(enrich).not.toHaveBeenCalled();
   });
 
   it.each([
     ['a story step outside the bootstrap scene', '&story=story%3Aokie-context-to-code&step=2&t=0'],
     ['a selection outside the bootstrap scene', '&sel=component%3Amodel-scoping'],
-  ])('does not enrich while the restore of %s is still compiling', async (_name, search) => {
+  ])('starts no enrichment while, or after, the restore of %s compiles', async (_name, search) => {
     bootWithoutModelChildren();
     const enrich = vi.spyOn(fixture, 'enrichInitialScene');
     const { compile, release } = await holdRestoreCompile();
     await mount(search);
     for (let attempt = 0; attempt < 20 && !compile.mock.calls.length; attempt += 1) await settle();
     expect(compile).toHaveBeenCalled();
+    expect(host.textContent).toContain('Loading view…');
+    release();
+    for (let attempt = 0; attempt < 10; attempt += 1) await settle();
     expect(enrich).not.toHaveBeenCalled();
-    release(); await settle(); await settle();
   });
 
-  it('does not start a wasted enrichment when the user navigates before the restore settles', async () => {
+  it('starts no wasted enrichment when the user navigates before the restore settles', async () => {
     bootWithoutModelChildren();
     const enrich = vi.spyOn(fixture, 'enrichInitialScene');
     const { compile, release } = await holdRestoreCompile();
@@ -227,32 +162,18 @@ describe('scan deep-link boot (CLA-584)', () => {
     release();
     for (let attempt = 0; attempt < 10; attempt += 1) await settle();
     expect(enrich).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-detail')).toBe('container');
   });
 
-  // Sol's CLA-590 review case: the enriched scene must be published to sceneRef with its state, or a
-  // navigation begun before React commits captures the bootstrap scene and is then cancelled as obsolete.
-  it('keeps a navigation begun between enrichment resolution and its commit', async () => {
-    const bootstrap = fixture.createScene(fixture.navigation.rootEntityId);
-    const enriched = structuredClone(bootstrap);
-    enriched.title += ' enriched';
-    let deliver!: (scene: typeof enriched) => void;
-    vi.spyOn(fixture, 'enrichInitialScene').mockReturnValue(new Promise(resolve => { deliver = resolve; }));
-    vi.spyOn(fixture, 'ensureNeighborhood').mockResolvedValue(undefined);
-    let finish!: (scene: typeof enriched) => void;
-    const compile = vi.spyOn(fixture, 'createSceneAsync').mockReturnValue(new Promise(resolve => { finish = resolve; }));
+  // Without the enrichment, deeper detail still arrives on demand: a level change compiles it.
+  it('compiles deeper detail on demand when a bare link changes level', async () => {
+    await largeNeighborhoodBoot();
+    const compile = vi.spyOn(fixture, 'createSceneAsync');
     await mount('');
-    await act(async () => {
-      deliver(enriched);
-      await Promise.resolve();
-      host.querySelectorAll<HTMLButtonElement>('.level-rail button')[1]!.click();
-    });
-    for (let i = 0; i < 5; i++) await settle();
-    expect(host.textContent).not.toContain('This view changed while navigation was being prepared.');
+    await act(async () => { host.querySelectorAll<HTMLButtonElement>('.level-rail button')[1]!.click(); });
+    for (let attempt = 0; attempt < 10; attempt += 1) await settle();
     expect(compile).toHaveBeenCalled();
-    const signal = compile.mock.calls.at(-1)![3]!;
-    expect(signal.aborted).toBe(false);
-    await act(async () => { finish(enriched); });
-    for (let i = 0; i < 5; i++) await settle();
     expect(host.querySelector('[data-testid="atlas-app"]')!.getAttribute('data-detail')).toBe('container');
+    expect(host.textContent).not.toContain('This view changed while navigation was being prepared.');
   });
 });
