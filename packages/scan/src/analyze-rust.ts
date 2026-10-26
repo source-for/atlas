@@ -364,7 +364,7 @@ export function analyzeRust(sourceRoot: string, discoveredFiles?: readonly strin
   const result: LanguageAnalysis = { schemaVersion: 1, definitions: [], references: [], modules: [], coverage: [] };
   if (!allowed.size) return result;
   const unavailable = (limitation: string) => {
-    result.coverage.push({ language: "rust", tool: "rust-analyzer", version: "unavailable", coverage: "unavailable", indexedFiles: [], limitations: [limitation] });
+    result.coverage.push({ language: "rust", tool: "rust-analyzer", version: "unavailable", coverage: "unavailable", indexedFiles: [], limitations: [redactText(limitation)] });
     return result;
   };
   const noParser = rustParserUnavailable();

@@ -74,12 +74,14 @@ test("rust lockdown: a rust-project.json naming a proc-macro dylib or a sysroot 
       const root = mkdtempSync(join(tmpdir(), "okie-rust-project-json-"));
       try {
         write(root, "src/lib.rs", "pub fn f() {}\n");
-        write(root, name === "dylib" ? "nested/rust-project.json" : "rust-project.json", JSON.stringify(project));
+        // CLA-654: a credential-shaped directory in the refused path is redacted in the limitation like any diagnostic.
+        write(root, name === "dylib" ? "u:CLA654REFUSAL@host/rust-project.json" : "rust-project.json", JSON.stringify(project));
         const reason = unsafeRustProjectJson(root);
         assert.ok(reason, name);
         const analysis = analyzeRust(root, ["src/lib.rs"]);
         assert.equal(analysis.coverage[0]?.coverage, "unavailable", name);
         assert.match(analysis.coverage[0]!.limitations[0]!, /Rust analysis skipped: rust-analyzer would load or execute repository-supplied binaries/, name);
+        assert.ok(!analysis.coverage[0]!.limitations[0]!.includes("CLA654REFUSAL"), `${name}: ${analysis.coverage[0]!.limitations[0]}`);
         assert.deepEqual(spawned.filter(file => file === "rust-analyzer"), [], `${name}: rust-analyzer never ran`);
       } finally { rmSync(root, { recursive: true, force: true }); }
     }
