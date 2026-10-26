@@ -161,6 +161,23 @@ export function redactText(text: string): string {
   }));
 }
 
+/**
+ * Location-only limitations for Cargo names Cargo refuses ({@link validCargoName}): the `[package] name` (the crate keeps
+ * its directory name) and dependency, `[workspace.dependencies]` and `[patch]` keys or `package =` renames (no edge is
+ * recorded for them). The name itself is never shown.
+ */
+export function invalidCargoNameLimitations(manifestPath: string, text: string): string[] {
+  const manifest = parseCargoManifest(text);
+  const where = (line: number): string => `${sanitizeControlCharacters(manifestPath)}:${line}`;
+  const badSpec = (key: string, spec: CargoDependencySpec): boolean => (key.length > 0 && !validCargoName(key)) || (spec.package !== undefined && !validCargoName(spec.package));
+  return [
+    ...(manifest.packageName !== undefined && !validCargoName(manifest.packageName) ? [`Invalid package name at ${where(manifest.packageNameLine ?? 1)}.`] : []),
+    ...[...manifest.entries.map(entry => [entry.key, entry, entry.line] as const), ...[...manifest.workspaceDependencies].map(([key, spec]) => [key, spec, spec.line] as const),
+      ...manifest.patches.map(patch => [patch.key, patch, patch.line] as const)]
+      .filter(([key, spec]) => badSpec(key, spec)).map(([, , line]) => `Invalid dependency name at ${where(line)}.`),
+  ];
+}
+
 /** Shown instead of a Cargo version requirement the scanner cannot parse (its raw text is never emitted). */
 export const UNSUPPORTED_REQUIREMENT = "[unsupported requirement]";
 /** Shown instead of a Cargo.lock / analyzer version that is not semver (its raw text is never emitted). */
@@ -345,9 +362,16 @@ export function cargoRequirementMatches(requirement: string, version: string): b
 }
 
 const NPM_NAME = /^(?:@[A-Za-z0-9._~-]+\/)?[A-Za-z0-9_~-][A-Za-z0-9._~-]*$/;
-const CARGO_NAME = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+/**
+ * Cargo's package-name rule (cargo 1.87 `validate_package_name`, also applied to dependency keys and `package =`
+ * renames): a Unicode XID-start character or `_` (never a digit), then XID-continue characters or `-`. Unicode and
+ * uppercase names are valid; `:`, `/`, `@`, `.`, `+` and whitespace are not.
+ */
+export function validCargoName(name: string): boolean {
+  return /^[\p{XID_Start}_][\p{XID_Continue}-]*$/u.test(name);
+}
 const validName = (ecosystem: DependencyEcosystem, name: string): boolean =>
-  name.length > 0 && name.length <= 214 && (ecosystem === "npm" ? NPM_NAME : CARGO_NAME).test(name);
+  name.length > 0 && name.length <= 214 && (ecosystem === "npm" ? NPM_NAME.test(name) : validCargoName(name));
 /** The 1-based line of a package.json's top-level `"name"` key (the last one, as `JSON.parse` keeps); 1 if absent. */
 function nameLine(text: string): number {
   const source = ts.parseJsonText("package.json", text);
@@ -573,6 +597,8 @@ export interface CargoManifestPatch extends CargoDependencySpec {
 }
 export interface CargoManifest {
   packageName?: string;
+  /** 1-based line of `[package] name`. */
+  packageNameLine?: number;
   /** `[package] version` as written. */
   packageVersion?: string;
   /** `[package] version.workspace = true`: the version comes from `[workspace.package]`. */
@@ -762,7 +788,7 @@ export function parseCargoManifest(text: string): CargoManifest {
       const text = /^"([^"]*)"|^'([^']*)'/.exec(value);
       // A quoted `"version"` key is the same field; without this it reads as no version (0.0.0).
       const field = /^(["'])version\1(?=\.|$)/.test(left) ? `version${left.slice(9)}` : left;
-      if (context.kind === "package" && field === "name" && text) manifest.packageName = text[1] ?? text[2]!;
+      if (context.kind === "package" && field === "name" && text) { manifest.packageName = text[1] ?? text[2]!; manifest.packageNameLine = lineNumber; }
       else if (field === "version" && text) {
         if (context.kind === "package") manifest.packageVersion = text[1] ?? text[2]!;
         else manifest.workspacePackageVersion = text[1] ?? text[2]!;

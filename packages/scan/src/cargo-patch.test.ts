@@ -285,7 +285,9 @@ test("cargoPatchPaths: comments after headers are ignored, `#` in quotes is kept
   assert.deepEqual(cargoPatchPaths([
     "[patch.crates-io] # local overrides",
     'core = { path = "core" } # the in-repo crate',
-    '"we#ird" = { path = "dir#1" }',
+    '"we-ird" = { path = "dir#1" }',
+    // Cargo 1.87 refuses `#` in a patch key (CLA-654): no patch path for it.
+    '"we#ird" = { path = "dir2" }',
     "[workspace.metadata] # not a patch table",
     'other = { path = "other" }',
     "[patch.crates-io]",
@@ -294,7 +296,7 @@ test("cargoPatchPaths: comments after headers are ignored, `#` in quotes is kept
     'fake = { path = "fake" }',
   ].join("\n")).map(patch => [patch.name, patch.path]), [
     ["core", "core"],
-    ["we#ird", "dir#1"],
+    ["we-ird", "dir#1"],
     ["util", "util"],
   ]);
 });

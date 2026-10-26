@@ -4,7 +4,7 @@ import { basename } from "node:path";
 import { ts } from "./analyzers.js";
 import { resolveRelativeImport } from "./extract.js";
 import { slug } from "./ids.js";
-import { packageJsonName } from "./dependency-facts.js";
+import { packageJsonName, validCargoName } from "./dependency-facts.js";
 import {
   classifyFsSymlink,
   countSymlink,
@@ -265,7 +265,9 @@ function rootManifestDeclaresFacts(sourceRoot: string, sourceFiles: ReadonlySet<
 /** The crate's `[package] name`, else its dir (minus a `crates/` prefix). */
 function rustCrateName(sourceRoot: string, dir: string): string {
   const manifest = readRepositoryFile(sourceRoot, `${dir}/Cargo.toml`);
-  return (manifest === undefined ? undefined : cargoPackageName(manifest)) ?? dir.replace(/^crates\//, "");
+  const name = manifest === undefined ? undefined : cargoPackageName(manifest);
+  // A name Cargo refuses is never shown (CLA-654): the crate keeps its directory name.
+  return name !== undefined && validCargoName(name) ? name : dir.replace(/^crates\//, "");
 }
 
 function readPackageName(sourceRoot: string, dir: string): string | undefined {

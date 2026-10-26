@@ -230,7 +230,11 @@ appears verbatim. Review a repository's committed content before publishing an a
   `package.json` `name` npm never accepted (validate-npm-package-name `validForOldPackages`: for example a `:`, `/`
   or `@` outside the scope prefix, `#`, `?`, whitespace, a leading `.` or `_`) is never used as a name or ID: the unit
   keeps its directory name, imports by that name are not linked to it, and the scan reports `Invalid package name at
-  <manifest>:<line>`. Legacy names npm still accepts (`SharedLib`, `JSONStream`) are kept. This covers only those structured fields. It does not
+  <manifest>:<line>`. Legacy names npm still accepts (`SharedLib`, `JSONStream`) are kept.
+  Cargo names follow Cargo's own rule (a Unicode XID-start character or `_`, then XID-continue characters or `-`;
+  `café` and `SharedCrate` are valid). A `[package] name` Cargo refuses is never shown: the crate keeps its directory
+  name. A refused dependency, `[workspace.dependencies]` or `[patch]` key or `package =` rename records no edge. Both
+  report `Invalid package name` / `Invalid dependency name at <manifest>:<line>`. This covers only those structured fields. It does not
   guarantee that an atlas is free of secrets.
 - **Known limitation: numeric password before a raw `/`.** A malformed URL whose unencoded password is all digits
   (at most 65535) and is followed by `/` (`https://user:12345/x@host/…`) cannot be told from `host:port/path@…`, the

@@ -17,7 +17,7 @@ import type { Discovery } from "./discover.js";
 import type { AnalysisLocation, LanguageAnalysis } from "./language-analysis.js";
 import { pathSlug, resolveCollisions, slug, typedId, unboundedTypedId } from "./ids.js";
 import { rustTopLevelItems } from "./extract-rust.js";
-import { cargoRequirementMatches, parseCargoManifest, type CargoDependencySpec } from "./dependency-facts.js";
+import { cargoRequirementMatches, parseCargoManifest, validCargoName, type CargoDependencySpec } from "./dependency-facts.js";
 
 /** Max import sites retained as evidence on one aggregated relation. */
 const MAX_EVIDENCE_PER_RELATION = 24;
@@ -718,7 +718,8 @@ function cargoNormalDeclarations(manifestText: string): Array<{ key: string; spe
   return [
     ...manifest.entries.filter(entry => entry.section === "dependencies").map(entry => ({ key: entry.key, spec: entry, line: entry.line, workspace: false })),
     ...[...manifest.workspaceDependencies].map(([key, spec]) => ({ key, spec, line: spec.line, workspace: true })),
-  ].filter(declaration => declaration.key.length > 0);
+    // A key or `package =` rename Cargo refuses records no edge and is never shown (CLA-654).
+  ].filter(declaration => validCargoName(declaration.key) && (declaration.spec.package === undefined || validCargoName(declaration.spec.package)));
 }
 
 /**
@@ -778,7 +779,8 @@ export interface CargoPatchPath {
  * Overrides without `path` (a git or registry redirect) are not returned.
  */
 export function cargoPatchPaths(manifestText: string): CargoPatchPath[] {
-  return parseCargoManifest(manifestText).patches.flatMap(patch => patch.path === undefined || !patch.key ? [] : [{
+  return parseCargoManifest(manifestText).patches.flatMap(patch => patch.path === undefined || !validCargoName(patch.key)
+    || (patch.package !== undefined && !validCargoName(patch.package)) ? [] : [{
     source: patch.source,
     name: patch.package ?? patch.key,
     path: patch.path,

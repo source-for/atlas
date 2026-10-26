@@ -56,7 +56,7 @@ import type { LanguageAnalysis } from './language-analysis.js';
 import { analyzeTypeScript } from './analyze-typescript.js';
 import { analyzeRust } from './analyze-rust.js';
 import { rustParserUnavailable } from './analyzers.js';
-import { buildDependencyFacts, collectDependencyInputs, displayRequirement, displayVersion, packageJsonName, redactSpec, redactText, UNSUPPORTED_REQUIREMENT } from './dependency-facts.js';
+import { buildDependencyFacts, collectDependencyInputs, displayRequirement, displayVersion, invalidCargoNameLimitations, packageJsonName, redactSpec, redactText, UNSUPPORTED_REQUIREMENT } from './dependency-facts.js';
 
 export interface ScanOptions {
   analysisMode?: 'full' | 'quick';
@@ -133,15 +133,19 @@ function rootPackageName(sourceRoot: string): string | undefined {
   return packageJsonName(text, "package.json").name;
 }
 
-/** CLA-654: root and unit package.json files whose `name` npm refuses, by manifest line (the name is never shown). */
+/**
+ * CLA-654: root and unit manifests whose package or dependency names npm or Cargo refuse, by manifest line (the
+ * name is never shown).
+ */
 function invalidPackageNameLimitations(discovery: Discovery, readFile: (path: string) => string): string[] {
-  const manifests = [...new Set(["package.json", ...discovery.units.flatMap(unit => unit.packageManifest ? [unit.packageManifest] : [])])].sort();
-  return manifests.flatMap(path => {
-    let text: string;
-    try { text = readFile(path); } catch { return []; }
-    const { limitation } = packageJsonName(text, path);
-    return limitation ? [limitation] : [];
-  });
+  const read = (path: string): string | undefined => { try { return readFile(path); } catch { return undefined; } };
+  const npm = [...new Set(["package.json", ...discovery.units.flatMap(unit => unit.packageManifest ? [unit.packageManifest] : [])])].sort();
+  const crates = discovery.units.filter(unit => unit.kind === "rust");
+  const cargo = crates.length ? [...new Set(["Cargo.toml", ...crates.map(unit => unit.dir ? `${unit.dir}/Cargo.toml` : "Cargo.toml")])].sort() : [];
+  return [
+    ...npm.flatMap(path => { const text = read(path); const limitation = text === undefined ? undefined : packageJsonName(text, path).limitation; return limitation ? [limitation] : []; }),
+    ...cargo.flatMap(path => { const text = read(path); return text === undefined ? [] : invalidCargoNameLimitations(path, text); }),
+  ];
 }
 
 /** Deterministic legacy grid: the C4 renderer lays out intrinsically, so these
