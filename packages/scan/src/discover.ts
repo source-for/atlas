@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import { ts } from "./analyzers.js";
 import { resolveRelativeImport } from "./extract.js";
 import { slug } from "./ids.js";
+import { packageJsonName, tomlStringValue, validCargoName } from "./dependency-facts.js";
 import {
   classifyFsSymlink,
   countSymlink,
@@ -264,18 +265,16 @@ function rootManifestDeclaresFacts(sourceRoot: string, sourceFiles: ReadonlySet<
 /** The crate's `[package] name`, else its dir (minus a `crates/` prefix). */
 function rustCrateName(sourceRoot: string, dir: string): string {
   const manifest = readRepositoryFile(sourceRoot, `${dir}/Cargo.toml`);
-  return (manifest === undefined ? undefined : cargoPackageName(manifest)) ?? dir.replace(/^crates\//, "");
+  const name = manifest === undefined ? undefined : cargoPackageName(manifest);
+  // A name Cargo refuses is never shown (CLA-654): the crate keeps its directory name.
+  return name !== undefined && validCargoName(name) ? name : dir.replace(/^crates\//, "");
 }
 
 function readPackageName(sourceRoot: string, dir: string): string | undefined {
   const text = readRepositoryFile(sourceRoot, dir ? `${dir}/package.json` : "package.json");
   if (text === undefined) return undefined;
-  try {
-    const pkg = JSON.parse(text) as { name?: string };
-    return typeof pkg.name === "string" && pkg.name.trim() ? pkg.name : undefined;
-  } catch {
-    return undefined;
-  }
+  // An npm-invalid name is withheld (CLA-654): the unit keeps its directory name.
+  return packageJsonName(text, dir ? `${dir}/package.json` : "package.json").name;
 }
 
 /** `packages:` entries of `pnpm-workspace.yaml` (a list of quoted or bare scalars). */
@@ -503,7 +502,7 @@ export function cargoPackageName(manifestText: string): string | undefined {
   for (const { table, arrayTable, line } of tomlLinesByTable(manifestText)) {
     if (arrayTable || table !== "package") continue;
     const match = /^\s*name\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\s*$/.exec(line);
-    if (match) return (match[1] ?? match[2]!).trim() || undefined;
+    if (match) return tomlStringValue(match[1], match[2])!.trim() || undefined;
   }
   return undefined;
 }

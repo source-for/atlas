@@ -12,11 +12,12 @@ import { analyzeTypeScript } from "./analyze-typescript.js";
 import { runConsumersQuery } from "./consumers-cli.js";
 import {
   buildDependencyFacts, cargoRequirementMatches, collectDependencyInputs, fitDependencyFacts, MAX_DROPPED_BY_DEPENDENCY, normalizeLockVersion,
-  parseCargoManifest, parsePnpmLockImporters, redactSpec, stripTomlComment, type DependencyFactsInput,
+  displayRequirement, packageJsonName, parseCargoManifest, parsePnpmLockImporters, redactSpec, redactText, stripTomlComment, type DependencyFactsInput,
 } from "./dependency-facts.js";
 import type { LanguageAnalysis } from "./language-analysis.js";
 import { portableAtlasFromScan } from "./portable.js";
-import { scanRepository } from "./scan.js";
+import { scanOutputFiles, scanRepository } from "./scan.js";
+import { scrubCargoError } from "./analyze-rust.js";
 
 const SHA = "a".repeat(40);
 const reader = (files: Record<string, string>) => (path: string): string => {
@@ -247,6 +248,185 @@ test("item 5b: no credential, query token, absolute path or lockfile URL version
     assert.deepEqual([declarations.get("l")!.resolution, declarations.get("l")!.resolvedVersions], ["unresolved", []], "a URL-shaped lock version is not a version");
     assert.match(declarations.get("l")!.reason!, /non-registry source/);
   } finally { repo.cleanup(); }
+});
+
+// CLA-654: wrapped specs (`git:<url>`, `npm:@x/y@<url>`, relative `path:`), unparsable Cargo requirements, opaque
+// Cargo.lock versions, `[patch]` keys/paths and limitation lines reach no public output; valid semver is unchanged.
+test("CLA-654: no credential reaches dependency facts, limitations or serialized outputs; valid versions stay", () => {
+  const S = ["CLA654USER", "CLA654PASS", "CLA654QUERY", "CLA654LOCK", "CLA654REQ", "CLA654HOME", "CLA654ID", "CLA654COMMA", "CLA654FRAG"];
+  // Free text: punctuation inside userinfo/queries never splits a credential off; fragments, queries and token shapes
+  // follow redactSpec; optional chaining and plain prose are untouched; a second pass changes nothing.
+  for (const [input, expected] of [
+    ["fetch https://u:CLA654COMMA,rest@host.invalid/repo failed", "fetch https://[redacted]@host.invalid/repo failed"],
+    ["Cannot find module './u:CLA654COMMA,rest@host.invalid/x'", "Cannot find module './[redacted]@host.invalid/x'"],
+    ["see (https://u:CLA654(P)A[S]S@h/p?a=CLA654QUERY,x) now.", "see (https://[redacted]@h/p?[redacted]) now."],
+    ["./missing#token=CLA654FRAG", "./missing#[redacted]"],
+    ["./missing?x=CLA654QUERY", "./missing?[redacted]"],
+    [`./missing-ghp_${"A".repeat(32)}`, "./missing-[redacted-token]"],
+    ["at this.map?.getKey(x) and a?.b", "at this.map?.getKey(x) and a?.b"],
+    ["git@github.com:x/y.git ok", "git@github.com:x/y.git ok"],
+    // A real TS2835 diagnostic from the self-scan: a sentence-final `?` is not a query.
+    ["a.ts: TS2835: Relative import paths need explicit file extensions. Did you mean '../../web/src/x.js'?", "a.ts: TS2835: Relative import paths need explicit file extensions. Did you mean '../../web/src/x.js'?"],
+    ["[patch.https://[redacted]@h.invalid/p.git?[redacted]] x", "[patch.https://[redacted]@h.invalid/p.git?[redacted]] x"],
+  ] as const) assert.equal(redactText(input), expected, input);
+  // A numeric password before a raw `/` is userinfo once it cannot be a port; a real port stays.
+  assert.equal(redactSpec("https://user:123456/with/slash@host.invalid/repo"), "https://[redacted]@host.invalid/repo");
+  assert.equal(redactSpec("https://user:65536/x@host.invalid/repo"), "https://[redacted]@host.invalid/repo");
+  // An unencoded `#`/`?` inside the password does not end the userinfo early; real fragments/queries and ports stay.
+  assert.equal(redactSpec("git+https://deploy:CLA654PASS#x@github.com/o/r.git"), "git+https://[redacted]@github.com/o/r.git");
+  assert.equal(redactSpec("https://user:pw?CLA654PASS@host/c.tgz"), "https://[redacted]@host/c.tgz");
+  assert.equal(redactText("fetch https://u:a?b#CLA654PASS@h/r?token=Q#main failed"), "fetch https://[redacted]@h/r?[redacted]#main failed");
+  for (const kept of ["git+https://github.com/x/y.git#v1.2.3", "https://host:8443/@scope/pkg/-/pkg-1.0.0.tgz"]) assert.equal(redactSpec(kept), kept);
+  assert.equal(redactSpec("https://user:p%40ss%2Fw@host.invalid/repo"), "https://[redacted]@host.invalid/repo", "encoded userinfo");
+  assert.equal(redactSpec("https://host:8443/a@b"), "https://host:8443/a@b");
+  assert.equal(redactSpec("https://registry.example.com:8443/@scope/pkg/-/pkg-1.0.0.tgz"), "https://registry.example.com:8443/@scope/pkg/-/pkg-1.0.0.tgz", "scoped tarball host:port/path@");
+  // A package's own name follows npm's new-package rules; the limitation names only the manifest line.
+  for (const name of ["_x", ".x", "node_modules", "Favicon.ico", "@s/x y", "a/b", " x", "@s/.foo", "u:x@host", "a#b", "a?b", "\ud800", "a\udc00"]) {
+    assert.deepEqual(packageJsonName(`{\n  "name": ${JSON.stringify(name)}\n}`, "p/package.json"), { limitation: "Invalid package name at p/package.json:2." }, name);
+  }
+  // The line is the top-level `name`, not a nested one before it.
+  assert.deepEqual(packageJsonName('{\n "metadata": {"name": "nested-valid"},\n "name": "u:CLA654ID@host",\n "dependencies": {"core": "^1"}\n}', "p/package.json"), { limitation: "Invalid package name at p/package.json:3." });
+  // Names npm ever accepted stay, legacy uppercase/builtin/special-character ones included (validForOldPackages).
+  for (const name of ["@okie/web", "left-pad", "a.b_c-1", "@s/_x", "SharedLib", "JSONStream", "http", "@Scope/x", "x!"]) assert.deepEqual(packageJsonName(JSON.stringify({ name }), "package.json"), { name }, name);
+  // Requirements are shown only in a syntax Cargo accepts; valid prerelease/build metadata is kept as written.
+  for (const bad of ["1.2.3+..x", "01.2.3-x", "1.2.3-01", "1.*.3x"]) assert.equal(displayRequirement(bad), "[unsupported requirement]", bad);
+  for (const ok of ["=1.2.3-alpha+build.4", "1.2.3-alpha+meta", "^1.2", ">=1, <2", "1.*", "~1.2.3-rc.1", "*"]) assert.equal(displayRequirement(ok), ok, ok);
+  // A legacy name npm still accepts (`SharedLib`) keeps its entity name and its workspace import edge.
+  const legacy = tree({
+    "package.json": JSON.stringify({ name: "legacy-root", private: true, workspaces: ["packages/*"] }),
+    "packages/shared/package.json": JSON.stringify({ name: "SharedLib", version: "1.0.0", main: "index.ts" }),
+    "packages/shared/index.ts": "export const s = 1;\n",
+    "packages/app/package.json": JSON.stringify({ name: "app", version: "1.0.0", dependencies: { SharedLib: "workspace:*" } }),
+    "packages/app/index.ts": "import { s } from \"SharedLib\";\nexport const a = s;\n",
+  }, true);
+  try {
+    const scanned = scanRepository(legacy.root, { analysisMode: "quick" });
+    assert.ok(scanned.snapshot.entities.some(entity => entity.id === "container:packages-shared" && entity.name === "SharedLib"));
+    assert.ok(scanned.snapshot.relations.some(relation => relation.from === "container:packages-app" && relation.to === "container:packages-shared"),
+      scanned.snapshot.relations.map(relation => `${relation.from}->${relation.to}`).join("\n"));
+    assert.ok(!(scanned.analysis.limitations ?? []).some(line => line.startsWith("Invalid package name")));
+  } finally { legacy.cleanup(); }
+  // Cargo names follow Cargo's own rule (XID start/continue, Unicode and uppercase valid). A name Cargo refuses is never
+  // shown: the crate keeps its directory name, and a refused dependency key or `package =` rename records no edge.
+  const crates = tree({
+    "Cargo.toml": '[workspace]\nmembers = ["crates/*"]\n\n[workspace.dependencies]\n"u:CLA654CARGOWS@h" = { path = "crates/bad" }\n\n[patch.crates-io]\n"u:CLA654CARGOPATCH@h" = { path = "crates/bad" }\nSharedCrate = { path = "crates/shared" }\n',
+    "crates/core/Cargo.toml": '[package]\nname = "café"\nversion = "1.0.0"\n',
+    "crates/core/src/lib.rs": "pub fn c() {}\n",
+    "crates/shared/Cargo.toml": '[package]\nname = "SharedCrate"\nversion = "1.0.0"\n',
+    "crates/shared/src/lib.rs": "pub fn s() {}\n",
+    "crates/bad/Cargo.toml": '[package]\nname = "u:CLA654CARGONAME@host"\nversion = "1.0.0"\n',
+    "crates/bad/src/lib.rs": "pub fn b() {}\n",
+    // TOML escapes are decoded before the name is checked, as Cargo does: `\u0065sc` is `esc`.
+    "crates/esc/Cargo.toml": '[package]\nname = "\\u0065sc"\nversion = "1.0.0"\n',
+    "crates/esc/src/lib.rs": "pub fn e() {}\n",
+    "crates/app/Cargo.toml": '[package]\nname = "app"\nversion = "1.0.0"\n\n[dependencies]\n"café" = { path = "../core" }\nshared = { path = "../shared", package = "Sh\\u0061redCrate" }\n"u:CLA654CARGOKEY@h" = { path = "../bad" }\nren = { path = "../bad", package = "u:CLA654CARGOREN@h" }\n\n[target.\'cfg(unix)\'.dependencies]\ntren = { path = "../bad", package = "u:CLA654CARGOTARGET@h" }\n\n[dependencies."\\u0065sc"]\npath = "../esc"\n\n[dependencies."u\\u003aCLA654CARGOESC\\u0040h"]\npath = "../bad"\n',
+    "crates/app/src/lib.rs": "pub fn a() {}\n",
+  }, true);
+  try {
+    const scanned = scanRepository(crates.root, { analysisMode: "quick" });
+    const outputs = JSON.stringify(scanOutputFiles(scanned));
+    for (const marker of ["CLA654CARGONAME", "CLA654CARGOKEY", "CLA654CARGOREN", "CLA654CARGOWS", "CLA654CARGOPATCH", "CLA654CARGOTARGET", "CLA654CARGOESC"]) assert.ok(!outputs.includes(marker), `serialized outputs leak ${marker}`);
+    const names = new Map(scanned.snapshot.entities.map(entity => [entity.id, entity.name]));
+    assert.deepEqual([names.get("container:crates-core"), names.get("container:crates-shared"), names.get("container:crates-bad"), names.get("container:crates-esc")], ["café", "SharedCrate", "bad", "esc"]);
+    const edges = scanned.snapshot.relations.map(relation => `${relation.from}->${relation.to}`);
+    assert.ok(edges.includes("container:crates-app->container:crates-core") && edges.includes("container:crates-app->container:crates-shared")
+      && edges.includes("container:crates-app->container:crates-esc"), edges.join("\n"));
+    assert.ok(!edges.includes("container:crates-app->container:crates-bad"), edges.join("\n"));
+    const invalid = (scanned.analysis.limitations ?? []).filter(line => line.startsWith("Invalid"));
+    // Location only, one per refused key/rename: [workspace.dependencies], [patch], [dependencies], a target table.
+    assert.deepEqual(invalid, ["Invalid dependency name at Cargo.toml:5.", "Invalid dependency name at Cargo.toml:8.", "Invalid dependency name at crates/app/Cargo.toml:8.", "Invalid dependency name at crates/app/Cargo.toml:9.", "Invalid dependency name at crates/app/Cargo.toml:12.", "Invalid dependency name at crates/app/Cargo.toml:17.", "Invalid package name at crates/bad/Cargo.toml:2."]);
+  } finally { crates.cleanup(); }
+  // Any wrapper depth is peeled without recursion and without leaking the tail.
+  const deep = redactSpec(`${"git:".repeat(5000)}https://u:CLA654PASS@host.invalid/repo`);
+  assert.ok(deep.endsWith("git:https://[redacted]@host.invalid/repo") && !deep.includes("CLA654PASS"));
+  assert.equal(redactSpec("git:https://CLA654USER:CLA654PASS@example.invalid/g.git?token=CLA654QUERY#main"), "git:https://[redacted]@example.invalid/g.git?[redacted]#main");
+  assert.equal(redactSpec("npm:@other/lib@https://CLA654USER:CLA654PASS@example.invalid/x.tgz"), "npm:@other/lib@https://[redacted]@example.invalid/x.tgz");
+  assert.equal(redactSpec("path:../../CLA654USER:CLA654PASS@outside"), "path:../../[redacted]@outside");
+  assert.equal(redactSpec("CLA654USER:CLA654PASS@example.invalid:org/lib.git"), "[redacted]@example.invalid:org/lib.git");
+  for (const kept of ["npm:left-pad@^1.3.0", "npm:@scope/x@1.2.3", "path:../core", "git:https://github.com/x/y.git#v1.2.3", "^1.2", ">=1, <2"]) assert.equal(redactSpec(kept), kept);
+  const repo = tree({
+    "package.json": JSON.stringify({ name: "redact654", private: true, workspaces: ["web", "bad"] }),
+    "web/package.json": JSON.stringify({ name: "web", dependencies: { lib: "npm:@other/lib@https://CLA654USER:CLA654PASS@example.invalid/x.tgz", npmbad: "^1", npmok: "^1" } }),
+    "web/package-lock.json": JSON.stringify({ lockfileVersion: 3, packages: { "": {}, "node_modules/npmbad": { version: "1.2.3+..CLA654LOCK" }, "node_modules/npmok": { version: "1.2.3-alpha+build.4" } } }),
+    "web/index.ts": "import { a } from './CLA654USER:CLA654PASS@host/a';\nexport const x = a;\n",
+    "bad/package.json": JSON.stringify({ name: "u:CLA654ID@host", version: "1.0.0" }),
+    "bad/index.ts": "export const bad = 1;\n",
+    "Cargo.toml": '[workspace]\nmembers = ["app", "core", "mis"]\n\n[patch."https://CLA654USER:CLA654PASS@example.invalid/p.git?token=CLA654QUERY"]\nremote = { path = "/CLA654HOME/u:CLA654PASS@private" }\n\n[patch.crates-io]\ncore = { path = "core" }\nmis = { path = "mis" }\n',
+    "Cargo.lock": 'version = 3\n\n[[package]]\nname = "app"\nversion = "0.1.0"\ndependencies = ["core", "opaque", "semverdep", "pre", "leadzero"]\n\n[[package]]\nname = "opaque"\nversion = "9.9.9CLA654LOCK"\n\n[[package]]\nname = "semverdep"\nversion = "1.2.3"\n\n[[package]]\nname = "pre"\nversion = "1.0.0-alpha.1+build.5"\n\n[[package]]\nname = "leadzero"\nversion = "1.2.3-..CLA654LOCK"\n\n[[package]]\nname = "core"\nversion = "1.0.0"\n',
+    "app/Cargo.toml": '[package]\nname = "app"\nversion = "0.1.0"\n\n[dependencies]\ncore = "1.*.3CLA654REQ"\ngitdep = { git = "https://CLA654USER:CLA654PASS@example.invalid/g.git?token=CLA654QUERY", branch = "main" }\nescaped = { path = "../../CLA654USER:CLA654PASS@outside" }\nopaque = "9"\nsemverdep = "^1.2"\npre = "=1.0.0-alpha.1+build.5"\nleadzero = "1"\nmis = "1.2.3+..CLA654REQ"\npwdep = { git = "https://deploy:CLA654PASS#x@example.invalid/p.git" }\n\n[target.\'https://CLA654USER:CLA654PASS@h.invalid\'.dependencies]\ntdep = "1"\n',
+    "app/src/lib.rs": "pub fn app() {}\n",
+    "core/Cargo.toml": '[package]\nname = "core"\nversion = "1.0.0"\n',
+    "core/src/lib.rs": "pub fn core() {}\n",
+    "mis/Cargo.toml": '[package]\nname = "mis"\nversion = "2.0.0"\n',
+    "mis/src/lib.rs": "pub fn mis() {}\n",
+  }, true);
+  try {
+    const artifacts = scanRepository(repo.root, { analysisMode: "quick" });
+    const outputs = JSON.stringify(scanOutputFiles(artifacts));
+    for (const secret of S) assert.ok(!outputs.includes(secret), `serialized outputs leak ${secret}`);
+    const rows = new Map(artifacts.dependencies.declarations.map(row => [row.alias ?? row.dependency, row]));
+    assert.equal(rows.get("lib")!.requested, "npm:@other/lib@https://[redacted]@example.invalid/x.tgz");
+    assert.equal(rows.get("gitdep")!.requested, "git:https://[redacted]@example.invalid/g.git?[redacted]#main");
+    assert.equal(rows.get("escaped")!.requested, "path:../../[redacted]@outside");
+    assert.equal(rows.get("core")!.requested, "[unsupported requirement]");
+    // Cargo rejects `1.2.3+..x` (empty build identifier) though the matcher reads it: never echoed, in facts or mismatch lines.
+    assert.equal(rows.get("mis")!.requested, "[unsupported requirement]");
+    assert.equal(rows.get("pwdep")!.requested, "git:https://[redacted]@example.invalid/p.git");
+    assert.equal(rows.get("tdep")!.target, "https://[redacted]@h.invalid", "a Cargo target key is redacted like a spec");
+    assert.deepEqual(rows.get("opaque")!.resolvedVersions, ["[unsupported version]"]);
+    assert.deepEqual([rows.get("semverdep")!.requested, rows.get("semverdep")!.resolvedVersions], ["^1.2", ["1.2.3"]], "valid semver is unchanged");
+    assert.deepEqual([rows.get("pre")!.requested, rows.get("pre")!.resolvedVersions], ["=1.0.0-alpha.1+build.5", ["1.0.0-alpha.1+build.5"]], "prerelease + build kept");
+    // npm lock versions follow the same rule: a malformed one is a placeholder, valid prerelease+build stays.
+    assert.deepEqual(rows.get("npmbad")!.resolvedVersions, ["[unsupported version]"]);
+    assert.deepEqual(rows.get("npmok")!.resolvedVersions, ["1.2.3-alpha+build.4"]);
+    assert.deepEqual(rows.get("leadzero")!.resolvedVersions, ["[unsupported version]"], "an empty prerelease identifier is not semver");
+    const limitations = artifacts.analysis.limitations ?? [];
+    assert.ok(limitations.includes("Unresolved relative import web/index.ts:1: './[redacted]@host/a'"), limitations.join("\n"));
+    assert.ok(limitations.includes("Cargo [patch] path resolves outside the repository; not followed, no crate edge recorded: Cargo.toml:5: [patch.https://[redacted]@example.invalid/p.git?[redacted]] remote = { path = '<absolute path>' }"), limitations.join("\n"));
+    // An npm-invalid package name: no entity, ID or package row carries it; the unit keeps its directory name.
+    assert.ok(limitations.includes("Invalid package name at bad/package.json:1."), limitations.join("\n"));
+    assert.ok(artifacts.snapshot.entities.some(entity => entity.name === "bad"), "the member keeps its directory name");
+    assert.equal(artifacts.dependencies.packages.find(row => row.manifestPath === "bad/package.json")?.name, "bad");
+    assert.ok(limitations.some(line => line.startsWith("Cargo [patch] accepted by no scanned crate's normal dependency: version 2.0.0 does not satisfy app/Cargo.toml:13 requires [unsupported requirement];")), limitations.join("\n"));
+    assert.ok(limitations.some(line => line.startsWith("Cargo [patch] not applied to a version requirement the scanner cannot parse: app/Cargo.toml:6 requires core [unsupported requirement];")), limitations.join("\n"));
+  } finally { repo.cleanup(); }
+  // TypeScript diagnostics reach coverage limitations redacted (the import below is unresolvable).
+  const tsRepo = tree({
+    "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true, module: "NodeNext", moduleResolution: "NodeNext", types: [] }, include: ["*.ts"] }),
+    "a.ts": "import { x } from './u:CLA654TS@host/missing.js';\nexport const y = x;\n",
+  });
+  try {
+    const lines = analyzeTypeScript(tsRepo.root, ["a.ts"]).coverage.flatMap(row => row.limitations);
+    assert.ok(lines.some(line => line.includes("TS2307") && line.includes("./[redacted]@host/missing.js")), lines.join("\n"));
+    assert.ok(!lines.some(line => line.includes("CLA654TS")), lines.join("\n"));
+  } finally { tsRepo.cleanup(); }
+  assert.equal(scrubCargoError("error: failed to fetch https://CLA654USER:CLA654PASS@host.invalid/p?auth=CLA654QUERY", []), "failed to fetch https://[redacted]@host.invalid/p?[redacted]");
+});
+
+// Accepted by the coordinator (CLA-654): Cargo-style `host:port/path@` must stay intact because scoped npm tarball
+// URLs put `@` in the path, so an unencoded all-digit password <= 65535 before a raw `/` is indistinguishable.
+test("KNOWN LIMITATION (CLA-654): an unencoded all-digit password <= 65535 before a raw `/` is not redacted", () => {
+  assert.equal(redactSpec("https://user:12345/with/slash@host.invalid/repo"), "https://user:12345/with/slash@host.invalid/repo");
+  assert.equal(redactSpec("https://registry.example.com:8443/@scope/pkg/-/pkg-1.0.0.tgz"), "https://registry.example.com:8443/@scope/pkg/-/pkg-1.0.0.tgz");
+  assert.equal(redactSpec("https://user:65536/CLA654PASS@host.invalid/repo"), "https://[redacted]@host.invalid/repo", "not a port: userinfo");
+});
+// Brenton's ruling (CLA-654): the same ambiguity before `?` keeps `user:digits` and redacts the query as usual.
+test("KNOWN LIMITATION (CLA-654): an unencoded all-digit password <= 65535 before a raw `?` keeps `user:digits`", () => {
+  assert.equal(redactSpec("https://user:12345?CLA654TAIL@host.invalid/repo"), "https://user:12345?[redacted]");
+  assert.equal(redactSpec("https://registry.example.com:8443?CLA654QUERY=1"), "https://registry.example.com:8443?[redacted]");
+  assert.equal(redactSpec("https://user:pw?CLA654TAIL@host.invalid/repo"), "https://[redacted]@host.invalid/repo", "not a port: userinfo");
+});
+// Brenton's ruling (CLA-654): before `#` with no path, a sensitive fragment is scrubbed whole; else the fragment up
+// to its last `@` is redacted and `user:digits` plus the `@suffix` stay (a valid `host:port#release@v1` pays this cost).
+test("KNOWN LIMITATION (CLA-654): an unencoded all-digit password <= 65535 before a raw `#` keeps `user:digits` and the `@` suffix", () => {
+  assert.equal(redactSpec("https://user:12345#CLA654TAIL@host.invalid/r"), "https://user:12345#[redacted]@host.invalid/r");
+  assert.equal(redactSpec("https://h.invalid:8443#release@v1"), "https://h.invalid:8443#[redacted]@v1");
+  assert.equal(redactSpec("https://h.invalid:8443#release@token=CLA654SECRET"), "https://h.invalid:8443#[redacted]");
+  // Opposing controls: ordinary fragments, and fragments after a path, stay unchanged.
+  assert.equal(redactSpec("git+https://git.example.com:8443#v1.2.3"), "git+https://git.example.com:8443#v1.2.3");
+  assert.equal(redactSpec("https://h.invalid/x#a@b"), "https://h.invalid/x#a@b");
+  assert.equal(redactSpec("git+ssh://git@git.example.com:22/o/r.git#v1.2.3"), "git+ssh://git@git.example.com:22/o/r.git#v1.2.3");
+  assert.equal(redactSpec("git+https://deploy:CLA654PASS#x@github.com/o/r.git"), "git+https://[redacted]@github.com/o/r.git", "not a port: userinfo");
 });
 
 // --- item 6 -----------------------------------------------------------------

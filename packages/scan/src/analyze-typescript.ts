@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { AnalysisDefinition, AnalysisExternalReference, AnalysisLocation, LanguageAnalysis } from "./language-analysis.js";
 import { dependencyContext } from './dependency-context.js';
+import { redactText } from './dependency-facts.js';
 import { labelledPrefix, pathPrefixRewriter, type PathPrefix } from './path-prefixes.js';
 import { scanWorkDir } from './scan-env.js';
 import { compareText } from "@okie/architecture";
@@ -321,7 +322,7 @@ export function analyzeTypeScript(sourceRoot: string, discoveredFiles?: readonly
     const languageFiles = [...allowed].map(relativePath).filter(path => language === "typescript" ? /\.[cm]?tsx?$/.test(path) : /\.[cm]?jsx?$/.test(path));
     if (!languageFiles.length) continue;
     const indexedFiles = languageFiles.filter(path => indexed.has(path)).sort();
-    result.coverage.push({ language, tool: "typescript", version: ts.version, coverage: indexedFiles.length ? "semantic" : "unavailable", indexedFiles, limitations: [...limitations].sort() });
+    result.coverage.push({ language, tool: "typescript", version: ts.version, coverage: indexedFiles.length ? "semantic" : "unavailable", indexedFiles, limitations: [...new Set([...limitations].map(redactText))].sort() });
   }
   return result;
 }

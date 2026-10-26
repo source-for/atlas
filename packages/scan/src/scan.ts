@@ -56,7 +56,7 @@ import type { LanguageAnalysis } from './language-analysis.js';
 import { analyzeTypeScript } from './analyze-typescript.js';
 import { analyzeRust } from './analyze-rust.js';
 import { rustParserUnavailable } from './analyzers.js';
-import { buildDependencyFacts, collectDependencyInputs } from './dependency-facts.js';
+import { buildDependencyFacts, collectDependencyInputs, displayRequirement, displayVersion, invalidCargoNameLimitations, packageJsonName, redactSpec, redactText, UNSUPPORTED_REQUIREMENT } from './dependency-facts.js';
 
 export interface ScanOptions {
   analysisMode?: 'full' | 'quick';
@@ -127,12 +127,25 @@ export interface ScanArtifacts {
 }
 
 function rootPackageName(sourceRoot: string): string | undefined {
-  try {
-    const pkg = JSON.parse(readFileSync(`${sourceRoot}/package.json`, "utf8")) as { name?: string };
-    return typeof pkg.name === "string" && pkg.name.trim() ? pkg.name : undefined;
-  } catch {
-    return undefined;
-  }
+  let text: string;
+  try { text = readFileSync(`${sourceRoot}/package.json`, "utf8"); } catch { return undefined; }
+  // An npm-invalid name is withheld (CLA-654): the system name and slug fall back to the source name.
+  return packageJsonName(text, "package.json").name;
+}
+
+/**
+ * CLA-654: root and unit manifests whose package or dependency names npm or Cargo refuse, by manifest line (the
+ * name is never shown).
+ */
+function invalidPackageNameLimitations(discovery: Discovery, readFile: (path: string) => string): string[] {
+  const read = (path: string): string | undefined => { try { return readFile(path); } catch { return undefined; } };
+  const npm = [...new Set(["package.json", ...discovery.units.flatMap(unit => unit.packageManifest ? [unit.packageManifest] : [])])].sort();
+  const crates = discovery.units.filter(unit => unit.kind === "rust");
+  const cargo = crates.length ? [...new Set(["Cargo.toml", ...crates.map(unit => unit.dir ? `${unit.dir}/Cargo.toml` : "Cargo.toml")])].sort() : [];
+  return [
+    ...npm.flatMap(path => { const text = read(path); const limitation = text === undefined ? undefined : packageJsonName(text, path).limitation; return limitation ? [limitation] : []; }),
+    ...cargo.flatMap(path => { const text = read(path); return text === undefined ? [] : invalidCargoNameLimitations(path, text); }),
+  ];
 }
 
 /** Deterministic legacy grid: the C4 renderer lays out intrinsically, so these
@@ -282,6 +295,7 @@ export function buildScanArtifacts(params: BuildScanArtifactsParams): ScanArtifa
   const hasMembershipFacts = membership.reexportAliases.length > 0 || membership.diagnostics.length > 0;
   const scanLimitations = [
     ...discoveryLimitations(discovery.summary),
+    ...invalidPackageNameLimitations(discovery, readFile),
     ...unresolvedImportLimitations(collected.unresolvedRelativeImports),
     ...oversizedSymbolLimitations(collected.oversizedSymbols),
     ...cargoPatchLimitations(discovery, readFile),
@@ -454,11 +468,13 @@ export const LIMITATION_TEXT_MAX_CHARS = 200;
  * Repository-controlled text made safe for analysis.limitations and the terminal:
  * control characters (ANSI escapes) neutralized, bidi embedding/override/isolate
  * characters (U+202A–202E, U+2066–2069) removed so a specifier cannot reorder the
- * line around it, then capped by code point (never splitting a surrogate pair) with
- * an ellipsis so one huge specifier cannot blow up the artifact.
+ * line around it, credential-shaped tokens (URL userinfo, `user:token@`, credential
+ * queries) redacted by {@link redactText} before the cap so a cut cannot hide one, then
+ * capped by code point (never splitting a surrogate pair) with an ellipsis so one huge
+ * specifier cannot blow up the artifact.
  */
 export function displayText(text: string): string {
-  const codePoints = Array.from(sanitizeControlCharacters(text).replace(/[\u202A-\u202E\u2066-\u2069]/g, ""));
+  const codePoints = Array.from(redactText(sanitizeControlCharacters(text).replace(/[\u202A-\u202E\u2066-\u2069]/g, "")));
   return codePoints.length > LIMITATION_TEXT_MAX_CHARS ? `${codePoints.slice(0, LIMITATION_TEXT_MAX_CHARS).join("")}…` : codePoints.join("");
 }
 
@@ -495,15 +511,19 @@ export function unresolvedImportLimitations(imports: readonly UnresolvedRelative
  */
 export function cargoPatchLimitations(discovery: Discovery, readFile: (path: string) => string): string[] {
   return resolveCargoPatches(discovery, readFile).unfollowed.map(patch => {
-    const where = `Cargo.toml:${patch.line}: [patch.${displayText(patch.source)}] ${displayText(patch.name)} = { path = '${displayText(patch.path)}' }`;
+    // The patch key and path are specs (a git URL, a path outside the repository): redacted like dependency facts.
+    const where = `Cargo.toml:${patch.line}: [patch.${displayText(redactSpec(patch.source))}] ${displayText(patch.name)} = { path = '${displayText(redactSpec(patch.path))}' }`;
     if (patch.reason === "version-mismatch") {
       const [first, ...more] = patch.rejected ?? [];
-      const requirement = first ? `${displayText(first.path)}:${first.line} requires '${displayText(first.requirement)}'${more.length ? ` (+${more.length} more)` : ""}` : "";
-      return `Cargo [patch] accepted by no scanned crate's normal dependency: version ${displayText(patch.version ?? "")} does not satisfy ${requirement}; no crate edge recorded: ${where}`;
+      // Requirement and version are shown only in strict semver form; anything else is a placeholder (CLA-654).
+      const shown = first ? displayRequirement(first.requirement) : "";
+      const requirement = first ? `${displayText(first.path)}:${first.line} requires ${shown === UNSUPPORTED_REQUIREMENT ? shown : `'${displayText(shown)}'`}${more.length ? ` (+${more.length} more)` : ""}` : "";
+      return `Cargo [patch] accepted by no scanned crate's normal dependency: version ${displayText(displayVersion(patch.version ?? ""))} does not satisfy ${requirement}; no crate edge recorded: ${where}`;
     }
     if (patch.reason === "unparsable-requirement") {
       const [first, ...more] = patch.rejected ?? [];
-      const requirement = first ? `${displayText(first.path)}:${first.line} requires ${displayText(patch.name)} '${displayText(first.requirement)}'${more.length ? ` (+${more.length} more)` : ""}` : "";
+      // An unparsable requirement is opaque text: name the package and manifest line, never the raw requirement.
+      const requirement = first ? `${displayText(first.path)}:${first.line} requires ${displayText(patch.name)} ${UNSUPPORTED_REQUIREMENT}${more.length ? ` (+${more.length} more)` : ""}` : "";
       return `Cargo [patch] not applied to a version requirement the scanner cannot parse: ${requirement}; no crate edge recorded for it: ${where}`;
     }
     return patch.reason === "outside-repository"

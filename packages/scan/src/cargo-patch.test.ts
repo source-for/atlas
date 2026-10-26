@@ -272,7 +272,7 @@ test("round 1: an absolute [patch] path never resolves to the same-named member;
   scanBothModes(TWO_CRATES('[workspace]\nmembers = ["core", "app"]\n\n[patch.crates-io]\ncore = { path = "/core" }\n', 'core = "1"\n'), (mode, artifacts) => {
     assert.deepEqual(crateEdges(artifacts), [], mode);
     assert.deepEqual(patchLimitations(artifacts), [
-      "Cargo [patch] path resolves outside the repository; not followed, no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = '/core' }",
+      "Cargo [patch] path resolves outside the repository; not followed, no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = '<absolute path>' }",
     ], mode);
   });
   for (const absolute of ["/core", "C:/core", "C:\\core", "\\\\server\\core"]) {
@@ -285,7 +285,9 @@ test("cargoPatchPaths: comments after headers are ignored, `#` in quotes is kept
   assert.deepEqual(cargoPatchPaths([
     "[patch.crates-io] # local overrides",
     'core = { path = "core" } # the in-repo crate',
-    '"we#ird" = { path = "dir#1" }',
+    '"we-ird" = { path = "dir#1" }',
+    // Cargo 1.87 refuses `#` in a patch key (CLA-654): no patch path for it.
+    '"we#ird" = { path = "dir2" }',
     "[workspace.metadata] # not a patch table",
     'other = { path = "other" }',
     "[patch.crates-io]",
@@ -294,7 +296,7 @@ test("cargoPatchPaths: comments after headers are ignored, `#` in quotes is kept
     'fake = { path = "fake" }',
   ].join("\n")).map(patch => [patch.name, patch.path]), [
     ["core", "core"],
-    ["we#ird", "dir#1"],
+    ["we-ird", "dir#1"],
     ["util", "util"],
   ]);
 });
@@ -528,7 +530,7 @@ test("CLA-594: an unparsable version requirement records no [patch] edge and a l
     scanBothModes(CORE_APP(patched, `core = "${requirement}"\n`, `version = "${coreVersion}"`), (mode, artifacts) => {
       assert.deepEqual(crateEdges(artifacts), [], `${mode}: ${requirement}`);
       assert.deepEqual(patchLimitations(artifacts), [
-        `Cargo [patch] not applied to a version requirement the scanner cannot parse: app/Cargo.toml:6 requires core '${requirement}'; no crate edge recorded for it: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }`,
+        `Cargo [patch] not applied to a version requirement the scanner cannot parse: app/Cargo.toml:6 requires core [unsupported requirement]; no crate edge recorded for it: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }`,
       ], `${mode}: ${requirement}`);
     });
   }
@@ -557,21 +559,21 @@ test("CLA-594: requirements are decoded TOML strings; invalid escapes are unpars
       "Cargo [patch] accepted by no scanned crate's normal dependency: version 1.3.0 does not satisfy app/Cargo.toml:6 requires '2'; no crate edge recorded: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }",
     ], mode);
   });
-  for (const [dependency, raw] of [
+  for (const [dependency] of [
     ["core = '\\u0031'", "\\u0031"], ['core = "\\q1"', "\\q1"], ['core = "\\uD800"', "\\uD800"],
     ['core = "\\e1"', "\\e1"], ['core = { version = "\\x31" }', "\\x31"],
   ] as const) {
     scanBothModes(CORE_APP(patched, `${dependency}\n`, 'version = "1.3.0"'), (mode, artifacts) => {
       assert.deepEqual(crateEdges(artifacts), [], `${mode}: ${dependency}`);
       assert.deepEqual(patchLimitations(artifacts), [
-        `Cargo [patch] not applied to a version requirement the scanner cannot parse: app/Cargo.toml:6 requires core '${raw}'; no crate edge recorded for it: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }`,
-      ], `${mode}: ${dependency} keeps its raw text`);
+        `Cargo [patch] not applied to a version requirement the scanner cannot parse: app/Cargo.toml:6 requires core [unsupported requirement]; no crate edge recorded for it: Cargo.toml:5: [patch.crates-io] core = { path = 'core' }`,
+      ], `${mode}: ${dependency} names no raw requirement`);
     });
   }
   scanBothModes(CORE_APP(patched, 'core = "1\u0001"\n', 'version = "1.3.0"'), (mode, artifacts) => {
     assert.deepEqual(crateEdges(artifacts), [], `${mode}: a raw control character is invalid TOML`);
     assert.equal(patchLimitations(artifacts).length, 1, mode);
-    assert.match(patchLimitations(artifacts)[0]!, /cannot parse: app\/Cargo\.toml:6 requires core /, mode);
+    assert.match(patchLimitations(artifacts)[0]!, /cannot parse: app\/Cargo\.toml:6 requires core \[unsupported requirement\];/, mode);
   });
 });
 
@@ -609,7 +611,7 @@ test("CLA-594: control characters in a requirement are never trimmed into a vali
       assert.deepEqual(crateEdges(artifacts), [], `${mode}: ${JSON.stringify(dependency)}`);
       const lines = patchLimitations(artifacts);
       assert.equal(lines.length, 1, `${mode}: ${JSON.stringify(dependency)}`);
-      assert.match(lines[0]!, /^Cargo \[patch\] not applied to a version requirement the scanner cannot parse: app\/Cargo\.toml:6 requires core '/, mode);
+      assert.match(lines[0]!, /^Cargo \[patch\] not applied to a version requirement the scanner cannot parse: app\/Cargo\.toml:6 requires core \[unsupported requirement\];/, mode);
     });
   }
 });

@@ -59,40 +59,158 @@ const perEcosystem = <T>(make: () => T): Record<DependencyEcosystem, T> => ({ np
 const SEMVER = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 export const ABSOLUTE_PATH_PLACEHOLDER = "<absolute path>";
 
+/** Spec wrappers redacted by the rules for what they wrap: `git:<url>` (Cargo facts), `npm:<name>@<spec>`, `path:`/`file:`/`link:`/`portal:`. */
+const SPEC_WRAPPER = /(?:git:(?!\/\/)|path:|file:|link:|portal:|npm:(?:@[^/@\s:]+\/)?[^/@\s:]+@)/y;
+
+/** Token-shaped credentials (GitHub, GitLab, npm), wherever they appear. */
+function scrubTokenShapes(text: string): string {
+  return scrubGithubTokens(text)
+    .replace(/glpat-[A-Za-z0-9_-]{20,}/g, "[redacted-token]")
+    .replace(/npm_[A-Za-z0-9]{36}/g, "[redacted-token]");
+}
+
+/** URL userinfo, query strings and credential-looking fragments of one locator (`scheme://…`, scp-style, a path). */
+function redactLocator(value: string): string {
+  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*:)?\/\//.exec(value);
+  if (!scheme) {
+    // No `scheme://` (scp-style `user:token@host:org/repo`, `../user:token@dir`, `../x?token=…`): the same
+    // userinfo, query and credential-fragment rules apply. `npm:left-pad@^1`, `@scope/x` and `git@host:x` are not
+    // userinfo; `?.` (optional chaining in a diagnostic) is not a query.
+    return value.replace(/(^|[+/\s])[^\s/@:]+:[^\s/@]+@/g, (_match, lead: string) => `${lead}[redacted]@`)
+      .replace(/\?(?!\.)[^#\s]+/, "?[redacted]") // a bare trailing `?` ("Did you mean './x.js'?") is not a query
+      .replace(/#(.*)$/s, (match, fragment: string) => (/[=&]|token|secret|pass|key|auth/i.test(fragment) ? "#[redacted]" : match));
+  }
+  const start = scheme[0].length;
+  // `user:pa?ss#word@host`: an unencoded `?`/`#` inside the password would otherwise end the locator before its `@`.
+  // Only a `user:` with no `?`/`#` of its own qualifies, and `host:port?query@x` keeps its port reading.
+  const userinfo = /^[^/@?#:\s]*:([^/@\s]*)@/.exec(value.slice(start));
+  if (userinfo && /[?#]/.test(userinfo[1]!) && !(/^\d{1,5}[?#]/.test(userinfo[1]!) && Number(/^\d+/.exec(userinfo[1]!)![0]) <= 65535)) {
+    value = `${value.slice(0, start)}[redacted]@${value.slice(start + userinfo[0].length)}`;
+  }
+  const endOfLocator = value.search(/[?#]/);
+  const locatorEnd = endOfLocator < 0 ? value.length : endOfLocator;
+  const locator = value.slice(start, locatorEnd);
+  let rest = value.slice(locatorEnd);
+  const firstSlash = locator.indexOf("/");
+  const authority = firstSlash < 0 ? locator : locator.slice(0, firstSlash);
+  let cut = -1;
+  if (authority.includes("@")) cut = authority.lastIndexOf("@");
+  // `user:secret/with/slash@host`: a "port" that is not 1-5 digits up to 65535 means the colon part is a password.
+  // Known, accepted limitation: an unencoded all-digit password <= 65535 before a raw `/`, `?` or `#` reads as
+  // `host:port` (`host:port/path@x` is a valid scoped tarball URL shape), so `user:digits` is kept. After `?` the
+  // query is redacted as usual; after `#` with no path before it, the fragment up to its last `@` is redacted.
+  let ambiguousPort = false;
+  if (cut < 0 && authority.includes(":")) {
+    const port = authority.slice(authority.lastIndexOf(":") + 1);
+    if (!/^\d{1,5}$/.test(port) || Number(port) > 65535) cut = locator.lastIndexOf("@");
+    else ambiguousPort = firstSlash < 0;
+  }
+  let redactedLocator = locator;
+  if (cut >= 0 && locator.slice(0, cut) !== "git") redactedLocator = `[redacted]${locator.slice(cut)}`;
+  // Queries routinely carry tokens; fragments stay only when they look like a git ref / semver range.
+  rest = rest.replace(/\?[^#]*/, "?[redacted]");
+  rest = rest.replace(/#(.*)$/s, (match, fragment: string) => {
+    if (/[=&]|token|secret|pass|key|auth/i.test(fragment)) return "#[redacted]";
+    if (ambiguousPort && fragment.includes("@")) return `#[redacted]${fragment.slice(fragment.lastIndexOf("@"))}`;
+    return match;
+  });
+  return `${value.slice(0, start)}${redactedLocator}${rest}`;
+}
+
 /**
  * Strip credentials from a requested spec or lockfile source before it is persisted:
  * URL userinfo (including a raw `/` inside it), query strings, credential-looking
- * fragments, token-shaped strings, and absolute local paths.
+ * fragments, token-shaped strings, and absolute local paths. Wrappers (`git:`, `npm:<name>@`,
+ * `path:`…) are peeled iteratively, so any nesting depth is handled without recursion.
  */
 export function redactSpec(spec: string): string {
-  let value = spec;
+  let at = 0;
+  for (SPEC_WRAPPER.lastIndex = 0; SPEC_WRAPPER.exec(spec); ) at = SPEC_WRAPPER.lastIndex;
+  const prefix = spec.slice(0, at);
+  const value = spec.slice(at);
   // Absolute local paths: `/…`, `~/…`, `C:\…`, optionally behind file:/link:/portal:/path:.
-  value = value.replace(/^((?:file|link|portal|path):)?(?:\/|~[/\\]|[A-Za-z]:[\\/]).*$/s, (_match, prefix: string | undefined) => `${prefix ?? ""}${ABSOLUTE_PATH_PLACEHOLDER}`);
-  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*:)?\/\//.exec(value);
-  if (scheme) {
-    const start = scheme[0].length;
-    const endOfLocator = value.search(/[?#]/);
-    const locatorEnd = endOfLocator < 0 ? value.length : endOfLocator;
-    const locator = value.slice(start, locatorEnd);
-    let rest = value.slice(locatorEnd);
-    const firstSlash = locator.indexOf("/");
-    const authority = firstSlash < 0 ? locator : locator.slice(0, firstSlash);
-    let cut = -1;
-    if (authority.includes("@")) cut = authority.lastIndexOf("@");
-    // `user:secret/with/slash@host` — a non-numeric "port" means the colon part is a password.
-    else if (/:[^0-9]/.test(authority) || /:$/.test(authority)) cut = locator.lastIndexOf("@");
-    let redactedLocator = locator;
-    if (cut >= 0 && locator.slice(0, cut) !== "git") redactedLocator = `[redacted]${locator.slice(cut)}`;
-    // Queries routinely carry tokens; fragments stay only when they look like a git ref / semver range.
-    rest = rest.replace(/\?[^#]*/, "?[redacted]");
-    rest = rest.replace(/#(.*)$/s, (match, fragment: string) => (/[=&]|token|secret|pass|key|auth/i.test(fragment) ? "#[redacted]" : match));
-    value = `${value.slice(0, start)}${redactedLocator}${rest}`;
-  }
-  value = scrubGithubTokens(value)
-    .replace(/glpat-[A-Za-z0-9_-]{20,}/g, "[redacted-token]")
-    .replace(/npm_[A-Za-z0-9]{36}/g, "[redacted-token]");
-  return sanitizeControlCharacters(value);
+  const redacted = /^(?:\/|~[/\\]|[A-Za-z]:[\\/])/.test(value) ? ABSOLUTE_PATH_PLACEHOLDER : redactLocator(value);
+  return sanitizeControlCharacters(scrubTokenShapes(`${prefix}${redacted}`));
 }
+
+const OPENERS = "'\"`(<[{";
+const CLOSERS = "'\"`)>]},.;:!";
+/**
+ * The {@link redactSpec} rules for free text (a diagnostic line, a repository path, an import specifier): each
+ * whitespace-separated word that holds a locator (`/`, `\\`, `@`, a `?name=` query, a `#…=` fragment) has its
+ * surrounding quotes/brackets/sentence punctuation set aside (never cut inside it, so `,` `(` `[` in userinfo or a
+ * query stay redacted), then each `scheme://` run in it is redacted like a spec; token shapes are scrubbed
+ * everywhere. Absolute paths in free text are left to the callers' path-prefix rewriting.
+ */
+export function redactText(text: string): string {
+  return scrubTokenShapes(text.replace(/\S+/g, word => {
+    if (!/[/\\@]|\?(?!\.)[^\s#]*=|#\S*=/.test(word)) return word;
+    let start = 0;
+    let end = word.length;
+    while (start < end && OPENERS.includes(word[start]!)) start += 1;
+    // A closing bracket is trimmed only when unmatched inside the word, so `[redacted]` survives a second pass.
+    // One counting pass, then decrement while trimming: linear in the word's length.
+    const pairs: Record<string, string> = { ")": "(", "]": "[", "}": "{", ">": "<" };
+    const counts = new Map<string, number>();
+    for (let index = start; index < end; index += 1) counts.set(word[index]!, (counts.get(word[index]!) ?? 0) + 1);
+    while (end > start && CLOSERS.includes(word[end - 1]!)) {
+      const closer = word[end - 1]!;
+      const opener = pairs[closer];
+      // Openers are never trimmed from the end, so their count stays exact; the closer's own count drops as we go.
+      if (opener && (counts.get(opener) ?? 0) > (counts.get(closer) ?? 0) - 1) break;
+      counts.set(closer, (counts.get(closer) ?? 0) - 1);
+      end -= 1;
+    }
+    const core = word.slice(start, end);
+    const cuts = [0, ...[...core.matchAll(/[A-Za-z][A-Za-z0-9+.-]*:\/\//g)].map(match => match.index!).filter(index => index > 0), core.length];
+    const redacted = cuts.slice(0, -1).map((cut, index) => redactLocator(core.slice(cut, cuts[index + 1]))).join("");
+    return `${word.slice(0, start)}${redacted}${word.slice(end)}`;
+  }));
+}
+
+/**
+ * Location-only limitations for Cargo names Cargo refuses ({@link validCargoName}): the `[package] name` (the crate keeps
+ * its directory name) and dependency, `[workspace.dependencies]` and `[patch]` keys or `package =` renames (no edge is
+ * recorded for them). The name itself is never shown.
+ */
+export function invalidCargoNameLimitations(manifestPath: string, text: string): string[] {
+  const manifest = parseCargoManifest(text);
+  const where = (line: number): string => `${sanitizeControlCharacters(manifestPath)}:${line}`;
+  const badSpec = (key: string, spec: CargoDependencySpec): boolean => (key.length > 0 && !validCargoName(key)) || (spec.package !== undefined && !validCargoName(spec.package));
+  return [
+    ...(manifest.packageName !== undefined && !validCargoName(manifest.packageName) ? [`Invalid package name at ${where(manifest.packageNameLine ?? 1)}.`] : []),
+    ...[...manifest.entries.map(entry => [entry.key, entry, entry.line] as const), ...[...manifest.workspaceDependencies].map(([key, spec]) => [key, spec, spec.line] as const),
+      ...manifest.patches.map(patch => [patch.key, patch, patch.line] as const)]
+      .filter(([key, spec]) => badSpec(key, spec)).map(([, , line]) => `Invalid dependency name at ${where(line)}.`),
+  ];
+}
+
+/** Shown instead of a Cargo version requirement the scanner cannot parse (its raw text is never emitted). */
+export const UNSUPPORTED_REQUIREMENT = "[unsupported requirement]";
+/** Shown instead of a Cargo.lock / analyzer version that is not semver (its raw text is never emitted). */
+export const UNSUPPORTED_VERSION = "[unsupported version]";
+/** semver 2.0.0 exactly as Cargo accepts it: no leading zeros, no empty prerelease/build identifiers. */
+const STRICT_SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+export const displayVersion = (version: string): string => (STRICT_SEMVER.test(version) ? version : UNSUPPORTED_VERSION);
+/**
+ * True when every comparator of a Cargo requirement is written in strict semver form: numeric parts without leading
+ * zeros (or `*`/`x`), and non-empty prerelease/build identifiers without leading zeros in numeric prerelease ones.
+ * Checked on top of {@link cargoRequirementMatches}, whose looser parse still decides edges unchanged.
+ */
+function strictRequirementSyntax(requirement: string): boolean {
+  const preId = /^(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)$/;
+  return requirement.split(",").every(comparator => {
+    const version = comparator.trim().replace(/^(?:>=|<=|[=><~^])\s*/, "");
+    const [main, build] = version.includes("+") ? [version.slice(0, version.indexOf("+")), version.slice(version.indexOf("+") + 1)] : [version, undefined];
+    const [core, pre] = main.includes("-") ? [main.slice(0, main.indexOf("-")), main.slice(main.indexOf("-") + 1)] : [main, undefined];
+    return core.split(".").every(part => /^(?:0|[1-9]\d*|[*xX])$/.test(part))
+      && (pre === undefined || pre.split(".").every(id => preId.test(id)))
+      && (build === undefined || build.split(".").every(id => /^[0-9A-Za-z-]+$/.test(id)));
+  });
+}
+/** A Cargo version requirement as shown in public output: as written (redacted) when valid, else the placeholder. */
+export const displayRequirement = (requirement: string): string =>
+  cargoRequirementMatches(requirement, "0.0.0") !== undefined && strictRequirementSyntax(requirement) ? redactSpec(requirement) : UNSUPPORTED_REQUIREMENT;
 
 /** Normalize a lockfile "version" (pnpm peer suffixes, aliases) to semver, a local link, or a non-registry source. */
 export function normalizeLockVersion(raw: string): { kind: "version"; version: string } | { kind: "local" } | { kind: "source" } {
@@ -251,9 +369,52 @@ export function cargoRequirementMatches(requirement: string, version: string): b
 }
 
 const NPM_NAME = /^(?:@[A-Za-z0-9._~-]+\/)?[A-Za-z0-9_~-][A-Za-z0-9._~-]*$/;
-const CARGO_NAME = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+/**
+ * Cargo's package-name rule (cargo 1.87 `validate_package_name`, also applied to dependency keys and `package =`
+ * renames): a Unicode XID-start character or `_` (never a digit), then XID-continue characters or `-`. Unicode and
+ * uppercase names are valid; `:`, `/`, `@`, `.`, `+` and whitespace are not.
+ */
+export function validCargoName(name: string): boolean {
+  return /^[\p{XID_Start}_][\p{XID_Continue}-]*$/u.test(name);
+}
 const validName = (ecosystem: DependencyEcosystem, name: string): boolean =>
-  name.length > 0 && name.length <= 214 && (ecosystem === "npm" ? NPM_NAME : CARGO_NAME).test(name);
+  name.length > 0 && name.length <= 214 && (ecosystem === "npm" ? NPM_NAME.test(name) : validCargoName(name));
+/** The 1-based line of a package.json's top-level `"name"` key (the last one, as `JSON.parse` keeps); 1 if absent. */
+function nameLine(text: string): number {
+  const source = ts.parseJsonText("package.json", text);
+  const root = source.statements[0]?.expression;
+  if (!root || !ts.isObjectLiteralExpression(root)) return 1;
+  const key = root.properties.filter(property => property.name && ts.isStringLiteral(property.name) && property.name.text === "name").at(-1);
+  return key ? source.getLineAndCharacterOfPosition(key.getStart(source)).line + 1 : 1;
+}
+/** Why an npm `name` is withheld: only its manifest location, never the name (CLA-654). */
+export const invalidPackageNameLimitation = (manifestPath: string, text: string): string =>
+  `Invalid package name at ${sanitizeControlCharacters(manifestPath)}:${nameLine(text)}.`;
+/**
+ * Whether npm ever accepted a package's own name (validate-npm-package-name `validForOldPackages`, CLA-654 ruling):
+ * non-empty, no surrounding spaces, no leading `.`/`_`, not `node_modules`/`favicon.ico`, and URL-friendly (for
+ * `@scope/name`, each part, the name not starting with `.`). Legacy uppercase, builtin and `~'!()*` names stay valid;
+ * URL-friendliness rules out `:`, `/` and `@` outside the scope prefix, `#`, `?` and whitespace, so a valid name cannot
+ * carry credential or URL syntax. A lone surrogate (encodeURIComponent throws) is not URL-friendly.
+ */
+function validOwnNpmName(name: string): boolean {
+  const urlSafe = (part: string): boolean => { try { return encodeURIComponent(part) === part; } catch { return false; } };
+  if (!name || name.startsWith(".") || name.startsWith("_") || name.trim() !== name) return false;
+  if (name.toLowerCase() === "node_modules" || name.toLowerCase() === "favicon.ico") return false;
+  if (urlSafe(name)) return true;
+  const scoped = /^(?:@([^/]+?)[/])?([^/]+?)$/.exec(name);
+  return !!scoped && scoped[1] !== undefined && !scoped[2]!.startsWith(".") && urlSafe(scoped[1]) && urlSafe(scoped[2]!);
+}
+/**
+ * A package.json's `name` when npm ever accepted it ({@link validOwnNpmName}). An invalid name is withheld with a
+ * limitation naming only the manifest line; callers fall back to the directory, so no entity or ID derives from it.
+ */
+export function packageJsonName(text: string, manifestPath: string): { name?: string; limitation?: string } {
+  let name: unknown;
+  try { name = (JSON.parse(text) as { name?: unknown } | null)?.name; } catch { return {}; }
+  if (typeof name !== "string" || !name.trim()) return {};
+  return validOwnNpmName(name) ? { name } : { limitation: invalidPackageNameLimitation(manifestPath, text) };
+}
 const validRepoPath = (path: string): boolean => portableSourcePath(path) && !CONTROL_CHARACTERS.test(path);
 
 // ---------------------------------------------------------------------------
@@ -443,6 +604,8 @@ export interface CargoManifestPatch extends CargoDependencySpec {
 }
 export interface CargoManifest {
   packageName?: string;
+  /** 1-based line of `[package] name`. */
+  packageNameLine?: number;
   /** `[package] version` as written. */
   packageVersion?: string;
   /** `[package] version.workspace = true`: the version comes from `[workspace.package]`. */
@@ -486,13 +649,13 @@ function bracketDepth(text: string): number {
 }
 const TOML_ESCAPES: Readonly<Record<string, string>> = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", '"': '"', "\\": "\\" };
 /**
- * A dependency requirement as Cargo reads it: a TOML 1.0 basic string (`basic`, raw
+ * A TOML string value as Cargo reads it (requirements, names, keys): a TOML 1.0 basic string (`basic`, raw
  * between the quotes) with its escapes decoded, or a literal string (`literal`) as is.
  * An escape or control character TOML rejects (`\q`, `\uD800`, `\e`) keeps the raw
- * text; it contains a backslash or control character, so no requirement parses it and
- * the requirement is reported unparsable rather than read as absent.
+ * text; it contains a backslash or control character, so no requirement or Cargo name parses it and
+ * it is reported unparsable or invalid rather than read as absent.
  */
-function tomlRequirement(basic: string | undefined, literal: string | undefined): string | undefined {
+export function tomlStringValue(basic: string | undefined, literal: string | undefined): string | undefined {
   if (basic === undefined) return literal;
   if (/[\u0000-\u0008\u000A-\u001F\u007F]/.test(basic)) return basic;
   let valid = true;
@@ -516,14 +679,16 @@ function tomlString(text: string, key: string): string | undefined {
 function inlineSpec(text: string): CargoDependencySpec {
   const value = stripTomlComment(text).trim();
   const plain = /^"((?:[^"\\]|\\.)*)"|^'([^']*)'/.exec(value);
-  if (plain) return { version: tomlRequirement(plain[1], plain[2])! };
+  if (plain) return { version: tomlStringValue(plain[1], plain[2])! };
   const spec: CargoDependencySpec = {};
   const version = tomlStringMatch(value, "version");
-  if (version) spec.version = tomlRequirement(version[1], version[2])!;
-  for (const key of ["path", "git", "package", "registry"] as const) {
+  if (version) spec.version = tomlStringValue(version[1], version[2])!;
+  for (const key of ["path", "git", "registry"] as const) {
     const found = tomlString(value, key);
     if (found !== undefined) spec[key] = found;
   }
+  const renamed = tomlStringMatch(value, "package");
+  if (renamed) spec.package = tomlStringValue(renamed[1], renamed[2])!;
   const gitRef = tomlString(value, "rev") ?? tomlString(value, "tag") ?? tomlString(value, "branch");
   if (gitRef !== undefined) spec.gitRef = gitRef;
   if (/(?:^|[{,\s])workspace\s*=\s*true/.test(value)) spec.workspace = true;
@@ -534,9 +699,10 @@ function assignField(spec: CargoDependencySpec, field: string, rawValue: string)
   if (field === "workspace") { if (/^true\b/.test(value)) spec.workspace = true; return; }
   const text = /^"((?:[^"\\]|\\.)*)"|^'([^']*)'/.exec(value);
   if (!text) return;
-  if (field === "version") { spec.version = tomlRequirement(text[1], text[2])!; return; }
+  if (field === "version") { spec.version = tomlStringValue(text[1], text[2])!; return; }
   const content = text[1] ?? text[2]!;
-  if (field === "path" || field === "git" || field === "package" || field === "registry") spec[field] = content;
+  if (field === "package") spec.package = tomlStringValue(text[1], text[2])!;
+  else if (field === "path" || field === "git" || field === "registry") spec[field] = content;
   else if (field === "rev" || field === "tag" || field === "branch") spec.gitRef = content;
 }
 
@@ -581,7 +747,11 @@ export function parseCargoManifest(text: string): CargoManifest {
     }
     return patch;
   };
-  const unquoteKey = (key: string): string => key.trim().replace(/^["']|["']$/g, "");
+  // A quoted key is a TOML string: `"c\u006fre"` is the key `core` (CLA-654 validates the decoded name).
+  const unquoteKey = (key: string): string => {
+    const quoted = /^"(.*)"$|^'(.*)'$/s.exec(key.trim());
+    return quoted ? tomlStringValue(quoted[1], quoted[2])! : key.trim().replace(/^["']|["']$/g, "");
+  };
   for (let index = 0; index < lines.length; index += 1) {
     const lineNumber = index + 1;
     const line = stripTomlComment(lines[index]!).trim();
@@ -632,7 +802,7 @@ export function parseCargoManifest(text: string): CargoManifest {
       const text = /^"([^"]*)"|^'([^']*)'/.exec(value);
       // A quoted `"version"` key is the same field; without this it reads as no version (0.0.0).
       const field = /^(["'])version\1(?=\.|$)/.test(left) ? `version${left.slice(9)}` : left;
-      if (context.kind === "package" && field === "name" && text) manifest.packageName = text[1] ?? text[2]!;
+      if (context.kind === "package" && field === "name" && text) { manifest.packageName = tomlStringValue(text[1], text[2])!; manifest.packageNameLine = lineNumber; }
       else if (field === "version" && text) {
         if (context.kind === "package") manifest.packageVersion = text[1] ?? text[2]!;
         else manifest.workspacePackageVersion = text[1] ?? text[2]!;
@@ -1033,7 +1203,10 @@ export function buildDependencyFacts(input: DependencyFactsInput): DependencyFac
         if (parsed.marker && !workspaceDirectories.has(directory)) markerManifests += 1;
         else {
           npmManifests.set(packageJson, parsed);
-          const name = parsed.name && !CONTROL_CHARACTERS.test(parsed.name) && parsed.name.length <= 214 ? parsed.name : (directory || "(root)");
+          const valid = parsed.name !== undefined && validOwnNpmName(parsed.name);
+          if (parsed.name !== undefined && !valid) limitations.npm.declarations.add(invalidPackageNameLimitation(packageJson, npmText));
+          // Main's existing 214-character bound on a package-fact name is kept (no limitation: the name is valid).
+          const name = valid && parsed.name!.length <= 214 ? parsed.name! : (directory || "(root)");
           packages.push({ ecosystem: "npm", name, manifestPath: packageJson, directory });
         }
       } catch { limitations.npm.declarations.add(`${sanitizeControlCharacters(packageJson)}: not a valid JSON object; its declarations were not read.`); }
@@ -1087,7 +1260,7 @@ export function buildDependencyFacts(input: DependencyFactsInput): DependencyFac
   const pushDeclaration = (row: DependencyDeclaration): void => {
     const names = [row.dependency, ...(row.alias ? [row.alias] : [])];
     if (!names.every(name => validName(row.ecosystem, name))) { skipped[row.ecosystem].declarations += 1; return; }
-    declarations.push({ ...row, ...(row.reason ? { reason: sanitizeControlCharacters(row.reason) } : {}), ...(row.target ? { target: sanitizeControlCharacters(row.target) } : {}) });
+    declarations.push({ ...row, ...(row.reason ? { reason: sanitizeControlCharacters(row.reason) } : {}), ...(row.target ? { target: redactText(sanitizeControlCharacters(row.target)) } : {}) });
   };
   for (const [manifestPath, manifest] of npmManifests) {
     const directory = dirOf(manifestPath);
@@ -1118,7 +1291,7 @@ export function buildDependencyFacts(input: DependencyFactsInput): DependencyFac
       } else if (lock.yarn) version = lock.yarn.get(`${entry.key}@${entry.spec}`) ?? lock.yarn.get(`${entry.key}@npm:${entry.spec}`);
       const normalized = version === undefined ? undefined : normalizeLockVersion(version);
       if (normalized?.kind === "local") pushDeclaration({ ...base, local: true, resolution: "local", resolvedVersions: [], lockfilePath: lock.path });
-      else if (normalized?.kind === "version") pushDeclaration({ ...base, local: false, resolution: "resolved", resolvedVersions: [normalized.version], lockfilePath: lock.path });
+      else if (normalized?.kind === "version") pushDeclaration({ ...base, local: false, resolution: "resolved", resolvedVersions: [displayVersion(normalized.version)], lockfilePath: lock.path });
       else if (normalized?.kind === "source") {
         pushDeclaration({ ...base, local: false, resolution: "unresolved", resolvedVersions: [], lockfilePath: lock.path, reason: `${lock.path} pins a non-registry source (git, tarball or URL); no registry version is recorded.` });
       } else {
@@ -1162,7 +1335,9 @@ export function buildDependencyFacts(input: DependencyFactsInput): DependencyFac
       const base = {
         ecosystem: "cargo" as const, dependency, ...(dependency !== entry.key ? { alias: entry.key } : {}),
         declaringPackage: manifestPath, section: entry.section as DependencySection, ...(entry.target ? { target: entry.target } : {}),
-        requested: redactSpec(requested), ...(inherited ? { workspaceInherited: true } : {}),
+        // A requirement Cargo's grammar rejects is opaque text: never echo it (CLA-654).
+        requested: spec.version !== undefined ? displayRequirement(spec.version) : redactSpec(requested),
+        ...(inherited ? { workspaceInherited: true } : {}),
         source: { path: manifestPath, line: entry.line },
       };
       if (missingWorkspace) {
@@ -1181,8 +1356,8 @@ export function buildDependencyFacts(input: DependencyFactsInput): DependencyFac
       // Choose by the requested range; never take an arbitrary (first) lock edge.
       const matching = spec.version !== undefined && pool.length > 1 ? pool.filter(version => cargoRequirementMatches(spec.version!, version) === true) : pool;
       if (!candidates.length) pushDeclaration({ ...base, local: false, resolution: "unresolved", resolvedVersions: [], lockfilePath: lock.path, reason: `${dependency} is not present in ${lock.path}.` });
-      else if (matching.length === 1) pushDeclaration({ ...base, local: false, resolution: "resolved", resolvedVersions: matching, lockfilePath: lock.path });
-      else pushDeclaration({ ...base, local: false, resolution: "ambiguous", resolvedVersions: pool, lockfilePath: lock.path, reason: `${lock.path} holds ${pool.length} candidate versions of ${dependency}; neither the crate's lock entry nor the requested range selects exactly one.` });
+      else if (matching.length === 1) pushDeclaration({ ...base, local: false, resolution: "resolved", resolvedVersions: matching.map(displayVersion), lockfilePath: lock.path });
+      else pushDeclaration({ ...base, local: false, resolution: "ambiguous", resolvedVersions: pool.map(displayVersion), lockfilePath: lock.path, reason: `${lock.path} holds ${pool.length} candidate versions of ${dependency}; neither the crate's lock entry nor the requested range selects exactly one.` });
     }
   }
   declarations.sort((left, right) => compare(left.ecosystem, right.ecosystem) || compare(left.dependency, right.dependency)
@@ -1255,7 +1430,7 @@ export function buildDependencyFacts(input: DependencyFactsInput): DependencyFac
     }
     const declared = (declarationsByPackage.get(manifestPath) ?? []).filter(row => row.ecosystem === "cargo" && !row.local);
     const direct = declared.find(row => ident(row.dependency) === ident(external.package));
-    if (direct) return { ...base, dependency: direct.dependency, ...(external.version ? { resolvedVersion: external.version } : {}) };
+    if (direct) return { ...base, dependency: direct.dependency, ...(external.version ? { resolvedVersion: displayVersion(external.version) } : {}) };
     // A re-exported or macro-provided item (`wgpu::Color` defined in wgpu-types, a derive
     // from `serde_derive`): attribute to the declared crate NEAREST to the defining crate in
     // the Cargo.lock graph; a tie is broken only by the facade naming convention
@@ -1280,7 +1455,7 @@ export function buildDependencyFacts(input: DependencyFactsInput): DependencyFac
       return { ...base, dependency: candidates[0]!, via: external.package, ...(resolved ? { resolvedVersion: resolved } : {}) };
     }
     counters.unattributedTransitive += 1;
-    return { ...base, dependency: external.package, ...(external.version ? { resolvedVersion: external.version } : {}) };
+    return { ...base, dependency: external.package, ...(external.version ? { resolvedVersion: displayVersion(external.version) } : {}) };
   };
   for (const external of input.languageAnalysis?.externalReferences ?? []) {
     if (!allowedPaths.has(external.path)) continue;

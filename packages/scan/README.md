@@ -199,6 +199,58 @@ nodes. Same facts flow to the inspector and WebMCP/Ask.
 - Coverage is a scan-time overlay, never `ArchitectureExtraction` input. There is no CRAP
   headline score.
 
+## Source text is not sanitized
+
+**Source excerpts are not sanitized.** Anything committed in the lines an atlas shows, including secrets,
+appears verbatim. Review a repository's committed content before publishing an atlas of it.
+
+- **Code snippets: always on.** Every scan writes bounded windows of the referenced JavaScript, TypeScript and Rust
+  declarations into `snapshot.json` and `atlas.okie.json` (`sourceExcerpts`). No flag turns them off. The hosted
+  operator scan writes them too, and export and publish carry the captured snapshot and its excerpt packets as they
+  are. The only scrub is GitHub-token shapes (`ghp_…`, `github_pat_…`); API keys, passwords and connection strings
+  stay as written.
+- **Full files: `--include-source`, off by default.** Only the CLI sets it; the hosted operator and legacy scan paths
+  never do. It adds `sources` to `atlas.okie.json`: the raw text of every referenced file, including referenced
+  manifests (`package.json`, `Cargo.toml`, `README.md`, `pnpm-workspace.yaml`), with no scrub at all. A secret
+  written in a manifest appears verbatim there, even though the dependency facts redact it.
+- **What is redacted.** These fields strip URL userinfo, query strings, credential-looking fragments and token
+  shapes; dependency-fact specs and Cargo `[patch]` paths also replace an absolute local path with `<absolute path>`.
+  (Diagnostic lines rewrite only the known machine prefixes such as the checkout, scratch and home directories;
+  other absolute paths in them are not replaced.)
+  - requested specs and Cargo `[target.'…']` keys in dependency facts (`git:`, `npm:` aliases, `path:` and `file:`
+    wrappers included);
+  - Cargo `[patch]` keys and paths;
+  - other limitation and diagnostic lines (unresolved imports, Cargo and rust-analyzer errors, TypeScript
+    diagnostics).
+
+  A Cargo version requirement the scanner cannot parse, or not written in a syntax Cargo accepts (a leading zero, an
+  empty prerelease or build identifier), is shown as `[unsupported requirement]` in dependency facts and `[patch]` lines; the package name and
+  manifest `path:line` stay. A resolved lockfile version (npm or Cargo) that is not strict semver is shown as `[unsupported
+  version]`. A
+  `package.json` `name` npm never accepted (validate-npm-package-name `validForOldPackages`: for example a `:`, `/`
+  or `@` outside the scope prefix, `#`, `?`, whitespace, a leading `.` or `_`) is never used as a name or ID: the unit
+  keeps its directory name, imports by that name are not linked to it, and the scan reports `Invalid package name at
+  <manifest>:<line>`. Legacy names npm still accepts (`SharedLib`, `JSONStream`) are kept.
+  Cargo names follow Cargo's own rule (a Unicode XID-start character or `_`, then XID-continue characters or `-`;
+  `café` and `SharedCrate` are valid). A `[package] name` Cargo refuses is never shown: the crate keeps its directory
+  name. A refused dependency, `[workspace.dependencies]` or `[patch]` key or `package =` rename records no edge. Both
+  report `Invalid package name` / `Invalid dependency name at <manifest>:<line>`. This covers only those structured fields. It does not
+  guarantee that an atlas is free of secrets.
+- **Known limitation: numeric password before a raw `/`, `?` or `#`.** A malformed URL whose unencoded password is
+  all digits (at most 65535) cannot be told from `host:port`, so `user:digits` is kept:
+  - before `/` (`https://user:12345/x@host/…`, the shape of a valid scoped tarball URL
+    `https://registry:8443/@scope/pkg/-/pkg-1.0.0.tgz`) nothing is redacted;
+  - before `?` the query is redacted as usual (`https://user:12345?[redacted]`);
+  - before `#` with no path, a credential-looking fragment is redacted whole; otherwise the fragment up to its last
+    `@` is redacted and the `@` suffix is kept (`https://user:12345#[redacted]@host/r`). A valid
+    `https://host:8443#release@v1` becomes `https://host:8443#[redacted]@v1`. Fragments without `@`, and fragments
+    after a path (`https://host/x#a@b`), are unchanged.
+
+  Redaction of malformed URLs is not comprehensive.
+- **Not redacted: repository paths.** Committed file and directory paths (`sourceRefs`, evidence, entity paths and
+  the IDs derived from them) are kept exactly as committed, like source text. A path that itself contains a
+  credential appears verbatim there.
+
 ## Determinism
 
 Output is byte-identical across shuffled discovery order: IDs derive from canonical source
